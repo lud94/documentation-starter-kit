@@ -1,207 +1,203 @@
-import { useState } from 'react'
 import Head from 'next/head'
-import SearchForm from '../components/SearchForm'
-import LeadCard from '../components/LeadCard'
-import StatsBar from '../components/StatsBar'
-import type { Lead, SearchParams } from '../types/lead'
+import Link from 'next/link'
+import { useLeadStore } from '../store/leads'
 
-export default function Home() {
-  const [leads, setLeads] = useState<Lead[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [searched, setSearched] = useState(false)
-  const [sentCount, setSentCount] = useState(0)
+const STAT_CARDS = [
+  {
+    key: 'total',
+    label: 'Total prospects',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+    ),
+    bg: 'icon-bg-blue',
+  },
+  {
+    key: 'sent',
+    label: 'Emails envoyés',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+    bg: 'icon-bg-green',
+  },
+  {
+    key: 'pending',
+    label: 'En attente',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+    bg: 'icon-bg-orange',
+  },
+  {
+    key: 'rate',
+    label: "Taux d'envoi",
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+      </svg>
+    ),
+    bg: 'icon-bg-purple',
+  },
+]
 
-  const handleSearch = async (params: SearchParams) => {
-    setLoading(true)
-    setError('')
-    setLeads([])
-    setSearched(true)
-    setSentCount(0)
+export default function Dashboard() {
+  const { leads, sentEmails } = useLeadStore()
 
-    try {
-      const res = await fetch('/api/search-leads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      })
+  const total = leads.length
+  const sent = sentEmails.size
+  const pending = total - sent
+  const rate = total > 0 ? Math.round((sent / total) * 100) : 0
 
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Erreur lors de la recherche')
-      }
-
-      const data = await res.json()
-      // n8n retourne un tableau d'items, chacun avec person + company
-      const parsed: Lead[] = Array.isArray(data)
-        ? data.map((item: any) => ({
-            person: item.person ?? item,
-            company: item.company ?? {},
-          })).filter((l: Lead) => l.person?.email)
-        : []
-
-      setLeads(parsed)
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
+  const statValues: Record<string, string> = {
+    total: total.toString(),
+    sent: sent.toString(),
+    pending: pending > 0 ? pending.toString() : '0',
+    rate: `${rate}%`,
   }
+
+  // Group by industry
+  const bySector = leads.reduce<Record<string, number>>((acc, lead) => {
+    const sector = lead.company?.industry ?? 'Autre'
+    acc[sector] = (acc[sector] ?? 0) + 1
+    return acc
+  }, {})
+
+  const recentActivity = leads
+    .filter(l => sentEmails.has(l.person.email))
+    .slice(-5)
+    .reverse()
 
   return (
     <>
       <Head>
-        <title>NAIOM · Lead Generation</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>" />
+        <title>LeadFlow · Tableau de bord</title>
       </Head>
 
-      <div className="min-h-screen p-6 md:p-10">
-        <div className="max-w-7xl mx-auto">
+      {/* Page header */}
+      <div className="mb-8 text-center">
+        <h1 className="text-3xl font-bold text-gray-900 mb-1">Tableau de bord</h1>
+        <p className="text-gray-400 text-sm">Vue d'ensemble de votre prospection et de vos campagnes d'emailing.</p>
+      </div>
 
-          {/* Navbar */}
-          <header className="flex items-center justify-between mb-10">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg gradient-brand shadow-brand flex items-center justify-center">
-                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-              </div>
-              <div>
-                <span className="text-white font-bold text-lg tracking-tight">NAIOM</span>
-                <span className="text-white/30 text-sm ml-2">· AI & Automation</span>
-              </div>
-            </div>
-            <div className="glass rounded-xl px-4 py-2 text-xs text-white/40 font-medium">
-              LEAD 2.0
-            </div>
-          </header>
+      {/* Quick actions */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <Link href="/search" className="card p-5 flex items-center gap-4 hover:shadow-md transition-shadow group cursor-pointer">
+          <div className="w-10 h-10 rounded-xl icon-bg-blue flex items-center justify-center flex-shrink-0">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </div>
+          <div>
+            <p className="font-semibold text-gray-800 group-hover:text-indigo-600 transition-colors">Nouvelle recherche</p>
+            <p className="text-xs text-gray-400 mt-0.5">Trouver de nouveaux prospects</p>
+          </div>
+        </Link>
 
-          {/* Hero */}
-          <div className="mb-8">
-            <h1 className="text-3xl md:text-4xl font-bold text-white leading-tight mb-2">
-              Génération de leads{' '}
-              <span className="gradient-text">B2B intelligente</span>
-            </h1>
-            <p className="text-white/40 text-base">
-              Trouvez vos prospects, générez des emails IA ultra-personnalisés, envoyez en un clic.
-            </p>
+        <Link href="/prospects" className="card p-5 flex items-center gap-4 hover:shadow-md transition-shadow group cursor-pointer">
+          <div className="w-10 h-10 rounded-xl icon-bg-purple flex items-center justify-center flex-shrink-0">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </div>
+          <div>
+            <p className="font-semibold text-gray-800 group-hover:text-indigo-600 transition-colors">Voir les prospects</p>
+            <p className="text-xs text-gray-400 mt-0.5">{total} prospect{total !== 1 ? 's' : ''} disponible{total !== 1 ? 's' : ''}</p>
+          </div>
+        </Link>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        {STAT_CARDS.map(s => (
+          <div key={s.key} className="card p-5">
+            <div className={`w-10 h-10 rounded-xl ${s.bg} flex items-center justify-center mb-3`}>
+              {s.icon}
+            </div>
+            <p className="text-2xl font-bold text-gray-900">{statValues[s.key]}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Bottom sections */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* By sector */}
+        <div className="card p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <svg className="w-4 h-4 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+            <h2 className="text-sm font-semibold text-gray-700">Par secteur d'activité</h2>
           </div>
 
-          {/* Search */}
-          <div className="mb-8">
-            <SearchForm onSearch={handleSearch} loading={loading} />
-          </div>
-
-          {/* Stats */}
-          {searched && (
-            <div className="mb-8">
-              <StatsBar total={leads.length} sent={sentCount} loading={loading} />
-            </div>
-          )}
-
-          {/* Error */}
-          {error && (
-            <div className="mb-6 glass rounded-2xl p-4 border border-red-500/30 bg-red-500/10 text-red-400 text-sm flex items-center gap-3">
-              <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          {Object.keys(bySector).length === 0 ? (
+            <div className="text-center py-8">
+              <svg className="w-10 h-10 text-gray-200 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
-              {error}
+              <p className="text-xs text-gray-400">Aucun prospect pour le moment</p>
+              <Link href="/search" className="text-xs text-indigo-500 hover:text-indigo-700 mt-1 inline-block">
+                Lancer une recherche
+              </Link>
             </div>
-          )}
-
-          {/* Loading skeleton */}
-          {loading && (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <div key={i} className="glass rounded-2xl p-5 shadow-glass animate-pulse">
-                  <div className="flex items-start gap-4 mb-4">
-                    <div className="w-11 h-11 rounded-xl bg-white/10" />
-                    <div className="flex-1">
-                      <div className="h-3.5 bg-white/10 rounded w-3/4 mb-2" />
-                      <div className="h-2.5 bg-white/5 rounded w-1/2" />
-                    </div>
+          ) : (
+            <div className="space-y-2">
+              {Object.entries(bySector).sort((a, b) => b[1] - a[1]).map(([sector, count]) => (
+                <div key={sector} className="flex items-center gap-3">
+                  <div className="flex-1 text-xs text-gray-600 truncate">{sector}</div>
+                  <div className="flex-1 bg-gray-100 rounded-full h-1.5">
+                    <div
+                      className="gradient-brand h-1.5 rounded-full"
+                      style={{ width: `${(count / total) * 100}%` }}
+                    />
                   </div>
-                  <div className="h-16 bg-white/5 rounded-xl mb-4" />
-                  <div className="h-2.5 bg-white/5 rounded w-full mb-2" />
-                  <div className="h-2.5 bg-white/5 rounded w-2/3 mb-4" />
-                  <div className="h-9 bg-white/10 rounded-xl" />
+                  <div className="text-xs font-medium text-gray-500 w-6 text-right">{count}</div>
                 </div>
               ))}
             </div>
           )}
+        </div>
 
-          {/* Results */}
-          {!loading && leads.length > 0 && (
-            <>
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-white/50 text-sm">
-                  <span className="text-white font-semibold">{leads.length}</span> leads trouvés
-                </p>
-                <button
-                  onClick={() => {
-                    const remaining = leads.filter((_, i) => {
-                      const card = document.querySelector(`[data-lead-index="${i}"]`)
-                      return !card?.classList.contains('sent')
-                    })
-                    // bulk send could be added here
-                  }}
-                  className="text-xs text-white/30 hover:text-white/60 transition-colors"
-                >
-                  Envoyer tous les emails →
-                </button>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {leads.map((lead, i) => (
-                  <LeadCard key={`${lead.person.email}-${i}`} lead={lead} />
-                ))}
-              </div>
-            </>
-          )}
+        {/* Recent activity */}
+        <div className="card p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <svg className="w-4 h-4 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            <h2 className="text-sm font-semibold text-gray-700">Activité récente</h2>
+          </div>
 
-          {/* Empty state */}
-          {!loading && searched && leads.length === 0 && !error && (
-            <div className="glass rounded-2xl p-12 shadow-glass text-center">
-              <div className="w-16 h-16 rounded-2xl gradient-brand shadow-brand flex items-center justify-center mx-auto mb-4 opacity-60">
-                <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <p className="text-white/50 text-sm">Aucun lead trouvé pour ces critères.</p>
-              <p className="text-white/30 text-xs mt-1">Essayez d'élargir votre recherche.</p>
+          {recentActivity.length === 0 ? (
+            <div className="text-center py-8">
+              <svg className="w-10 h-10 text-gray-200 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+              <p className="text-xs text-gray-400">Aucune activité récente</p>
+              <Link href="/prospects" className="text-xs text-indigo-500 hover:text-indigo-700 mt-1 inline-block">
+                Trouver des prospects
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {recentActivity.map(lead => (
+                <div key={lead.person.email} className="flex items-center gap-3">
+                  <div className="w-7 h-7 rounded-full gradient-brand flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                    {lead.person.first_name?.[0]}{lead.person.last_name?.[0]}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-gray-700 truncate">{lead.person.full_name}</p>
+                    <p className="text-xs text-gray-400 truncate">{lead.company.name}</p>
+                  </div>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-600 font-medium flex-shrink-0">Envoyé</span>
+                </div>
+              ))}
             </div>
           )}
-
-          {/* Initial state */}
-          {!searched && (
-            <div className="glass rounded-2xl p-16 shadow-glass text-center">
-              <div className="w-20 h-20 rounded-2xl gradient-brand shadow-brand flex items-center justify-center mx-auto mb-6">
-                <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              </div>
-              <h2 className="text-xl font-bold text-white mb-2">Lancez votre première recherche</h2>
-              <p className="text-white/40 text-sm max-w-md mx-auto">
-                Sélectionnez un secteur et une localisation pour trouver jusqu'à 100 leads qualifiés.
-                L'IA génère ensuite un email ultra-personnalisé pour chaque prospect.
-              </p>
-              <div className="flex items-center justify-center gap-6 mt-8 text-xs text-white/25">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full gradient-brand inline-block" />
-                  Données validées
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full gradient-brand inline-block" />
-                  Emails IA personnalisés
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full gradient-brand inline-block" />
-                  Envoi en 1 clic
-                </span>
-              </div>
-            </div>
-          )}
-
         </div>
       </div>
     </>
