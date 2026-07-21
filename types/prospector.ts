@@ -54,6 +54,16 @@ export interface Quota {
   max: number
 }
 
+export const STAGE_META: Record<Stage, { label: string; color: string }> = {
+  to_invite: { label: 'À inviter', color: '#94a3b8' },
+  invited: { label: 'Invité', color: '#818cf8' },
+  connected: { label: 'Connecté', color: '#667eea' },
+  in_sequence: { label: 'En séquence', color: '#8b5cf6' },
+  responded: { label: 'A répondu', color: '#a855f7' },
+  meeting: { label: 'RDV', color: '#c026d3' },
+  closed: { label: 'Signé', color: '#059669' },
+}
+
 export const ACTION_META: Record<
   ActionType,
   { label: string; quota: Quota['type']; needsMessage: boolean }

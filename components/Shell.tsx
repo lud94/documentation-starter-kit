@@ -16,7 +16,7 @@ const icon = (d: string) => (
 )
 
 const NAV: NavItem[] = [
-  { href: '/actions', label: 'Actions du jour', ready: true, badge: 6, icon: icon('M13 10V3L4 14h7v7l9-11h-7z') },
+  { href: '/actions', label: 'Actions du jour', ready: true, badge: 8, icon: icon('M13 10V3L4 14h7v7l9-11h-7z') },
   { href: '/', label: 'Tableau de bord', ready: true, icon: icon('M4 5a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM14 13a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1h-4a1 1 0 01-1-1v-6zM4 16a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3z') },
   { href: '/pipeline', label: 'Pipeline & Leads', icon: icon('M3 7h18M3 12h18M3 17h18') },
   { href: '/sequences', label: 'Séquences', icon: icon('M4 6h16M4 12h10M4 18h7') },

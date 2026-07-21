@@ -2,8 +2,27 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
+
+export interface DashboardData {
+  pendingActions: number
+  kpis: {
+    invitationsSent: number
+    acceptanceRate: number // %
+    replies: number
+    meetings: number
+    iaCostWeek: number // $
+  }
+  funnel: { stage: Stage; count: number }[]
+  activity: {
+    id: string
+    kind: 'reply' | 'accepted' | 'invitation' | 'message' | 'meeting'
+    text: string
+    when: string
+    hot?: boolean
+  }[]
+}
 
 const LEADS: Record<string, Lead> = {
   l1: { id: 'l1', firstName: 'Camille', lastName: 'Roux', title: 'VP Sales', company: 'Fivory', score: 82, temperature: 'hot', stage: 'connected' },
@@ -63,6 +82,36 @@ export function getTodayActions() {
 
 export function getLead(id: string): Lead | undefined {
   return LEADS[id]
+}
+
+export function getDashboard(): Promise<DashboardData> {
+  const pendingActions = ACTIONS.filter((a) => a.status === 'pending').length
+  return delay({
+    pendingActions,
+    kpis: {
+      invitationsSent: 34,
+      acceptanceRate: 41,
+      replies: 12,
+      meetings: 4,
+      iaCostWeek: 2.1,
+    },
+    funnel: [
+      { stage: 'to_invite', count: 42 },
+      { stage: 'invited', count: 28 },
+      { stage: 'connected', count: 63 },
+      { stage: 'in_sequence', count: 31 },
+      { stage: 'responded', count: 12 },
+      { stage: 'meeting', count: 4 },
+      { stage: 'closed', count: 2 },
+    ],
+    activity: [
+      { id: 'e1', kind: 'reply', text: 'Sarah Moreau (Lago) a répondu à votre message', when: 'il y a 2 h', hot: true },
+      { id: 'e2', kind: 'invitation', text: 'Invitation envoyée à Hugo Martin (Kairos AI)', when: 'il y a 3 h' },
+      { id: 'e3', kind: 'meeting', text: 'RDV planifié avec Camille Roux (Fivory)', when: 'hier' },
+      { id: 'e4', kind: 'accepted', text: 'Thomas Lefèvre (Nudge) a accepté votre invitation', when: 'hier' },
+      { id: 'e5', kind: 'message', text: 'Message envoyé à Inès Bernard (Payflow)', when: 'hier' },
+    ],
+  })
 }
 
 // --- Mutations (capacités Jarvis) ---
