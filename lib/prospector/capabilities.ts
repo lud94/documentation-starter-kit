@@ -33,6 +33,12 @@ const LEADS: Record<string, Lead> = {
   l6: { id: 'l6', firstName: 'Antoine', lastName: 'Girard', title: 'Directeur Commercial', company: 'Spendesk', score: 71, temperature: 'warm', stage: 'in_sequence' },
   l7: { id: 'l7', firstName: 'Sarah', lastName: 'Moreau', title: 'Founder', company: 'Lago', score: 88, temperature: 'hot', stage: 'connected' },
   l8: { id: 'l8', firstName: 'Maxime', lastName: 'Petit', title: 'Head of Marketing', company: 'Qonto', score: 63, temperature: 'warm', stage: 'to_invite' },
+  l9: { id: 'l9', firstName: 'Julie', lastName: 'Fontaine', title: 'VP Marketing', company: 'Pennylane', score: 66, temperature: 'warm', stage: 'invited' },
+  l10: { id: 'l10', firstName: 'Nicolas', lastName: 'Laurent', title: 'Chief Revenue Officer', company: 'Alan', score: 79, temperature: 'hot', stage: 'invited' },
+  l11: { id: 'l11', firstName: 'Chloé', lastName: 'Garnier', title: 'Head of Sales', company: 'Ledger', score: 72, temperature: 'warm', stage: 'responded' },
+  l12: { id: 'l12', firstName: 'Romain', lastName: 'Faure', title: 'CEO', company: 'Dust', score: 85, temperature: 'hot', stage: 'responded' },
+  l13: { id: 'l13', firstName: 'Emma', lastName: 'Rousseau', title: 'Founder & CEO', company: 'Photoroom', score: 90, temperature: 'hot', stage: 'meeting' },
+  l14: { id: 'l14', firstName: 'Lucas', lastName: 'Mercier', title: 'Head of Growth', company: 'Aircall', score: 77, temperature: 'hot', stage: 'closed' },
 }
 
 let ACTIONS: Action[] = [
@@ -82,6 +88,10 @@ export function getTodayActions() {
 
 export function getLead(id: string): Lead | undefined {
   return LEADS[id]
+}
+
+export function getLeads(): Promise<Lead[]> {
+  return delay(Object.values(LEADS))
 }
 
 export function getDashboard(): Promise<DashboardData> {

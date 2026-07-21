@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { useRouter } from 'next/router'
+import { useState } from 'react'
 
 type NavItem = {
   href: string
@@ -18,15 +19,22 @@ const icon = (d: string) => (
 const NAV: NavItem[] = [
   { href: '/actions', label: 'Actions du jour', ready: true, badge: 8, icon: icon('M13 10V3L4 14h7v7l9-11h-7z') },
   { href: '/', label: 'Tableau de bord', ready: true, icon: icon('M4 5a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM14 13a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1h-4a1 1 0 01-1-1v-6zM4 16a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3z') },
-  { href: '/pipeline', label: 'Pipeline & Leads', icon: icon('M3 7h18M3 12h18M3 17h18') },
+  { href: '/pipeline', label: 'Pipeline & Leads', ready: true, icon: icon('M3 7h18M3 12h18M3 17h18') },
   { href: '/sequences', label: 'Séquences', icon: icon('M4 6h16M4 12h10M4 18h7') },
   { href: '/inbox', label: 'Inbox', icon: icon('M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z') },
   { href: '/brain', label: 'Cerveau IA', icon: icon('M9.5 3a3 3 0 013 3v12a3 3 0 01-6 0V6a3 3 0 013-3zM14.5 6a3 3 0 016 0v9a3 3 0 01-6 0') },
   { href: '/admin', label: 'Admin', icon: icon('M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z') },
 ]
 
+const CREATE_MENU = [
+  { label: 'Sourcer des leads', desc: 'DataGoov + gate signal', path: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z' },
+  { label: 'Ajouter un lead', desc: 'Saisie manuelle', path: 'M18 9v6m3-3h-6M13 7a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3z' },
+  { label: 'Importer un CSV', desc: 'Liste existante', path: 'M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z' },
+]
+
 export default function Shell({ children }: { children: React.ReactNode }) {
   const { pathname } = useRouter()
+  const [createOpen, setCreateOpen] = useState(false)
 
   return (
     <div className="min-h-screen flex">
@@ -104,6 +112,39 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             Demandez à Jarvis…
             <span className="ml-auto text-[10px] font-semibold text-gray-400 bg-white border border-gray-200 px-1.5 py-0.5 rounded">⌘K · bientôt</span>
           </button>
+
+          {/* Bouton + global (raccourci disponible partout) */}
+          <div className="relative ml-auto">
+            <button
+              onClick={() => setCreateOpen((v) => !v)}
+              className="gradient-brand text-white text-sm font-semibold px-3.5 py-2 rounded-xl hover:opacity-90 transition-opacity flex items-center gap-1.5"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 4v16m8-8H4" /></svg>
+              Nouveau
+            </button>
+            {createOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setCreateOpen(false)} />
+                <div className="absolute right-0 mt-2 w-64 card p-1.5 z-40">
+                  {CREATE_MENU.map((m) => (
+                    <button
+                      key={m.label}
+                      onClick={() => setCreateOpen(false)}
+                      className="w-full flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-gray-50 transition-colors text-left"
+                    >
+                      <span className="w-8 h-8 rounded-lg icon-bg-blue flex items-center justify-center flex-shrink-0">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={m.path} /></svg>
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium text-gray-800">{m.label}</span>
+                        <span className="block text-xs text-gray-400">{m.desc}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </header>
 
         <main className="flex-1 px-6 py-8">
