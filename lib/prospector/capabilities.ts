@@ -2,7 +2,7 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
 export interface DashboardData {
@@ -352,6 +352,22 @@ export function validateAction(id: string) {
     QUOTAS[ACTION_META[a.type].quota].used += 1
   }
   return delay(a)
+}
+
+// Passe qualité en masse — mode revue. Jarvis appellera cette même capacité.
+export function batchQualityPass(criterion: string): Promise<QualityPassResult> {
+  const msgActions = ACTIONS.filter((a) => a.status === 'pending' && ACTION_META[a.type].needsMessage && a.generatedMessage)
+  // Mock : on propose une correction sur ~1 message sur 2 (le juge = coach CCR).
+  const proposals = msgActions
+    .filter((_, i) => i % 2 === 0)
+    .map((a) => {
+      const lead = LEADS[a.leadId]
+      const d = buildDetail(lead).dossier
+      const after = `${lead.firstName}, ${d.accrochePivot}\n\n${d.questionAPoser}`
+      return { actionId: a.id, leadName: `${lead.firstName} ${lead.lastName}`, before: a.generatedMessage as string, after }
+    })
+    .filter((p) => p.before !== p.after)
+  return delay({ evaluated: msgActions.length, conforming: msgActions.length - proposals.length, proposals })
 }
 
 export function regenerateActionMessage(id: string, instruction: string) {

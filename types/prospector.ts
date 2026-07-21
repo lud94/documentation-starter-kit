@@ -113,6 +113,19 @@ export interface LeadDetail {
   interactions: Interaction[]
 }
 
+export interface QualityProposal {
+  actionId: string
+  leadName: string
+  before: string
+  after: string
+}
+
+export interface QualityPassResult {
+  evaluated: number
+  conforming: number
+  proposals: QualityProposal[]
+}
+
 export interface AgentConfig {
   id: string
   name: string

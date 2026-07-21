@@ -48,7 +48,7 @@ export default function Dashboard() {
               </div>
               <div>
                 <p className="font-bold text-lg leading-tight">{data.pendingActions} actions vous attendent aujourd'hui</p>
-                <p className="text-white/80 text-sm">Générées par l'IA — à valider avant envoi.</p>
+                <p className="text-white/80 text-sm">Générées par l'IA, à valider avant envoi.</p>
               </div>
             </div>
             <span className="text-sm font-semibold bg-white/20 px-4 py-2 rounded-xl flex items-center gap-2">
