@@ -149,7 +149,7 @@ function ActionCard({
               editing ? (
                 <button onClick={() => { onSaveMessage(draft); setEditing(false) }} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-2 rounded-xl hover:bg-indigo-100 transition-colors">Enregistrer</button>
               ) : (
-                <button onClick={() => { setDraft(action.generatedMessage ?? ''); setEditing(true) }} className="text-xs font-medium text-gray-500 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">Éditer</button>
+                <button onClick={() => { setDraft(action.generatedMessage ?? ''); setEditing(true) }} className="text-xs font-medium text-gray-500 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">Modifier</button>
               )
             )}
             <button onClick={onCancel} className="text-xs font-medium text-gray-400 px-3 py-2 rounded-xl hover:text-red-500 hover:bg-red-50 transition-colors ml-auto">Ignorer</button>
