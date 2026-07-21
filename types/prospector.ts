@@ -113,6 +113,31 @@ export interface LeadDetail {
   interactions: Interaction[]
 }
 
+export type StepCondition = 'always' | 'if_connected' | 'if_no_response' | 'if_responded'
+
+export const CONDITION_LABEL: Record<StepCondition, string> = {
+  always: 'Toujours',
+  if_connected: 'Si connecté',
+  if_no_response: 'Si pas de réponse',
+  if_responded: 'Si a répondu',
+}
+
+export interface SequenceStep {
+  id: string
+  type: ActionType
+  condition: StepCondition
+  delayDays: number
+}
+
+export interface Sequence {
+  id: string
+  name: string
+  status: 'active' | 'paused'
+  enrolled: number
+  responseRate: number // %
+  steps: SequenceStep[]
+}
+
 export interface Message {
   id: string
   from: 'them' | 'us'

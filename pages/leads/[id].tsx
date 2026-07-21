@@ -5,6 +5,7 @@ import { useRouter } from 'next/router'
 import type { LeadDetail } from '../../types/prospector'
 import { STAGE_META } from '../../types/prospector'
 import { getLeadDetail } from '../../lib/prospector/capabilities'
+import RedactionModal from '../../components/RedactionModal'
 
 const BAND_STYLE: Record<string, string> = {
   HOT: 'bg-red-50 text-red-600',
@@ -48,6 +49,7 @@ export default function LeadDetailPage() {
   const router = useRouter()
   const { id } = router.query
   const [d, setD] = useState<LeadDetail | null | undefined>(null)
+  const [redactionOpen, setRedactionOpen] = useState(false)
 
   useEffect(() => {
     if (typeof id === 'string') getLeadDetail(id).then(setD)
@@ -91,7 +93,7 @@ export default function LeadDetailPage() {
         </div>
 
         <div className="flex items-center gap-2 mt-4 flex-wrap">
-          <button className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity flex items-center gap-2">
+          <button onClick={() => setRedactionOpen(true)} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity flex items-center gap-2">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.96 7.96 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
             Envoyer un message
           </button>
@@ -278,6 +280,8 @@ export default function LeadDetailPage() {
           </div>
         </div>
       </div>
+
+      {redactionOpen && <RedactionModal detail={d} onClose={() => setRedactionOpen(false)} />}
     </>
   )
 }

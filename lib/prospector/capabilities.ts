@@ -2,7 +2,7 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
 export interface DashboardData {
@@ -197,6 +197,51 @@ export function getConversations(): Promise<Conversation[]> {
       { id: 'm2', from: 'them', text: 'Parfait, à jeudi !', time: 'jeu. 09:00' },
     ], 'Au plaisir Emma — je vous envoie l\'invitation calendrier avec le lien visio.'),
   ])
+}
+
+export function getSequences(): Promise<Sequence[]> {
+  return delay([
+    {
+      id: 's1', name: 'Founders tech · signal recrutement', status: 'active', enrolled: 34, responseRate: 18,
+      steps: [
+        { id: 'st1', type: 'visit', condition: 'always', delayDays: 0 },
+        { id: 'st2', type: 'invitation', condition: 'always', delayDays: 1 },
+        { id: 'st3', type: 'message', condition: 'if_connected', delayDays: 2 },
+        { id: 'st4', type: 'relance', condition: 'if_no_response', delayDays: 4 },
+        { id: 'st5', type: 'relance', condition: 'if_no_response', delayDays: 7 },
+      ],
+    },
+    {
+      id: 's2', name: 'VP Sales · scale-up SaaS', status: 'active', enrolled: 21, responseRate: 24,
+      steps: [
+        { id: 'st1', type: 'invitation', condition: 'always', delayDays: 0 },
+        { id: 'st2', type: 'message', condition: 'if_connected', delayDays: 3 },
+        { id: 'st3', type: 'relance', condition: 'if_no_response', delayDays: 5 },
+      ],
+    },
+    {
+      id: 's3', name: 'Visiteurs profil · réchauffage', status: 'paused', enrolled: 8, responseRate: 31,
+      steps: [
+        { id: 'st1', type: 'visit', condition: 'always', delayDays: 0 },
+        { id: 'st2', type: 'invitation', condition: 'always', delayDays: 2 },
+        { id: 'st3', type: 'message', condition: 'if_connected', delayDays: 3 },
+      ],
+    },
+  ])
+}
+
+export function generateMessage(leadId: string, variant: 'principal' | 'directe' | 'douce'): Promise<string> {
+  const lead = LEADS[leadId]
+  if (!lead) return delay('')
+  const d = buildDetail(lead).dossier
+  const prenom = lead.firstName
+  if (variant === 'directe') {
+    return delay(`${prenom}, ${d.accrochePivot} On aide des équipes comme ${lead.company} à structurer ça. ${d.questionAPoser}`)
+  }
+  if (variant === 'douce') {
+    return delay(`Bonjour ${prenom}, je suis votre parcours chez ${lead.company} avec intérêt. Sans agenda commercial : ${d.questionAPoser}`)
+  }
+  return delay(`${prenom}, ${d.accrochePivot}\n\n${d.questionAPoser}`)
 }
 
 export function getVisitors(): Promise<Visitor[]> {

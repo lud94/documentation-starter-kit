@@ -20,7 +20,7 @@ const NAV: NavItem[] = [
   { href: '/actions', label: 'Actions du jour', ready: true, badge: 8, icon: icon('M13 10V3L4 14h7v7l9-11h-7z') },
   { href: '/', label: 'Tableau de bord', ready: true, icon: icon('M4 5a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM14 13a1 1 0 011-1h4a1 1 0 011 1v6a1 1 0 01-1 1h-4a1 1 0 01-1-1v-6zM4 16a1 1 0 011-1h4a1 1 0 011 1v3a1 1 0 01-1 1H5a1 1 0 01-1-1v-3z') },
   { href: '/pipeline', label: 'Pipeline & Leads', ready: true, icon: icon('M3 7h18M3 12h18M3 17h18') },
-  { href: '/sequences', label: 'Séquences', icon: icon('M4 6h16M4 12h10M4 18h7') },
+  { href: '/sequences', label: 'Séquences', ready: true, icon: icon('M4 6h16M4 12h10M4 18h7') },
   { href: '/inbox', label: 'Inbox', ready: true, badge: 2, icon: icon('M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z') },
   { href: '/brain', label: 'Cerveau IA', icon: icon('M9.5 3a3 3 0 013 3v12a3 3 0 01-6 0V6a3 3 0 013-3zM14.5 6a3 3 0 016 0v9a3 3 0 01-6 0') },
   { href: '/admin', label: 'Admin', icon: icon('M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z') },
