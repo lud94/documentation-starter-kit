@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import Link from 'next/link'
 import { STAGE_META } from '../types/prospector'
-import { getDashboard, type DashboardData } from '../lib/prospector/capabilities'
+import { getDashboard, type DashboardData, type Period, type DetailItem } from '../lib/prospector/capabilities'
 
 const KIND_ICON: Record<DashboardData['activity'][number]['kind'], { bg: string; path: string }> = {
   reply: { bg: 'icon-bg-purple', path: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.96 7.96 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z' },
@@ -12,20 +12,38 @@ const KIND_ICON: Record<DashboardData['activity'][number]['kind'], { bg: string;
   meeting: { bg: 'icon-bg-pink', path: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z' },
 }
 
-function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Kpi({ label, value, sub, onClick }: { label: string; value: string; sub?: string; onClick?: () => void }) {
   return (
-    <div className="card p-5">
-      <p className="text-xs font-semibold text-gray-400 mb-1">{label}</p>
+    <button onClick={onClick} disabled={!onClick} className="card p-5 text-left transition-all enabled:hover:shadow-md enabled:hover:border-indigo-100 group">
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-xs font-semibold text-gray-400">{label}</p>
+        {onClick && <svg className="w-3.5 h-3.5 text-gray-300 group-hover:text-indigo-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>}
+      </div>
       <p className="text-2xl font-bold gradient-text">{value}</p>
       {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
-    </div>
+    </button>
   )
+}
+
+const PERIODS: { key: Period; label: string }[] = [
+  { key: 'week', label: 'Cette semaine' },
+  { key: 'month', label: 'Ce mois' },
+  { key: 'quarter', label: 'Trimestre' },
+]
+
+const DRILL_LABEL: Record<string, string> = {
+  invitations: 'Invitations envoyées',
+  acceptance: 'Invitations acceptées',
+  replies: 'Réponses reçues',
+  meetings: 'RDV planifiés',
 }
 
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null)
+  const [period, setPeriod] = useState<Period>('week')
+  const [drill, setDrill] = useState<{ key: string; items: DetailItem[] } | null>(null)
 
-  useEffect(() => { getDashboard().then(setData) }, [])
+  useEffect(() => { getDashboard(period).then(setData) }, [period])
 
   const funnelMax = data ? Math.max(...data.funnel.map((f) => f.count)) : 1
 
@@ -33,9 +51,18 @@ export default function Dashboard() {
     <>
       <Head><title>Prospector · Tableau de bord</title></Head>
 
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Tableau de bord</h1>
-        <p className="text-gray-400 text-sm mt-0.5">Vue d'ensemble de votre prospection et de vos campagnes.</p>
+      <div className="flex items-start justify-between mb-6 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Tableau de bord</h1>
+          <p className="text-gray-400 text-sm mt-0.5">Vue d'ensemble de votre prospection et de vos campagnes.</p>
+        </div>
+        <div className="flex bg-gray-100 rounded-xl p-1">
+          {PERIODS.map((p) => (
+            <button key={p.key} onClick={() => setPeriod(p.key)} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${period === p.key ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>
+              {p.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Hero action — jamais contempler sans agir */}
@@ -58,12 +85,12 @@ export default function Dashboard() {
         </Link>
       )}
 
-      {/* KPIs résultat */}
+      {/* KPIs résultat — cliquables */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <Kpi label="Invitations (semaine)" value={data ? String(data.kpis.invitationsSent) : '—'} />
-        <Kpi label="Taux d'acceptation" value={data ? `${data.kpis.acceptanceRate}%` : '—'} sub="des invitations" />
-        <Kpi label="Réponses" value={data ? String(data.kpis.replies) : '—'} sub="cette semaine" />
-        <Kpi label="RDV planifiés" value={data ? String(data.kpis.meetings) : '—'} sub="à convertir" />
+        <Kpi label="Invitations" value={data ? String(data.kpis.invitationsSent) : '—'} sub="envoyées" onClick={data ? () => setDrill({ key: 'invitations', items: data.details.invitations }) : undefined} />
+        <Kpi label="Taux d'acceptation" value={data ? `${data.kpis.acceptanceRate}%` : '—'} sub="des invitations" onClick={data ? () => setDrill({ key: 'acceptance', items: data.details.acceptance }) : undefined} />
+        <Kpi label="Réponses" value={data ? String(data.kpis.replies) : '—'} sub="reçues" onClick={data ? () => setDrill({ key: 'replies', items: data.details.replies }) : undefined} />
+        <Kpi label="RDV planifiés" value={data ? String(data.kpis.meetings) : '—'} sub="à convertir" onClick={data ? () => setDrill({ key: 'meetings', items: data.details.meetings }) : undefined} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -121,11 +148,36 @@ export default function Dashboard() {
             </div>
           )}
           <div className="mt-4 pt-3 border-t border-gray-50 flex items-center justify-between text-xs">
-            <span className="text-gray-400">Coût IA cette semaine</span>
+            <span className="text-gray-400">Coût IA sur la période</span>
             <span className="font-semibold text-gray-600">{data ? `$${data.kpis.iaCostWeek.toFixed(2)}` : '—'}</span>
           </div>
         </div>
       </div>
+
+      {/* Drill-down KPI */}
+      {drill && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setDrill(null)} />
+          <div className="relative card w-full max-w-md max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <h2 className="text-base font-bold text-gray-900">{DRILL_LABEL[drill.key]}</h2>
+              <button onClick={() => setDrill(null)} className="text-gray-400 hover:text-gray-700"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+            </div>
+            <div className="p-3 overflow-y-auto">
+              {drill.items.map((it) => (
+                <Link key={`${drill.key}-${it.id}`} href={it.href} className="flex items-center gap-3 px-2 py-2.5 rounded-xl hover:bg-gray-50 transition-colors">
+                  <span className="w-8 h-8 rounded-lg gradient-brand text-white text-xs font-bold flex items-center justify-center flex-shrink-0">{it.name.split(' ').map((w) => w[0]).join('').toUpperCase()}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium text-gray-800 truncate">{it.name}</span>
+                    <span className="block text-xs text-gray-400 truncate">{it.company}</span>
+                  </span>
+                  <span className="text-xs text-gray-400 flex-shrink-0">{it.meta}</span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

@@ -5,7 +5,18 @@
 import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
+export type Period = 'week' | 'month' | 'quarter'
+
+export interface DetailItem {
+  id: string
+  name: string
+  company: string
+  meta: string
+  href: string
+}
+
 export interface DashboardData {
+  period: Period
   pendingActions: number
   kpis: {
     invitationsSent: number
@@ -13,6 +24,12 @@ export interface DashboardData {
     replies: number
     meetings: number
     iaCostWeek: number // $
+  }
+  details: {
+    invitations: DetailItem[]
+    acceptance: DetailItem[]
+    replies: DetailItem[]
+    meetings: DetailItem[]
   }
   funnel: { stage: Stage; count: number }[]
   activity: {
@@ -312,16 +329,42 @@ export function getVisitors(): Promise<Visitor[]> {
   ])
 }
 
-export function getDashboard(): Promise<DashboardData> {
+export function getDashboard(period: Period = 'week'): Promise<DashboardData> {
   const pendingActions = ACTIONS.filter((a) => a.status === 'pending').length
+  const f = period === 'week' ? 1 : period === 'month' ? 4 : 12
   return delay({
+    period,
     pendingActions,
     kpis: {
-      invitationsSent: 34,
-      acceptanceRate: 41,
-      replies: 12,
-      meetings: 4,
-      iaCostWeek: 2.1,
+      invitationsSent: 34 * f,
+      acceptanceRate: period === 'week' ? 41 : period === 'month' ? 38 : 40,
+      replies: 12 * f,
+      meetings: 4 * f,
+      iaCostWeek: Math.round(2.1 * f * 100) / 100,
+    },
+    details: {
+      invitations: [
+        { id: 'l4', name: 'Hugo Martin', company: 'Kairos AI', meta: 'envoyée hier', href: '/leads/l4' },
+        { id: 'l5', name: 'Léa Dubois', company: 'Swan', meta: 'envoyée hier', href: '/leads/l5' },
+        { id: 'l9', name: 'Julie Fontaine', company: 'Pennylane', meta: 'il y a 2 j', href: '/leads/l9' },
+        { id: 'l10', name: 'Nicolas Laurent', company: 'Alan', meta: 'il y a 2 j', href: '/leads/l10' },
+      ],
+      acceptance: [
+        { id: 'l1', name: 'Camille Roux', company: 'Fivory', meta: 'acceptée', href: '/leads/l1' },
+        { id: 'l2', name: 'Thomas Lefèvre', company: 'Nudge', meta: 'acceptée', href: '/leads/l2' },
+        { id: 'l7', name: 'Sarah Moreau', company: 'Lago', meta: 'acceptée', href: '/leads/l7' },
+      ],
+      replies: [
+        { id: 'l7', name: 'Sarah Moreau', company: 'Lago', meta: 'il y a 2 h', href: '/inbox' },
+        { id: 'l12', name: 'Romain Faure', company: 'Dust', meta: 'hier', href: '/inbox' },
+        { id: 'l11', name: 'Chloé Garnier', company: 'Ledger', meta: 'hier', href: '/inbox' },
+      ],
+      meetings: [
+        { id: 'l13', name: 'Emma Rousseau', company: 'Photoroom', meta: 'jeu. 14h', href: '/leads/l13' },
+        { id: 'l1', name: 'Camille Roux', company: 'Fivory', meta: 'ven. 10h', href: '/leads/l1' },
+        { id: 'l7', name: 'Sarah Moreau', company: 'Lago', meta: 'lun. 15h', href: '/leads/l7' },
+        { id: 'l12', name: 'Romain Faure', company: 'Dust', meta: 'mar. 11h', href: '/leads/l12' },
+      ],
     },
     funnel: [
       { stage: 'to_invite', count: 42 },
