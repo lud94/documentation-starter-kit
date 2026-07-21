@@ -354,6 +354,24 @@ export function validateAction(id: string) {
   return delay(a)
 }
 
+export function regenerateActionMessage(id: string, instruction: string) {
+  const a = ACTIONS.find((x) => x.id === id)
+  if (!a) return delay(undefined)
+  const lead = LEADS[a.leadId]
+  const d = buildDetail(lead).dossier
+  const p = lead.firstName
+  const ins = instruction.toLowerCase()
+  let msg: string
+  if (ins.includes('court')) msg = `${p}, ${d.questionAPoser}`
+  else if (ins.includes('direct')) msg = `${p}, ${d.accrochePivot} ${d.questionAPoser}`
+  else if (ins.includes('commercial') || ins.includes('doux') || ins.includes('douce')) msg = `Bonjour ${p}, sans agenda commercial : ${d.questionAPoser}`
+  else if (ins.includes('angle')) msg = `${p}, autre angle — ${d.pourquoiMaintenant.split('.')[0]}. ${d.questionAPoser}`
+  else if (instruction.trim()) msg = `${p}, ${d.accrochePivot} ${d.questionAPoser}`
+  else msg = `${p}, ${d.accrochePivot}\n\n${d.questionAPoser}`
+  a.generatedMessage = msg
+  return delay(a)
+}
+
 export function validateAll() {
   ACTIONS.filter((a) => a.status === 'pending').forEach((a) => {
     a.status = 'validated'
