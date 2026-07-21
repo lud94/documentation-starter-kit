@@ -113,6 +113,47 @@ export interface LeadDetail {
   interactions: Interaction[]
 }
 
+export interface AgentConfig {
+  id: string
+  name: string
+  model: string
+  temperature: number
+  prompt: string
+  ragBlocks: string[]
+}
+
+export interface KnowledgeBlock {
+  id: string
+  name: string
+  sections: number
+  description: string
+  agents: string[]
+}
+
+export interface UsageSummary {
+  calls: number
+  tokensIn: number
+  tokensOut: number
+  cost: number
+  cached: number
+  byAgent: { agent: string; calls: number; tokens: number; cost: number }[]
+  byModel: { model: string; calls: number; tokens: number; cost: number }[]
+}
+
+export interface Diagnostic {
+  name: string
+  status: 'ok' | 'warn' | 'error'
+  detail: string
+}
+
+export interface Workspace {
+  id: string
+  name: string
+  leads: number
+  users: number
+  plan: string
+}
+
 export type StepCondition = 'always' | 'if_connected' | 'if_no_response' | 'if_responded'
 
 export const CONDITION_LABEL: Record<StepCondition, string> = {

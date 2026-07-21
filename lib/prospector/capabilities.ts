@@ -2,7 +2,7 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
 export interface DashboardData {
@@ -242,6 +242,64 @@ export function generateMessage(leadId: string, variant: 'principal' | 'directe'
     return delay(`Bonjour ${prenom}, je suis votre parcours chez ${lead.company} avec intérêt. Sans agenda commercial : ${d.questionAPoser}`)
   }
   return delay(`${prenom}, ${d.accrochePivot}\n\n${d.questionAPoser}`)
+}
+
+export function getAgents(): Promise<AgentConfig[]> {
+  return delay([
+    { id: 'scoring', name: 'Scoring', model: 'claude-haiku-4-5', temperature: 0.3, ragBlocks: ['icp_segments', 'qualification'], prompt: 'Tu es un agent de scoring. À partir des données du lead et des signaux, attribue un score 0-100 décomposé en Fit / Intent / Timing. Ne présente jamais un score comme une prédiction de signature.' },
+    { id: 'enrichment', name: 'Enrichissement', model: 'perplexity-sonar-pro', temperature: 0.2, ragBlocks: ['icp_segments'], prompt: 'Tu enrichis un compte : entreprise (taille, secteur, funding), personne (intérêts, posts récents). Ne renvoie que des faits sourcés. Déclare toute donnée absente comme absente.' },
+    { id: 'dossier', name: "Dossier d'attaque", model: 'claude-sonnet-5', temperature: 0.5, ragBlocks: ['icp_segments', 'pain_points', 'messaging_angles'], prompt: "Tu produis le Dossier d'attaque : mécanisme, accroche pivot, preuves vérifiables, à intégrer, à éviter, question, canal. Sépare les FAITS des hypothèses. Remplis toujours les réserves." },
+    { id: 'redaction', name: 'Rédaction (Stratège)', model: 'claude-sonnet-5', temperature: 0.7, ragBlocks: ['messaging_angles', 'offre_produit'], prompt: 'Tu rédiges le message à partir du Dispositif validé. Sortie en variantes principal/directe/douce. Jamais de pitch direct sur un lead froid.' },
+    { id: 'conversational', name: 'Conversationnel', model: 'claude-sonnet-5', temperature: 0.7, ragBlocks: ['pain_points', 'offre_produit', 'qualification'], prompt: 'Tu gères la réponse post-message. Détecte le signal (fort/moyen/faible/no-go), garde-fou HOLD. Ouvre la conversation, ne vends pas.' },
+  ])
+}
+
+export function getKnowledgeBlocks(): Promise<KnowledgeBlock[]> {
+  return delay([
+    { id: 'icp_segments', name: 'ICP Segments', sections: 8, description: 'Profils, JTBD, signaux de la cible tech/startup < 250.', agents: ['Scoring', 'Enrichissement', 'Dossier'] },
+    { id: 'pain_points', name: 'Pain Points', sections: 5, description: 'Douleurs opérationnelles sales/marketing adressées.', agents: ['Dossier', 'Conversationnel'] },
+    { id: 'messaging_angles', name: 'Messaging Angles', sections: 6, description: "Angles d'accroche et formulations validées.", agents: ['Dossier', 'Rédaction'] },
+    { id: 'offre_produit', name: 'Offre produit', sections: 4, description: 'One-pagers Smart.AI, preuves, références.', agents: ['Rédaction', 'Conversationnel'] },
+    { id: 'qualification', name: 'Qualification', sections: 3, description: 'Critères de qualification et disqualification.', agents: ['Scoring', 'Conversationnel'] },
+  ])
+}
+
+export function getUsage(): Promise<UsageSummary> {
+  return delay({
+    calls: 142, tokensIn: 1_620_000, tokensOut: 22_400, cost: 2.1, cached: 67_000,
+    byAgent: [
+      { agent: 'Enrichissement', calls: 62, tokens: 1_146_000, cost: 1.15 },
+      { agent: 'Scoring', calls: 48, tokens: 236_000, cost: 0.32 },
+      { agent: "Dossier d'attaque", calls: 18, tokens: 180_000, cost: 0.44 },
+      { agent: 'Rédaction', calls: 10, tokens: 62_000, cost: 0.15 },
+      { agent: 'Conversationnel', calls: 4, tokens: 18_000, cost: 0.04 },
+    ],
+    byModel: [
+      { model: 'Claude Haiku 4.5', calls: 96, tokens: 472_000, cost: 0.48 },
+      { model: 'Claude Sonnet 5', calls: 32, tokens: 260_000, cost: 0.62 },
+      { model: 'Perplexity sonar-pro', calls: 14, tokens: 910_000, cost: 1.00 },
+    ],
+  })
+}
+
+export function getDiagnostics(): Promise<Diagnostic[]> {
+  return delay([
+    { name: 'Supabase', status: 'ok', detail: 'Connecté (264 ms)' },
+    { name: 'Unipile', status: 'ok', detail: 'Actif · compte LinkedIn lié' },
+    { name: 'LinkedIn', status: 'ok', detail: 'Session valide' },
+    { name: 'Clé Claude (Anthropic)', status: 'ok', detail: 'Présente · chiffrée AES-256' },
+    { name: 'Clé Perplexity', status: 'ok', detail: 'Présente' },
+    { name: 'Clé OpenAI', status: 'warn', detail: 'Présente, non testée' },
+    { name: 'CRON_SECRET', status: 'ok', detail: 'Configuré' },
+  ])
+}
+
+export function getWorkspaces(): Promise<Workspace[]> {
+  return delay([
+    { id: 'w1', name: 'Acme', leads: 388, users: 2, plan: 'Growth' },
+    { id: 'w2', name: 'Fabel', leads: 156, users: 1, plan: 'Starter' },
+    { id: 'w3', name: 'Redsen', leads: 92, users: 3, plan: 'Growth' },
+  ])
 }
 
 export function getVisitors(): Promise<Visitor[]> {
