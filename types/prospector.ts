@@ -113,6 +113,28 @@ export interface LeadDetail {
   interactions: Interaction[]
 }
 
+export interface Message {
+  id: string
+  from: 'them' | 'us'
+  text: string
+  time: string
+}
+
+export interface Conversation {
+  id: string
+  lead: Lead
+  unread: boolean
+  channel: 'linkedin' | 'email'
+  messages: Message[]
+  suggestedReply: string
+}
+
+export interface Visitor {
+  lead: Lead
+  viewedAt: string
+  times: number
+}
+
 export const STAGE_META: Record<Stage, { label: string; color: string }> = {
   to_invite: { label: 'À inviter', color: '#94a3b8' },
   invited: { label: 'Invité', color: '#818cf8' },

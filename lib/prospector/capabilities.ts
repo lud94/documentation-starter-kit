@@ -2,7 +2,7 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota, Stage, LeadDetail } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
 export interface DashboardData {
@@ -174,6 +174,39 @@ function buildDetail(lead: Lead): LeadDetail {
 export function getLeadDetail(id: string): Promise<LeadDetail | undefined> {
   const lead = LEADS[id]
   return delay(lead ? buildDetail(lead) : undefined)
+}
+
+export function getConversations(): Promise<Conversation[]> {
+  const c = (id: string, leadId: string, unread: boolean, messages: Conversation['messages'], suggestedReply: string): Conversation => ({
+    id, lead: LEADS[leadId], unread, channel: 'linkedin', messages, suggestedReply,
+  })
+  return delay([
+    c('c1', 'l7', true, [
+      { id: 'm1', from: 'us', text: 'Sarah, félicitations pour la traction de Lago. Vos équipes sales scalent vite — souvent le moment où l\'ops déraille. On outille cette phase, ça vous parle ?', time: 'lun. 09:12' },
+      { id: 'm2', from: 'them', text: 'Salut ! Oui c\'est un vrai sujet en ce moment. Vous faites quoi exactement ?', time: 'lun. 14:30' },
+    ], 'Bonne question — concrètement on met en place des agents qui qualifient et priorisent vos leads entrants automatiquement, pour que vos commerciaux ne passent que sur les comptes chauds. 15 min cette semaine pour vous montrer un cas concret ?'),
+    c('c2', 'l12', true, [
+      { id: 'm1', from: 'us', text: 'Romain, vous scalez Dust très vite. Comment vous assurez-vous que le suivi commercial ne se dégrade pas ?', time: 'mar. 10:05' },
+      { id: 'm2', from: 'them', text: 'Intéressant. On galère un peu sur le suivi post-démo justement.', time: 'mar. 16:40' },
+    ], 'C\'est exactement là qu\'on intervient. On automatise les relances contextualisées post-démo pour qu\'aucune opportunité ne retombe. Je vous envoie un exemple ou on en parle de vive voix ?'),
+    c('c3', 'l1', false, [
+      { id: 'm1', from: 'us', text: 'Camille, on s\'est connectés la semaine dernière. Vous mentionniez vouloir structurer le suivi post-démo chez Fivory.', time: 'mer. 11:00' },
+    ], 'Je reviens vers vous — j\'ai deux approches concrètes en tête pour Fivory. Un échange de 15 min cette semaine ?'),
+    c('c4', 'l13', false, [
+      { id: 'm1', from: 'us', text: 'Emma, ravi de notre échange. Je vous confirme le créneau de jeudi 14h.', time: 'jeu. 08:20' },
+      { id: 'm2', from: 'them', text: 'Parfait, à jeudi !', time: 'jeu. 09:00' },
+    ], 'Au plaisir Emma — je vous envoie l\'invitation calendrier avec le lien visio.'),
+  ])
+}
+
+export function getVisitors(): Promise<Visitor[]> {
+  const v = (leadId: string, viewedAt: string, times: number): Visitor => ({ lead: LEADS[leadId], viewedAt, times })
+  return delay([
+    v('l4', 'il y a 1 h', 2),
+    v('l5', 'il y a 4 h', 1),
+    v('l9', 'hier', 1),
+    v('l8', 'hier', 3),
+  ])
 }
 
 export function getDashboard(): Promise<DashboardData> {

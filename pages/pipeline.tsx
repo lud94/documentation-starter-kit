@@ -42,6 +42,7 @@ export default function PipelinePage() {
   const [loading, setLoading] = useState(true)
   const [sourcingOpen, setSourcingOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [view, setView] = useState<'kanban' | 'table'>('kanban')
 
   useEffect(() => { getLeads().then((l) => { setLeads(l); setLoading(false) }) }, [])
 
@@ -78,19 +79,82 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      {/* Recherche */}
-      <div className="relative mb-4 max-w-md">
-        <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Rechercher par nom, entreprise, titre…"
-          className="w-full pl-9 pr-4 py-2.5 text-sm rounded-xl bg-white border border-gray-200 focus:outline-none focus:border-indigo-400 transition-all"
-        />
+      {/* Recherche + toggle vue */}
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <div className="relative flex-1 max-w-md">
+          <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Rechercher par nom, entreprise, titre…"
+            className="w-full pl-9 pr-4 py-2.5 text-sm rounded-xl bg-white border border-gray-200 focus:outline-none focus:border-indigo-400 transition-all"
+          />
+        </div>
+        <div className="flex bg-gray-100 rounded-xl p-1">
+          {(['kanban', 'table'] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors capitalize ${view === v ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}
+            >
+              {v === 'kanban' ? 'Kanban' : 'Table'}
+            </button>
+          ))}
+        </div>
       </div>
 
+      {/* Table */}
+      {view === 'table' && (
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-100 text-left">
+                  {['Contact', 'Entreprise', 'Étape', 'Temp.', 'Score'].map((h) => (
+                    <th key={h} className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[...filtered].sort((a, b) => b.score - a.score).map((lead) => {
+                  const sm = STAGE_META[lead.stage]
+                  return (
+                    <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50/60 transition-colors">
+                      <td className="px-4 py-3">
+                        <Link href={`/leads/${lead.id}`} className="flex items-center gap-3">
+                          <span className="w-8 h-8 rounded-lg gradient-brand flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                            {`${lead.firstName[0]}${lead.lastName[0]}`.toUpperCase()}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium text-gray-800 truncate">{lead.firstName} {lead.lastName}</span>
+                            <span className="block text-xs text-gray-400 truncate">{lead.title}</span>
+                          </span>
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-600">{lead.company}</td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs font-medium px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: sm.color }}>{sm.label}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {lead.temperature === 'hot' ? '🔥' : lead.temperature === 'warm' ? '🟠' : '🔵'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="w-7 h-7 rounded-full inline-flex items-center justify-center text-white text-[11px] font-bold" style={{ backgroundColor: scoreColor(lead.score) }}>
+                          {lead.score}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Kanban */}
+      {view === 'kanban' && (
       <div className="overflow-x-auto pb-4 -mx-6 px-6">
         <div className="flex gap-3 min-w-max">
           {STAGE_ORDER.map((stage) => {
@@ -114,6 +178,7 @@ export default function PipelinePage() {
           })}
         </div>
       </div>
+      )}
 
       {/* Modal sourcing (placeholder — flux à concevoir) */}
       {sourcingOpen && (
