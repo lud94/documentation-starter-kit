@@ -26,10 +26,42 @@ function Kpi({ label, value, sub, onClick }: { label: string; value: string; sub
 }
 
 const PERIODS: { key: Period; label: string }[] = [
-  { key: 'week', label: 'Cette semaine' },
-  { key: 'month', label: 'Ce mois' },
+  { key: 'week', label: 'Semaine' },
+  { key: 'month', label: 'Mois' },
   { key: 'quarter', label: 'Trimestre' },
+  { key: 'year', label: 'Année' },
 ]
+
+const PERIOD_LABEL: Record<Period, string> = {
+  week: 'cette semaine', month: 'ce mois', quarter: 'ce trimestre', year: 'cette année',
+}
+
+function exportCsv(data: DashboardData) {
+  const rows: (string | number)[][] = [
+    ['Rapport Prospector', PERIOD_LABEL[data.period]],
+    [],
+    ['Métrique', 'Valeur'],
+    ['Invitations envoyées', data.kpis.invitationsSent],
+    ["Taux d'acceptation (%)", data.kpis.acceptanceRate],
+    ['Réponses reçues', data.kpis.replies],
+    ['RDV planifiés', data.kpis.meetings],
+    ['Coût IA ($)', data.kpis.iaCostWeek],
+    [],
+    ['Pipeline par étape', ''],
+    ...data.funnel.map((f) => [f.stage, f.count] as (string | number)[]),
+    [],
+    ['Activité récente', ''],
+    ...data.activity.map((a) => [a.text, a.when] as (string | number)[]),
+  ]
+  const csv = '﻿' + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `prospector-rapport-${data.period}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 const DRILL_LABEL: Record<string, string> = {
   invitations: 'Invitations envoyées',
@@ -56,12 +88,18 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold text-gray-900">Tableau de bord</h1>
           <p className="text-gray-400 text-sm mt-0.5">Vue d'ensemble de votre prospection et de vos campagnes.</p>
         </div>
-        <div className="flex bg-gray-100 rounded-xl p-1">
-          {PERIODS.map((p) => (
-            <button key={p.key} onClick={() => setPeriod(p.key)} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${period === p.key ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>
-              {p.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2">
+          <div className="flex bg-gray-100 rounded-xl p-1">
+            {PERIODS.map((p) => (
+              <button key={p.key} onClick={() => setPeriod(p.key)} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${period === p.key ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => data && exportCsv(data)} disabled={!data} className="text-sm font-medium text-gray-600 bg-white border border-gray-200 px-3 py-2 rounded-xl hover:bg-gray-50 transition-colors flex items-center gap-2 disabled:opacity-50">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M4 4h16v16H4z" /></svg>
+            Exporter
+          </button>
         </div>
       </div>
 

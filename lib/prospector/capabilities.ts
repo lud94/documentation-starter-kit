@@ -2,10 +2,10 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
-export type Period = 'week' | 'month' | 'quarter'
+export type Period = 'week' | 'month' | 'quarter' | 'year'
 
 export interface DetailItem {
   id: string
@@ -311,6 +311,32 @@ export function getDiagnostics(): Promise<Diagnostic[]> {
   ])
 }
 
+export function getSourcing(): Promise<SourcingData> {
+  return delay({
+    totalSourced: 214,
+    qualificationRate: 32,
+    bySector: [
+      { sector: 'SaaS B2B', count: 88 },
+      { sector: 'Fintech', count: 52 },
+      { sector: 'IA / ML', count: 41 },
+      { sector: 'MarTech', count: 20 },
+      { sector: 'Cybersécurité', count: 13 },
+    ],
+    runs: [
+      { id: 'r1', label: 'SaaS · Paris · série A', found: 62, qualified: 21, when: 'il y a 2 j' },
+      { id: 'r2', label: 'Fintech · France · recrute sales', found: 44, qualified: 12, when: 'il y a 5 j' },
+      { id: 'r3', label: 'IA/ML · Europe · < 50', found: 38, qualified: 9, when: 'la semaine dernière' },
+    ],
+    incoming: [
+      { id: 'sl1', name: 'Marie Dupuis', title: 'Head of Sales', company: 'Cardo', sector: 'SaaS B2B', score: 84, signals: ['Levée série A', 'Recrute 3 sales'] },
+      { id: 'sl2', name: 'Paul Girard', title: 'CEO', company: 'Flowly', sector: 'MarTech', score: 78, signals: ['Croissance effectif +40%'] },
+      { id: 'sl3', name: 'Sofia Navarro', title: 'VP Marketing', company: 'Beacon', sector: 'Fintech', score: 71, signals: ['Nouveau VP Marketing', 'Stack HubSpot'] },
+      { id: 'sl4', name: 'Yanis Cohen', title: 'Founder', company: 'Vecto', sector: 'IA / ML', score: 88, signals: ['Levée seed', 'Recrute growth'] },
+      { id: 'sl5', name: 'Claire Meunier', title: 'Chief Revenue Officer', company: 'Nomia', sector: 'SaaS B2B', score: 66, signals: ['Ouverture bureau Paris'] },
+    ],
+  })
+}
+
 export function getWorkspaces(): Promise<Workspace[]> {
   return delay([
     { id: 'w1', name: 'Acme', leads: 388, users: 2, plan: 'Growth' },
@@ -331,13 +357,13 @@ export function getVisitors(): Promise<Visitor[]> {
 
 export function getDashboard(period: Period = 'week'): Promise<DashboardData> {
   const pendingActions = ACTIONS.filter((a) => a.status === 'pending').length
-  const f = period === 'week' ? 1 : period === 'month' ? 4 : 12
+  const f = period === 'week' ? 1 : period === 'month' ? 4 : period === 'quarter' ? 12 : 52
   return delay({
     period,
     pendingActions,
     kpis: {
       invitationsSent: 34 * f,
-      acceptanceRate: period === 'week' ? 41 : period === 'month' ? 38 : 40,
+      acceptanceRate: period === 'week' ? 41 : period === 'month' ? 38 : period === 'quarter' ? 40 : 39,
       replies: 12 * f,
       meetings: 4 * f,
       iaCostWeek: Math.round(2.1 * f * 100) / 100,

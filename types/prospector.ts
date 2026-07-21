@@ -113,6 +113,32 @@ export interface LeadDetail {
   interactions: Interaction[]
 }
 
+export interface SourcedLead {
+  id: string
+  name: string
+  title: string
+  company: string
+  sector: string
+  score: number
+  signals: string[]
+}
+
+export interface SourcingRun {
+  id: string
+  label: string
+  found: number
+  qualified: number
+  when: string
+}
+
+export interface SourcingData {
+  totalSourced: number
+  qualificationRate: number // %
+  bySector: { sector: string; count: number }[]
+  runs: SourcingRun[]
+  incoming: SourcedLead[]
+}
+
 export interface QualityProposal {
   actionId: string
   leadName: string

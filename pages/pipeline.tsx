@@ -40,7 +40,6 @@ function LeadCard({ lead }: { lead: Lead }) {
 export default function PipelinePage() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
-  const [sourcingOpen, setSourcingOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [view, setView] = useState<'kanban' | 'table'>('kanban')
 
@@ -69,13 +68,13 @@ export default function PipelinePage() {
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
             Enrichir tout
           </button>
-          <button
-            onClick={() => setSourcingOpen(true)}
+          <Link
+            href="/sourcing"
             className="gradient-brand text-white text-sm font-semibold px-4 py-2.5 rounded-xl hover:opacity-90 transition-opacity flex items-center gap-2"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
             Sourcer des leads
-          </button>
+          </Link>
         </div>
       </div>
 
@@ -178,33 +177,6 @@ export default function PipelinePage() {
           })}
         </div>
       </div>
-      )}
-
-      {/* Modal sourcing (placeholder — flux à concevoir) */}
-      {sourcingOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-gray-900/30 backdrop-blur-sm" onClick={() => setSourcingOpen(false)} />
-          <div className="relative card p-6 max-w-md w-full">
-            <div className="w-12 h-12 rounded-2xl icon-bg-blue flex items-center justify-center mb-4">
-              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-            </div>
-            <h2 className="text-lg font-bold text-gray-900 mb-1">Sourcing de leads</h2>
-            <p className="text-sm text-gray-500 mb-4">
-              Le flux de sourcing (DataGoov + gate de signaux sur ton ICP tech/startup &lt; 250 salariés) est la prochaine brique qu'on conçoit ensemble. Ce n'est plus une recherche par mots-clés : c'est une extraction filtrée par signaux d'achat.
-            </p>
-            <div className="bg-gray-50 rounded-xl p-3 mb-4 text-xs text-gray-500 space-y-1">
-              <p><span className="font-semibold text-gray-700">Cible :</span> tech / startups, &lt; 250 salariés</p>
-              <p><span className="font-semibold text-gray-700">Persona :</span> sales / marketing / founders</p>
-              <p><span className="font-semibold text-gray-700">Gate :</span> filtre signal avant enrichissement (économie tokens)</p>
-            </div>
-            <button
-              onClick={() => setSourcingOpen(false)}
-              className="w-full gradient-brand text-white text-sm font-semibold py-2.5 rounded-xl hover:opacity-90 transition-opacity"
-            >
-              Compris
-            </button>
-          </div>
-        </div>
       )}
     </>
   )
