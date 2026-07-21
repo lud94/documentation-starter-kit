@@ -2,7 +2,7 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota, Stage } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage, LeadDetail } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
 export interface DashboardData {
@@ -92,6 +92,88 @@ export function getLead(id: string): Lead | undefined {
 
 export function getLeads(): Promise<Lead[]> {
   return delay(Object.values(LEADS))
+}
+
+const SECTORS = ['SaaS B2B', 'Fintech', 'IA / ML', 'Cybersécurité', 'MarTech']
+const BAND: Record<Lead['temperature'], 'HOT' | 'WARM' | 'COLD'> = { hot: 'HOT', warm: 'WARM', cold: 'COLD' }
+
+function buildDetail(lead: Lead): LeadDetail {
+  const seed = lead.id.charCodeAt(1) || 0
+  const sector = SECTORS[seed % SECTORS.length]
+  const fit = Math.min(40, Math.round(lead.score * 0.45))
+  const intent = Math.min(40, Math.round(lead.score * 0.35))
+  const timing = Math.max(0, Math.min(20, lead.score - fit - intent))
+
+  return {
+    lead,
+    headline: `${lead.title} · ${lead.company}`,
+    connectionDegree: seed % 2 === 0 ? '2e degré' : '1er degré',
+    premium: lead.score > 75,
+    openProfile: seed % 3 === 0,
+    linkedinUrl: `linkedin.com/in/${lead.firstName.toLowerCase()}-${lead.lastName.toLowerCase()}`,
+    scoring: {
+      fit,
+      intent,
+      timing,
+      segment: lead.temperature === 'hot' ? 'D1' : 'D2',
+      band: BAND[lead.temperature],
+      confidence: lead.score > 80 ? 'high' : lead.score > 65 ? 'medium' : 'low',
+      edgeCase: lead.score >= 68 && lead.score <= 74,
+      rationale: `Offre d'emploi ${sector === 'IA / ML' ? 'ML Engineer' : 'growth/sales'} publiée il y a moins de 7 jours chez ${lead.company} — confirme une phase de croissance active et une fenêtre d'opportunité immédiate.`,
+      aiAdjustment: lead.temperature === 'hot' ? 5 : 0,
+    },
+    company: {
+      name: lead.company,
+      size: lead.score > 70 ? '51-200' : '11-50',
+      location: 'Paris, France',
+      website: `www.${lead.company.toLowerCase().replace(/\s/g, '')}.com`,
+      sector,
+      funding: lead.score > 82 ? 'Série A · 12 M€' : 'N/A',
+      description: `${lead.company} construit une solution ${sector} pour les équipes tech. Croissance rapide de l'effectif commercial et marketing sur les 12 derniers mois.`,
+    },
+    dossier: {
+      status: lead.score > 78 ? 'solide' : 'moyen',
+      ageLabel: 'il y a 3 j',
+      mecanisme: 'Mécanisme 2 — Signal récent vérifié',
+      accrochePivot: `Vous scalez vos équipes ${sector === 'MarTech' ? 'marketing' : 'sales'} chez ${lead.company} — pendant ce temps, qui structure le suivi pour que rien ne tombe entre les mailles ?`,
+      pourquoiMaintenant: `Recrutement commercial/growth publié récemment — signal 🔥 FRAIS (< 30 jours). Indique une phase de croissance et une charge opérationnelle accrue sur ${lead.firstName}.`,
+      preuves: [
+        `FAIT — Offre d'emploi publiée récemment (source Unipile)`,
+        `FAIT — Effectif ${lead.score > 70 ? '51-200' : '11-50'} en croissance (source Pappers)`,
+        `FAIT — ${lead.title} identifié comme décideur (source LinkedIn)`,
+      ],
+      aIntegrer: [
+        `Le signal de recrutement comme point d'entrée concret et daté`,
+        `La double charge croissance + structuration qui pèse sur ${lead.firstName} — nommer sans dramatiser`,
+      ],
+      aEviter: [
+        `Flatter une réalisation publique (levée, prix) sans qu'il en ait parlé`,
+        `Mentionner des outils concurrents sans qu'il les ait cités`,
+        `Promettre un ROI chiffré sans connaître ses métriques réelles`,
+      ],
+      questionAPoser: `Quand vos équipes ${sector === 'MarTech' ? 'marketing' : 'sales'} grossissent aussi vite, comment vous assurez-vous aujourd'hui que le suivi ne se dégrade pas ?`,
+      objectifReponse: `Obtenir une réponse sur leur process actuel — ouvrir une conversation, pas vendre.`,
+      canalRecommande: 'linkedin_message',
+      canalRationale: `Profil LinkedIn actif. LinkedIn est le canal naturel d'un ${lead.title.toLowerCase()} qui publie et recrute. Invitation d'abord si non connecté.`,
+      reserves: [
+        lead.temperature !== 'hot' ? `Segment D1 vs D2 non confirmé — dépend de la présence d'une équipe dédiée.` : `Nom du décideur secondaire non disponible.`,
+        `Effectif non recoupé Pappers/Unipile — cohérence acceptable, pas d'écart bloquant.`,
+        `L'angle suppose ${lead.firstName} impliqué dans l'opérationnel commercial — hypothèse raisonnée, non confirmée.`,
+      ],
+    },
+    notes: '',
+    interactions: lead.stage === 'to_invite' || lead.stage === 'invited'
+      ? []
+      : [
+          { id: 'i1', date: 'il y a 2 j', kind: 'invitation', text: 'Invitation acceptée' },
+          { id: 'i2', date: 'il y a 1 j', kind: 'message', text: 'Premier message envoyé' },
+        ],
+  }
+}
+
+export function getLeadDetail(id: string): Promise<LeadDetail | undefined> {
+  const lead = LEADS[id]
+  return delay(lead ? buildDetail(lead) : undefined)
 }
 
 export function getDashboard(): Promise<DashboardData> {

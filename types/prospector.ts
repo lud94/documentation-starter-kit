@@ -54,6 +54,65 @@ export interface Quota {
   max: number
 }
 
+export interface ScoringBreakdown {
+  fit: number
+  intent: number
+  timing: number
+  segment: string
+  band: 'HOT' | 'WARM' | 'COLD'
+  confidence: 'high' | 'medium' | 'low'
+  edgeCase: boolean
+  rationale: string
+  aiAdjustment: number
+}
+
+export interface CompanyInfo {
+  name: string
+  size: string
+  location: string
+  website: string
+  sector: string
+  funding: string
+  description: string
+}
+
+export interface Dossier {
+  status: 'solide' | 'moyen' | 'faible'
+  ageLabel: string
+  mecanisme: string
+  accrochePivot: string
+  pourquoiMaintenant: string
+  preuves: string[]
+  aIntegrer: string[]
+  aEviter: string[]
+  questionAPoser: string
+  objectifReponse: string
+  canalRecommande: string
+  canalRationale: string
+  reserves: string[]
+}
+
+export interface Interaction {
+  id: string
+  date: string
+  kind: string
+  text: string
+}
+
+export interface LeadDetail {
+  lead: Lead
+  headline: string
+  connectionDegree: string
+  premium: boolean
+  openProfile: boolean
+  linkedinUrl: string
+  scoring: ScoringBreakdown
+  company: CompanyInfo
+  dossier: Dossier
+  notes: string
+  interactions: Interaction[]
+}
+
 export const STAGE_META: Record<Stage, { label: string; color: string }> = {
   to_invite: { label: 'À inviter', color: '#94a3b8' },
   invited: { label: 'Invité', color: '#818cf8' },

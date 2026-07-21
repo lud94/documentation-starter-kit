@@ -28,6 +28,7 @@ const NAV: NavItem[] = [
 
 const CREATE_MENU = [
   { label: 'Sourcer des leads', desc: 'DataGoov + gate signal', path: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z' },
+  { label: 'Ajouter depuis LinkedIn', desc: 'URL de profil → Unipile', path: 'M16 8a6 6 0 016 6v7h-4v-7a2 2 0 00-2-2 2 2 0 00-2 2v7h-4v-7a6 6 0 016-6zM2 9h4v12H2z' },
   { label: 'Ajouter un lead', desc: 'Saisie manuelle', path: 'M18 9v6m3-3h-6M13 7a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3z' },
   { label: 'Importer un CSV', desc: 'Liste existante', path: 'M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z' },
 ]
