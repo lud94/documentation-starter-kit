@@ -58,6 +58,8 @@ export default function LeadDetailPage() {
   const [enrolledMsg, setEnrolledMsg] = useState<string | null>(null)
   const [newTag, setNewTag] = useState('')
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [handoffOpen, setHandoffOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const reload = () => { if (typeof id === 'string') getLeadDetail(id).then(setD) }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
@@ -138,6 +140,10 @@ export default function LeadDetailPage() {
             Envoyer un message
           </button>
           <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">LinkedIn</button>
+          <button onClick={() => setHandoffOpen(true)} className="text-sm font-medium text-violet-600 bg-violet-50 px-3 py-2 rounded-xl hover:bg-violet-100 transition-colors flex items-center gap-1.5">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
+            Ouvrir dans Prospector Lab
+          </button>
           {/* Ajouter à séquence */}
           <div className="relative">
             <button onClick={() => setSeqOpen((v) => !v)} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors flex items-center gap-1.5">
@@ -407,6 +413,53 @@ export default function LeadDetailPage() {
       </div>
 
       {redactionOpen && <RedactionModal detail={d} onClose={() => setRedactionOpen(false)} />}
+
+      {handoffOpen && (() => {
+        const dispositif = `# DISPOSITIF DE RÉDACTION — ${lead.company} / ${lead.firstName} ${lead.lastName}
+
+## Destinataire
+- Nom + titre : ${lead.firstName} ${lead.lastName}, ${lead.title} ${lead.company}
+- LinkedIn URL : https://${d.linkedinUrl}
+- Profil de lecture : ${dossier.canalRationale}
+
+## Angle du message
+- **Mécanisme rhétorique** : ${dossier.mecanisme}
+- **Accroche pivot** (15-25 mots MAX) : ${dossier.accrochePivot}
+- **Signal déclencheur** : ${dossier.pourquoiMaintenant}
+
+## Preuves vérifiables
+${dossier.preuves.map((p) => `- ${p}`).join('\n')}
+
+## À éviter
+${dossier.aEviter.map((p) => `- ${p}`).join('\n')}
+`
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setHandoffOpen(false)} />
+            <div className="relative card w-full max-w-2xl max-h-[88vh] overflow-hidden flex flex-col">
+              <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-bold text-gray-900">Handoff vers Prospector Lab</h2>
+                  <p className="text-xs text-gray-400">Le Dossier d'attaque converti en Dispositif V7.2 — à coller dans le Lab pour le craft du message.</p>
+                </div>
+                <button onClick={() => setHandoffOpen(false)} className="text-gray-400 hover:text-gray-700"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+              </div>
+              <div className="p-5 overflow-y-auto">
+                <pre className="text-xs text-gray-600 bg-gray-50 border border-gray-100 rounded-xl p-4 whitespace-pre-wrap leading-relaxed font-mono">{dispositif}</pre>
+              </div>
+              <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
+                <button onClick={() => { navigator.clipboard?.writeText(dispositif); setCopied(true); setTimeout(() => setCopied(false), 1500) }} className="text-sm font-medium text-gray-600 bg-gray-50 px-4 py-2 rounded-xl hover:bg-gray-100 transition-colors">
+                  {copied ? '✓ Copié' : 'Copier le Dispositif'}
+                </button>
+                <a href="https://claude.ai/public/artifacts/df4372aa-c12e-44c8-a8bb-e4341814d718" target="_blank" rel="noreferrer" className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity flex items-center gap-2">
+                  Ouvrir Prospector Lab
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                </a>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {deleteOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
