@@ -41,21 +41,23 @@ export interface DashboardData {
   }[]
 }
 
+function email(f: string, l: string, c: string) { return `${f}.${l}@${c.toLowerCase().replace(/[^a-z0-9]/g, '')}.com` }
+
 const LEADS: Record<string, Lead> = {
-  l1: { id: 'l1', firstName: 'Camille', lastName: 'Roux', title: 'VP Sales', company: 'Fivory', score: 82, temperature: 'hot', stage: 'connected' },
-  l2: { id: 'l2', firstName: 'Thomas', lastName: 'Lefèvre', title: 'Head of Growth', company: 'Nudge', score: 74, temperature: 'warm', stage: 'connected' },
-  l3: { id: 'l3', firstName: 'Inès', lastName: 'Bernard', title: 'CMO', company: 'Payflow', score: 68, temperature: 'warm', stage: 'in_sequence' },
-  l4: { id: 'l4', firstName: 'Hugo', lastName: 'Martin', title: 'CEO & Co-founder', company: 'Kairos AI', score: 91, temperature: 'hot', stage: 'to_invite' },
-  l5: { id: 'l5', firstName: 'Léa', lastName: 'Dubois', title: 'Head of Sales Ops', company: 'Swan', score: 59, temperature: 'warm', stage: 'to_invite' },
-  l6: { id: 'l6', firstName: 'Antoine', lastName: 'Girard', title: 'Directeur Commercial', company: 'Spendesk', score: 71, temperature: 'warm', stage: 'in_sequence' },
-  l7: { id: 'l7', firstName: 'Sarah', lastName: 'Moreau', title: 'Founder', company: 'Lago', score: 88, temperature: 'hot', stage: 'connected' },
-  l8: { id: 'l8', firstName: 'Maxime', lastName: 'Petit', title: 'Head of Marketing', company: 'Qonto', score: 63, temperature: 'warm', stage: 'to_invite' },
-  l9: { id: 'l9', firstName: 'Julie', lastName: 'Fontaine', title: 'VP Marketing', company: 'Pennylane', score: 66, temperature: 'warm', stage: 'invited' },
-  l10: { id: 'l10', firstName: 'Nicolas', lastName: 'Laurent', title: 'Chief Revenue Officer', company: 'Alan', score: 79, temperature: 'hot', stage: 'invited' },
-  l11: { id: 'l11', firstName: 'Chloé', lastName: 'Garnier', title: 'Head of Sales', company: 'Ledger', score: 72, temperature: 'warm', stage: 'responded' },
-  l12: { id: 'l12', firstName: 'Romain', lastName: 'Faure', title: 'CEO', company: 'Dust', score: 85, temperature: 'hot', stage: 'responded' },
-  l13: { id: 'l13', firstName: 'Emma', lastName: 'Rousseau', title: 'Founder & CEO', company: 'Photoroom', score: 90, temperature: 'hot', stage: 'meeting' },
-  l14: { id: 'l14', firstName: 'Lucas', lastName: 'Mercier', title: 'Head of Growth', company: 'Aircall', score: 77, temperature: 'hot', stage: 'closed' },
+  l1: { id: 'l1', firstName: 'Camille', lastName: 'Roux', title: 'VP Sales', company: 'Fivory', score: 82, temperature: 'hot', status: 'chaud', stage: 'connected', email: email('camille', 'roux', 'Fivory'), phone: '+33 6 12 34 56 78' },
+  l2: { id: 'l2', firstName: 'Thomas', lastName: 'Lefèvre', title: 'Head of Growth', company: 'Nudge', score: 74, temperature: 'warm', status: 'tiede', stage: 'connected', email: email('thomas', 'lefevre', 'Nudge'), phone: null },
+  l3: { id: 'l3', firstName: 'Inès', lastName: 'Bernard', title: 'CMO', company: 'Payflow', score: 68, temperature: 'warm', status: 'tiede', stage: 'in_sequence', email: email('ines', 'bernard', 'Payflow'), phone: null },
+  l4: { id: 'l4', firstName: 'Hugo', lastName: 'Martin', title: 'CEO & Co-founder', company: 'Kairos AI', score: 91, temperature: 'hot', status: 'chaud', stage: 'to_invite', email: null, phone: null },
+  l5: { id: 'l5', firstName: 'Léa', lastName: 'Dubois', title: 'Head of Sales Ops', company: 'Swan', score: 59, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null },
+  l6: { id: 'l6', firstName: 'Antoine', lastName: 'Girard', title: 'Directeur Commercial', company: 'Spendesk', score: 71, temperature: 'warm', status: 'tiede', stage: 'in_sequence', email: email('antoine', 'girard', 'Spendesk'), phone: null },
+  l7: { id: 'l7', firstName: 'Sarah', lastName: 'Moreau', title: 'Founder', company: 'Lago', score: 88, temperature: 'hot', status: 'chaud', stage: 'connected', email: email('sarah', 'moreau', 'Lago'), phone: '+33 6 98 76 54 32' },
+  l8: { id: 'l8', firstName: 'Maxime', lastName: 'Petit', title: 'Head of Marketing', company: 'Qonto', score: 63, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null },
+  l9: { id: 'l9', firstName: 'Julie', lastName: 'Fontaine', title: 'VP Marketing', company: 'Pennylane', score: 66, temperature: 'warm', status: 'tiede', stage: 'invited', email: email('julie', 'fontaine', 'Pennylane'), phone: null },
+  l10: { id: 'l10', firstName: 'Nicolas', lastName: 'Laurent', title: 'Chief Revenue Officer', company: 'Alan', score: 79, temperature: 'hot', status: 'chaud', stage: 'invited', email: email('nicolas', 'laurent', 'Alan'), phone: null },
+  l11: { id: 'l11', firstName: 'Chloé', lastName: 'Garnier', title: 'Head of Sales', company: 'Ledger', score: 72, temperature: 'warm', status: 'tiede', stage: 'responded', email: email('chloe', 'garnier', 'Ledger'), phone: '+33 6 45 67 89 01' },
+  l12: { id: 'l12', firstName: 'Romain', lastName: 'Faure', title: 'CEO', company: 'Dust', score: 85, temperature: 'hot', status: 'chaud', stage: 'responded', email: email('romain', 'faure', 'Dust'), phone: null },
+  l13: { id: 'l13', firstName: 'Emma', lastName: 'Rousseau', title: 'Founder & CEO', company: 'Photoroom', score: 90, temperature: 'hot', status: 'chaud', stage: 'meeting', email: email('emma', 'rousseau', 'Photoroom'), phone: '+33 6 23 45 67 89' },
+  l14: { id: 'l14', firstName: 'Lucas', lastName: 'Mercier', title: 'Head of Growth', company: 'Aircall', score: 77, temperature: 'hot', status: 'converti', stage: 'closed', email: email('lucas', 'mercier', 'Aircall'), phone: '+33 6 34 56 78 90' },
 }
 
 let ACTIONS: Action[] = [
@@ -109,6 +111,28 @@ export function getLead(id: string): Lead | undefined {
 
 export function getLeads(): Promise<Lead[]> {
   return delay(Object.values(LEADS))
+}
+
+// Enrichissement (mock — au câblage : Kaspr pour email/tél).
+export function enrichEmails(ids?: string[]) {
+  const targets = ids ? ids.map((i) => LEADS[i]).filter(Boolean) : Object.values(LEADS)
+  targets.forEach((l) => { if (!l.email) l.email = email(l.firstName.toLowerCase(), l.lastName.toLowerCase(), l.company) })
+  return delay(Object.values(LEADS))
+}
+
+export function enrichAll(ids?: string[]) {
+  const targets = ids ? ids.map((i) => LEADS[i]).filter(Boolean) : Object.values(LEADS)
+  targets.forEach((l) => {
+    if (!l.email) l.email = email(l.firstName.toLowerCase(), l.lastName.toLowerCase(), l.company)
+    if (!l.phone) l.phone = '+33 6 00 00 00 00'
+  })
+  return delay(Object.values(LEADS))
+}
+
+export function setLeadStatus(id: string, status: Lead['status']) {
+  const l = LEADS[id]
+  if (l) l.status = status
+  return delay(l)
 }
 
 const SECTORS = ['SaaS B2B', 'Fintech', 'IA / ML', 'Cybersécurité', 'MarTech']

@@ -27,6 +27,16 @@ export type Stage =
   | 'meeting'
   | 'closed'
 
+export type LeadStatus = 'chaud' | 'tiede' | 'froid' | 'converti' | 'perdu'
+
+export const STATUS_META: Record<LeadStatus, { label: string; color: string; bg: string }> = {
+  chaud: { label: 'Chaud', color: '#dc2626', bg: 'bg-red-50 text-red-600' },
+  tiede: { label: 'Tiède', color: '#d97706', bg: 'bg-amber-50 text-amber-600' },
+  froid: { label: 'Froid', color: '#64748b', bg: 'bg-slate-100 text-slate-500' },
+  converti: { label: 'Converti', color: '#059669', bg: 'bg-emerald-50 text-emerald-600' },
+  perdu: { label: 'Perdu', color: '#9ca3af', bg: 'bg-gray-100 text-gray-400' },
+}
+
 export interface Lead {
   id: string
   firstName: string
@@ -35,7 +45,10 @@ export interface Lead {
   company: string
   score: number // 0-100
   temperature: Temperature
+  status: LeadStatus
   stage: Stage
+  email: string | null
+  phone: string | null
 }
 
 export interface Action {
