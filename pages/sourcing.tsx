@@ -9,6 +9,7 @@ const INDUSTRIES = [
   'Media', 'Energy', 'Consulting', 'SaaS B2B', 'Fintech', 'IA / ML', 'Cybersécurité',
 ]
 const SIZES = ['1-10', '11-20', '21-50', '51-100', '101-250', '251-500', '501-1000', '1000+']
+const COMPANY_TYPES = ['Tous types', 'Éditeur SaaS', 'ESN / conseil IT', 'Cabinet de conseil', 'Agence', 'Startup', 'Scale-up', 'Grand groupe', 'PME']
 const SENIORITY = ['Tous', 'Founder', 'C-level', 'VP', 'Director', 'Manager']
 const REVENUES = ['Aucun minimum', '500K', '1M', '5M', '10M', '50M', '100M']
 
@@ -68,6 +69,7 @@ export default function SourcingPage() {
   const [pickedSignals, setPickedSignals] = useState<Set<string>>(new Set())
   const [running, setRunning] = useState(false)
   const [lastRun, setLastRun] = useState<string | null>(null)
+  const [drill, setDrill] = useState<{ title: string; items: SourcedLead[] } | null>(null)
 
   useEffect(() => { getSourcing(period).then((d) => { setData(d); setIncoming(d.incoming) }) }, [period])
 
@@ -98,11 +100,30 @@ export default function SourcingPage() {
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats — cliquables */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
-        <div className="card p-5"><p className="text-xs font-semibold text-gray-400 mb-1">Leads sourcés</p><p className="text-2xl font-bold gradient-text">{data ? data.totalSourced : '—'}</p></div>
-        <div className="card p-5"><p className="text-xs font-semibold text-gray-400 mb-1">Taux de qualification</p><p className="text-2xl font-bold gradient-text">{data ? `${data.qualificationRate}%` : '—'}</p><p className="text-xs text-gray-400 mt-0.5">passent le gate signal</p></div>
-        <div className="card p-5"><p className="text-xs font-semibold text-gray-400 mb-1">À trier</p><p className="text-2xl font-bold gradient-text">{incoming.length}</p></div>
+        {[
+          { key: 'sourced', label: 'Leads sourcés', value: data ? String(data.totalSourced) : '—', sub: 'échantillon récent' },
+          { key: 'qualif', label: 'Taux de qualification', value: data ? `${data.qualificationRate}%` : '—', sub: 'passent le gate signal' },
+          { key: 'triage', label: 'À trier', value: String(incoming.length), sub: 'en attente' },
+        ].map((k) => (
+          <button
+            key={k.key}
+            onClick={() => data && setDrill({
+              title: k.key === 'qualif' ? 'Leads qualifiés par le gate' : k.key === 'triage' ? 'Leads à trier' : 'Leads sourcés (échantillon)',
+              items: incoming,
+            })}
+            disabled={!data}
+            className="card p-5 text-left transition-all enabled:hover:shadow-md enabled:hover:border-indigo-100 group"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs font-semibold text-gray-400">{k.label}</p>
+              <svg className="w-3.5 h-3.5 text-gray-300 group-hover:text-indigo-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+            </div>
+            <p className="text-2xl font-bold gradient-text">{k.value}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{k.sub}</p>
+          </button>
+        ))}
       </div>
 
       {/* Onglets */}
@@ -130,10 +151,14 @@ export default function SourcingPage() {
               <select className={inputClass}>{SENIORITY.map((s) => <option key={s}>{s}</option>)}</select>
             </div>
             <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Type d'entreprise</label>
+              <select className={inputClass}>{COMPANY_TYPES.map((t) => <option key={t}>{t}</option>)}</select>
+            </div>
+            <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Taille de l'entreprise</label>
               <select className={inputClass}><option>Toutes tailles</option>{SIZES.map((s) => <option key={s}>{s} employés</option>)}</select>
             </div>
-            <div className="md:col-span-2">
+            <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Revenue annuel minimum</label>
               <select className={inputClass}>{REVENUES.map((r) => <option key={r}>{r}</option>)}</select>
             </div>
@@ -218,6 +243,33 @@ export default function SourcingPage() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Drill-down KPI */}
+      {drill && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setDrill(null)} />
+          <div className="relative card w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <h2 className="text-base font-bold text-gray-900">{drill.title}</h2>
+              <button onClick={() => setDrill(null)} className="text-gray-400 hover:text-gray-700"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+            </div>
+            <div className="p-3 overflow-y-auto space-y-1">
+              {drill.items.map((l) => (
+                <div key={l.id} className="flex items-center gap-3 px-2 py-2.5 rounded-xl hover:bg-gray-50 transition-colors">
+                  <span className="w-8 h-8 rounded-full text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0" style={{ backgroundColor: scoreColor(l.score) }}>{l.score}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-800 truncate">{l.name} <span className="text-gray-400 font-normal">· {l.title}</span></p>
+                    <p className="text-xs text-gray-400 truncate">{l.company} · {l.sector}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-1 justify-end max-w-[45%]">
+                    {l.signals.map((s) => <span key={s} className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-500">{s}</span>)}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
