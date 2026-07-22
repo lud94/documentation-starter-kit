@@ -311,9 +311,10 @@ export function getDiagnostics(): Promise<Diagnostic[]> {
   ])
 }
 
-export function getSourcing(): Promise<SourcingData> {
+export function getSourcing(period: Period = 'month'): Promise<SourcingData> {
+  const f = period === 'week' ? 0.25 : period === 'month' ? 1 : period === 'quarter' ? 3 : 12
   return delay({
-    totalSourced: 214,
+    totalSourced: Math.round(214 * f),
     qualificationRate: 32,
     bySector: [
       { sector: 'SaaS B2B', count: 88 },

@@ -139,6 +139,12 @@ export interface SourcingData {
   incoming: SourcedLead[]
 }
 
+export interface SignalSource {
+  label: string
+  source: string
+  feasibility: 'facile' | 'moyen' | 'difficile'
+}
+
 export interface QualityProposal {
   actionId: string
   leadName: string
