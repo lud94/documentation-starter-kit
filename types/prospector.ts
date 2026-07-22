@@ -92,6 +92,8 @@ export interface CompanyInfo {
 export interface Dossier {
   status: 'solide' | 'moyen' | 'faible'
   ageLabel: string
+  ageDays: number
+  stale: boolean
   mecanisme: string
   accrochePivot: string
   pourquoiMaintenant: string
@@ -122,6 +124,8 @@ export interface LeadDetail {
   scoring: ScoringBreakdown
   company: CompanyInfo
   dossier: Dossier
+  tags: string[]
+  nextAction: { label: string; when: string } | null
   notes: string
   interactions: Interaction[]
 }

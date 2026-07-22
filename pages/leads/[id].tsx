@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
 const STATUS_ORDER: LeadStatus[] = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
@@ -56,6 +56,8 @@ export default function LeadDetailPage() {
   const [sequences, setSequences] = useState<Sequence[]>([])
   const [seqOpen, setSeqOpen] = useState(false)
   const [enrolledMsg, setEnrolledMsg] = useState<string | null>(null)
+  const [newTag, setNewTag] = useState('')
+  const [deleteOpen, setDeleteOpen] = useState(false)
 
   const reload = () => { if (typeof id === 'string') getLeadDetail(id).then(setD) }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
@@ -69,6 +71,9 @@ export default function LeadDetailPage() {
     if (typeof id === 'string') { await enrollInSequence(id); reload() }
     setSeqOpen(false); setEnrolledMsg(`Ajouté à « ${seq.name} »`)
   }
+  const addTag = async () => { if (typeof id === 'string' && newTag.trim()) { await addLeadTag(id, newTag); setNewTag(''); reload() } }
+  const removeTag = async (t: string) => { if (typeof id === 'string') { await removeLeadTag(id, t); reload() } }
+  const refreshDoss = async () => { if (typeof id === 'string') { await refreshDossier(id); reload() } }
 
   if (d === undefined) return <p className="text-gray-400 text-sm">Lead introuvable.</p>
   if (!d) return <p className="text-gray-400 text-sm">Chargement…</p>
@@ -104,7 +109,22 @@ export default function LeadDetailPage() {
               <span className="text-xs font-medium px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: stageMeta.color }}>{stageMeta.label}</span>
             </div>
             <p className="text-sm text-gray-500 mt-1">{d.headline}</p>
-            <span className="inline-block mt-2 text-xs text-gray-400 bg-gray-50 border border-gray-100 px-2 py-0.5 rounded-full">{d.connectionDegree}</span>
+            <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+              <span className="text-xs text-gray-400 bg-gray-50 border border-gray-100 px-2 py-0.5 rounded-full">{d.connectionDegree}</span>
+              {d.tags.map((t) => (
+                <span key={t} className="text-xs text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  {t}
+                  <button onClick={() => removeTag(t)} className="hover:text-indigo-700">×</button>
+                </span>
+              ))}
+              <input
+                value={newTag}
+                onChange={(e) => setNewTag(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') addTag() }}
+                placeholder="+ tag"
+                className="text-xs w-16 px-2 py-0.5 rounded-full bg-white border border-gray-200 focus:outline-none focus:border-indigo-400 focus:w-28 transition-all"
+              />
+            </div>
           </div>
           <div className="flex flex-col items-center flex-shrink-0">
             <div className="w-16 h-16 rounded-full flex items-center justify-center text-white text-xl font-bold" style={{ backgroundColor: scoreColor(lead.score) }}>{lead.score}</div>
@@ -151,7 +171,7 @@ export default function LeadDetailPage() {
           <select value={lead.status} onChange={(e) => changeStatus(e.target.value as LeadStatus)} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-400 border border-transparent cursor-pointer">
             {STATUS_ORDER.map((s) => <option key={s} value={s}>Statut : {STATUS_META[s].label}</option>)}
           </select>
-          <button className="text-sm font-medium text-red-400 px-3 py-2 rounded-xl hover:bg-red-50 transition-colors ml-auto">Supprimer</button>
+          <button onClick={() => setDeleteOpen(true)} className="text-sm font-medium text-red-400 px-3 py-2 rounded-xl hover:bg-red-50 transition-colors ml-auto">Supprimer</button>
         </div>
         {enrolledMsg && (
           <div className="mt-3 flex items-center gap-2 text-sm text-emerald-600 bg-emerald-50 px-3 py-2 rounded-xl">
@@ -164,6 +184,19 @@ export default function LeadDetailPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Colonne gauche */}
         <div className="space-y-4">
+          {/* Prochaine action */}
+          {d.nextAction && (
+            <div className="card p-4 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl icon-bg-blue flex items-center justify-center flex-shrink-0">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400">Prochaine action</p>
+                <p className="text-sm font-semibold text-gray-800">{d.nextAction.label} <span className="text-gray-400 font-normal">· {d.nextAction.when}</span></p>
+              </div>
+            </div>
+          )}
+
           {/* Scoring */}
           <div className="card p-5">
             <div className="flex items-center justify-between mb-3">
@@ -255,8 +288,20 @@ export default function LeadDetailPage() {
                 <h2 className="text-sm font-bold text-gray-800">Dossier d'attaque</h2>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">{dossier.status === 'solide' ? '✓ Solide' : 'Moyen'}</span>
-                <span className="text-xs text-gray-400">{dossier.ageLabel}</span>
+                {dossier.stale ? (
+                  <>
+                    <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">⚠ À rafraîchir · {dossier.ageLabel}</span>
+                    <button onClick={refreshDoss} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2.5 py-0.5 rounded-full hover:bg-indigo-100 transition-colors flex items-center gap-1">
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                      Rafraîchir
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">{dossier.status === 'solide' ? '✓ Solide' : 'Moyen'}</span>
+                    <span className="text-xs text-gray-400">{dossier.ageLabel}</span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -362,6 +407,23 @@ export default function LeadDetailPage() {
       </div>
 
       {redactionOpen && <RedactionModal detail={d} onClose={() => setRedactionOpen(false)} />}
+
+      {deleteOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setDeleteOpen(false)} />
+          <div className="relative card p-6 max-w-sm w-full">
+            <div className="w-11 h-11 rounded-2xl bg-red-50 text-red-500 flex items-center justify-center mb-3">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+            </div>
+            <h2 className="text-base font-bold text-gray-900 mb-1">Supprimer ce lead ?</h2>
+            <p className="text-sm text-gray-500 mb-4">{lead.firstName} {lead.lastName} ({lead.company}) sera retiré de votre base. Cette action est irréversible.</p>
+            <div className="flex items-center gap-2 justify-end">
+              <button onClick={() => setDeleteOpen(false)} className="text-sm font-medium text-gray-600 bg-gray-50 px-4 py-2 rounded-xl hover:bg-gray-100 transition-colors">Annuler</button>
+              <Link href="/pipeline" className="text-sm font-semibold text-white bg-red-500 px-4 py-2 rounded-xl hover:bg-red-600 transition-colors">Supprimer</Link>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

@@ -147,6 +147,22 @@ export function enrollInSequence(id: string) {
   return delay(l)
 }
 
+const LEAD_TAGS: Record<string, string[]> = {
+  l1: ['top-active'], l4: ['founder', 'new-role'], l7: ['top-active', 'warm-intro'],
+  l10: ['new-role'], l12: ['founder'], l13: ['top-active'],
+}
+const refreshedDossiers = new Set<string>()
+
+const NEXT_ACTION: Record<Stage, { label: string; when: string } | null> = {
+  to_invite: { label: 'Visite de profil', when: 'aujourd\'hui' },
+  invited: { label: 'En attente d\'acceptation', when: '—' },
+  connected: { label: 'Premier message', when: 'demain' },
+  in_sequence: { label: 'Relance', when: 'J+4' },
+  responded: { label: 'Réponse à traiter', when: 'maintenant' },
+  meeting: { label: 'RDV planifié', when: 'à venir' },
+  closed: null,
+}
+
 const SECTORS = ['SaaS B2B', 'Fintech', 'IA / ML', 'Cybersécurité', 'MarTech']
 const BAND: Record<Lead['temperature'], 'HOT' | 'WARM' | 'COLD'> = { hot: 'HOT', warm: 'WARM', cold: 'COLD' }
 
@@ -156,8 +172,12 @@ function buildDetail(lead: Lead): LeadDetail {
   const fit = Math.min(40, Math.round(lead.score * 0.45))
   const intent = Math.min(40, Math.round(lead.score * 0.35))
   const timing = Math.max(0, Math.min(20, lead.score - fit - intent))
+  const ageDays = refreshedDossiers.has(lead.id) ? 1 : (seed * 13) % 60
+  const stale = ageDays > 30
 
   return {
+    tags: LEAD_TAGS[lead.id] ?? [],
+    nextAction: NEXT_ACTION[lead.stage],
     lead,
     headline: `${lead.title} · ${lead.company}`,
     connectionDegree: seed % 2 === 0 ? '2e degré' : '1er degré',
@@ -186,7 +206,9 @@ function buildDetail(lead: Lead): LeadDetail {
     },
     dossier: {
       status: lead.score > 78 ? 'solide' : 'moyen',
-      ageLabel: 'il y a 3 j',
+      ageLabel: ageDays <= 1 ? 'à l\'instant' : `il y a ${ageDays} j`,
+      ageDays,
+      stale,
       mecanisme: 'Mécanisme 2 — Signal récent vérifié',
       accrochePivot: `Vous scalez vos équipes ${sector === 'MarTech' ? 'marketing' : 'sales'} chez ${lead.company} — pendant ce temps, qui structure le suivi pour que rien ne tombe entre les mailles ?`,
       pourquoiMaintenant: `Recrutement commercial/growth publié récemment — signal 🔥 FRAIS (< 30 jours). Indique une phase de croissance et une charge opérationnelle accrue sur ${lead.firstName}.`,
@@ -227,6 +249,24 @@ function buildDetail(lead: Lead): LeadDetail {
 export function getLeadDetail(id: string): Promise<LeadDetail | undefined> {
   const lead = LEADS[id]
   return delay(lead ? buildDetail(lead) : undefined)
+}
+
+export function addLeadTag(id: string, tag: string) {
+  const t = tag.trim()
+  if (!t) return delay(null)
+  const cur = LEAD_TAGS[id] ?? (LEAD_TAGS[id] = [])
+  if (!cur.includes(t)) cur.push(t)
+  return delay(cur)
+}
+
+export function removeLeadTag(id: string, tag: string) {
+  LEAD_TAGS[id] = (LEAD_TAGS[id] ?? []).filter((x) => x !== tag)
+  return delay(LEAD_TAGS[id])
+}
+
+export function refreshDossier(id: string) {
+  refreshedDossiers.add(id)
+  return delay(true)
 }
 
 export function getConversations(): Promise<Conversation[]> {
