@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
-import type { LeadDetail, LeadStatus } from '../../types/prospector'
+import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
 const STATUS_ORDER: LeadStatus[] = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
+const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
 
 const BAND_STYLE: Record<string, string> = {
   HOT: 'bg-red-50 text-red-600',
@@ -52,12 +53,22 @@ export default function LeadDetailPage() {
   const { id } = router.query
   const [d, setD] = useState<LeadDetail | null | undefined>(null)
   const [redactionOpen, setRedactionOpen] = useState(false)
+  const [sequences, setSequences] = useState<Sequence[]>([])
+  const [seqOpen, setSeqOpen] = useState(false)
+  const [enrolledMsg, setEnrolledMsg] = useState<string | null>(null)
 
   const reload = () => { if (typeof id === 'string') getLeadDetail(id).then(setD) }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
 
+  useEffect(() => { getSequences().then(setSequences) }, [])
+
   const enrichThis = async () => { if (typeof id === 'string') { await enrichAll([id]); reload() } }
   const changeStatus = async (s: LeadStatus) => { if (typeof id === 'string') { await setLeadStatus(id, s); reload() } }
+  const changeStage = async (s: Stage) => { if (typeof id === 'string') { await setLeadStage(id, s); reload() } }
+  const enroll = async (seq: Sequence) => {
+    if (typeof id === 'string') { await enrollInSequence(id); reload() }
+    setSeqOpen(false); setEnrolledMsg(`Ajouté à « ${seq.name} »`)
+  }
 
   if (d === undefined) return <p className="text-gray-400 text-sm">Lead introuvable.</p>
   if (!d) return <p className="text-gray-400 text-sm">Chargement…</p>
@@ -65,6 +76,11 @@ export default function LeadDetailPage() {
   const { lead, scoring, company, dossier } = d
   const initials = `${lead.firstName[0]}${lead.lastName[0]}`.toUpperCase()
   const stageMeta = STAGE_META[lead.stage]
+  const recommendedId = sequences.length
+    ? (lead.status === 'chaud' || lead.status === 'converti'
+        ? [...sequences].sort((a, b) => b.responseRate - a.responseRate)[0].id
+        : (sequences.find((s) => /réchauff|nurtur/i.test(s.name)) ?? sequences[0]).id)
+    : null
 
   return (
     <>
@@ -102,12 +118,47 @@ export default function LeadDetailPage() {
             Envoyer un message
           </button>
           <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">LinkedIn</button>
-          <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">+ Ajouter à séquence</button>
+          {/* Ajouter à séquence */}
+          <div className="relative">
+            <button onClick={() => setSeqOpen((v) => !v)} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors flex items-center gap-1.5">
+              + Ajouter à séquence
+              <svg className="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            {seqOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setSeqOpen(false)} />
+                <div className="absolute left-0 mt-2 w-72 card p-1.5 z-40">
+                  {sequences.map((s) => (
+                    <button key={s.id} onClick={() => enroll(s)} className="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-gray-50 text-left transition-colors">
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-gray-800 truncate">{s.name}</span>
+                        <span className="block text-xs text-gray-400">{s.enrolled} leads · {s.responseRate}% réponses</span>
+                      </span>
+                      {s.id === recommendedId && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full gradient-brand text-white flex-shrink-0">Recommandée</span>}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Stage */}
+          <select value={lead.stage} onChange={(e) => changeStage(e.target.value as Stage)} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-400 border border-transparent cursor-pointer">
+            {STAGE_ORDER.map((s) => <option key={s} value={s}>Étape : {STAGE_META[s].label}</option>)}
+          </select>
+
+          {/* Statut */}
           <select value={lead.status} onChange={(e) => changeStatus(e.target.value as LeadStatus)} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-400 border border-transparent cursor-pointer">
             {STATUS_ORDER.map((s) => <option key={s} value={s}>Statut : {STATUS_META[s].label}</option>)}
           </select>
           <button className="text-sm font-medium text-red-400 px-3 py-2 rounded-xl hover:bg-red-50 transition-colors ml-auto">Supprimer</button>
         </div>
+        {enrolledMsg && (
+          <div className="mt-3 flex items-center gap-2 text-sm text-emerald-600 bg-emerald-50 px-3 py-2 rounded-xl">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+            {enrolledMsg}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

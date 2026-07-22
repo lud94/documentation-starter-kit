@@ -135,6 +135,18 @@ export function setLeadStatus(id: string, status: Lead['status']) {
   return delay(l)
 }
 
+export function setLeadStage(id: string, stage: Stage) {
+  const l = LEADS[id]
+  if (l) l.stage = stage
+  return delay(l)
+}
+
+export function enrollInSequence(id: string) {
+  const l = LEADS[id]
+  if (l && (l.stage === 'to_invite' || l.stage === 'invited' || l.stage === 'connected')) l.stage = 'in_sequence'
+  return delay(l)
+}
+
 const SECTORS = ['SaaS B2B', 'Fintech', 'IA / ML', 'Cybersécurité', 'MarTech']
 const BAND: Record<Lead['temperature'], 'HOT' | 'WARM' | 'COLD'> = { hot: 'HOT', warm: 'WARM', cold: 'COLD' }
 
