@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
-import type { LeadDetail } from '../../types/prospector'
-import { STAGE_META } from '../../types/prospector'
-import { getLeadDetail } from '../../lib/prospector/capabilities'
+import type { LeadDetail, LeadStatus } from '../../types/prospector'
+import { STAGE_META, STATUS_META } from '../../types/prospector'
+import { getLeadDetail, enrichAll, setLeadStatus } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
+
+const STATUS_ORDER: LeadStatus[] = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
 
 const BAND_STYLE: Record<string, string> = {
   HOT: 'bg-red-50 text-red-600',
@@ -51,9 +53,11 @@ export default function LeadDetailPage() {
   const [d, setD] = useState<LeadDetail | null | undefined>(null)
   const [redactionOpen, setRedactionOpen] = useState(false)
 
-  useEffect(() => {
-    if (typeof id === 'string') getLeadDetail(id).then(setD)
-  }, [id])
+  const reload = () => { if (typeof id === 'string') getLeadDetail(id).then(setD) }
+  useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
+
+  const enrichThis = async () => { if (typeof id === 'string') { await enrichAll([id]); reload() } }
+  const changeStatus = async (s: LeadStatus) => { if (typeof id === 'string') { await setLeadStatus(id, s); reload() } }
 
   if (d === undefined) return <p className="text-gray-400 text-sm">Lead introuvable.</p>
   if (!d) return <p className="text-gray-400 text-sm">Chargement…</p>
@@ -99,7 +103,9 @@ export default function LeadDetailPage() {
           </button>
           <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">LinkedIn</button>
           <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">+ Ajouter à séquence</button>
-          <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">Changer statut</button>
+          <select value={lead.status} onChange={(e) => changeStatus(e.target.value as LeadStatus)} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-400 border border-transparent cursor-pointer">
+            {STATUS_ORDER.map((s) => <option key={s} value={s}>Statut : {STATUS_META[s].label}</option>)}
+          </select>
           <button className="text-sm font-medium text-red-400 px-3 py-2 rounded-xl hover:bg-red-50 transition-colors ml-auto">Supprimer</button>
         </div>
       </div>
@@ -134,10 +140,33 @@ export default function LeadDetailPage() {
             {scoring.aiAdjustment > 0 && <p className="text-xs text-gray-400 mt-1">Ajustement IA : +{scoring.aiAdjustment}</p>}
           </div>
 
-          {/* Contact */}
+          {/* Coordonnées */}
           <div className="card p-5">
-            <SectionLabel icon="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z">Contact</SectionLabel>
-            <a href={`https://${d.linkedinUrl}`} target="_blank" rel="noreferrer" className="text-sm text-indigo-500 hover:underline break-all">{d.linkedinUrl}</a>
+            <div className="flex items-center justify-between mb-2">
+              <SectionLabel icon="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z">Coordonnées</SectionLabel>
+              {(!lead.email || !lead.phone) && (
+                <button onClick={enrichThis} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg hover:bg-indigo-100 transition-colors flex items-center gap-1.5 mb-2">
+                  <span className="gradient-text font-semibold">✦</span> Enrichir
+                </button>
+              )}
+            </div>
+            <div className="space-y-2">
+              {/* Email */}
+              <div className="flex items-center gap-2 text-sm">
+                <svg className="w-4 h-4 text-gray-300 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+                {lead.email ? <a href={`mailto:${lead.email}`} className="text-indigo-500 hover:underline break-all">{lead.email}</a> : <span className="text-gray-300 italic">Email à enrichir</span>}
+              </div>
+              {/* Téléphone */}
+              <div className="flex items-center gap-2 text-sm">
+                <svg className="w-4 h-4 text-gray-300 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
+                {lead.phone ? <a href={`tel:${lead.phone}`} className="text-indigo-500 hover:underline">{lead.phone}</a> : <span className="text-gray-300 italic">Téléphone à enrichir</span>}
+              </div>
+              {/* LinkedIn */}
+              <div className="flex items-center gap-2 text-sm">
+                <svg className="w-4 h-4 text-gray-300 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M19 3a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h14zM8 17v-7H6v7h2zM7 8a1 1 0 100-2 1 1 0 000 2zm11 9v-4c0-2-1-3-2.5-3S13 11 13 12v5h2v-4c0-.5.5-1 1-1s1 .5 1 1v4h1z" /></svg>
+                <a href={`https://${d.linkedinUrl}`} target="_blank" rel="noreferrer" className="text-indigo-500 hover:underline break-all">{d.linkedinUrl}</a>
+              </div>
+            </div>
           </div>
 
           {/* Entreprise */}

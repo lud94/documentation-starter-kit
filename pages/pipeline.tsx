@@ -4,6 +4,7 @@ import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
 import { getLeads, enrichEmails, enrichAll, setLeadStatus } from '../lib/prospector/capabilities'
+import EnrichModal from '../components/EnrichModal'
 
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
 const STATUS_ORDER: LeadStatus[] = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
@@ -93,6 +94,7 @@ export default function PipelinePage() {
   const [stageF, setStageF] = useState<Set<string>>(new Set())
   const [enrichF, setEnrichF] = useState<'all' | 'enriched' | 'no_email' | 'no_phone'>('all')
   const [importOpen, setImportOpen] = useState(false)
+  const [enrichOpen, setEnrichOpen] = useState(false)
 
   const refresh = () => getLeads().then((l) => { setLeads(l); setLoading(false) })
   useEffect(() => { refresh() }, [])
@@ -115,8 +117,10 @@ export default function PipelinePage() {
   const hasFilter = query || statusF.size || stageF.size || enrichF !== 'all'
 
   const changeStatus = async (id: string, status: LeadStatus) => { await setLeadStatus(id, status); refresh() }
-  const doEnrichEmails = async () => { await enrichEmails(); refresh() }
-  const doEnrichAll = async () => { await enrichAll(); refresh() }
+  const doEnrich = async (ids: string[], mode: 'email' | 'full') => {
+    if (mode === 'email') await enrichEmails(ids); else await enrichAll(ids)
+    setEnrichOpen(false); refresh()
+  }
 
   const exportCsv = () => {
     const rows = [['Nom', 'Titre', 'Entreprise', 'Statut', 'Stage', 'Score', 'Email', 'Téléphone'],
@@ -140,13 +144,9 @@ export default function PipelinePage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <button onClick={doEnrichAll} className={btn}>
+          <button onClick={() => setEnrichOpen(true)} className={btn}>
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            Enrichir tout
-          </button>
-          <button onClick={doEnrichEmails} className={btn}>
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
-            Enrichir emails
+            Enrichir un lot
           </button>
           <button onClick={() => setImportOpen(true)} className={btn}>
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
@@ -242,6 +242,8 @@ export default function PipelinePage() {
           </div>
         </div>
       )}
+
+      {enrichOpen && <EnrichModal leads={filtered} onClose={() => setEnrichOpen(false)} onConfirm={doEnrich} />}
 
       {/* Import modal */}
       {importOpen && (
