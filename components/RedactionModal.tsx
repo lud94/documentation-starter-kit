@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { LeadDetail } from '../types/prospector'
-import { generateMessage } from '../lib/prospector/capabilities'
+import { generateMessage, detectDealKillers } from '../lib/prospector/capabilities'
 
 type Variant = 'principal' | 'directe' | 'douce'
 
@@ -72,6 +72,19 @@ export default function RedactionModal({ detail, onClose }: { detail: LeadDetail
               rows={7}
               className="w-full text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:border-indigo-400 focus:bg-white resize-none leading-relaxed"
             />
+
+            {/* Alerte deal-killers (Référentiel Smart.AI) */}
+            {(() => {
+              const flagged = detectDealKillers(message)
+              return flagged.length > 0 ? (
+                <div className="mt-3 bg-red-50 border border-red-200 rounded-xl px-3 py-2.5 flex items-start gap-2">
+                  <svg className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                  <p className="text-xs text-red-700 leading-relaxed">
+                    <span className="font-semibold">Deal-killers détectés :</span> {flagged.map((f) => `« ${f} »`).join(', ')} — interdits par le Référentiel Smart.AI. À retirer avant envoi.
+                  </p>
+                </div>
+              ) : null
+            })()}
 
             {/* Coach */}
             <div className="mt-3 bg-indigo-50/60 border border-indigo-100 rounded-xl px-3 py-2.5 flex items-start gap-2">

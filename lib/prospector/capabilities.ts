@@ -337,6 +337,47 @@ export function generateMessage(leadId: string, variant: 'principal' | 'directe'
   return delay(`${prenom}, ${d.accrochePivot}\n\n${d.questionAPoser}`)
 }
 
+export interface Referentiel {
+  forbidden: string[]
+  preferred: { avoid: string; use: string }[]
+  offer: string
+}
+
+const REFERENTIEL: Referentiel = {
+  forbidden: [
+    'copilote IA', 'Replace your SDRs', 'Control Tower', 'Revenue OS',
+    "j'espère ne pas vous déranger", 'auriez-vous 2 minutes',
+    "dans le cadre d'un appel de prospection", 'licence perpétuelle',
+    '10x your pipeline', "70-80% d'échec",
+  ],
+  preferred: [
+    { avoid: 'licence perpétuelle', use: 'licence à durée illimitée tant que Smart.AI exploite le service' },
+    { avoid: 'copilote IA', use: 'agent IA sur-mesure' },
+  ],
+  offer: "Smart.AI — agence d'acquisition IA. Agents IA et automatisations sur-mesure pour équipes sales/marketing. Design partners ESN et cabinets de conseil.",
+}
+
+export function getReferentiel(): Promise<Referentiel> {
+  return delay(REFERENTIEL)
+}
+
+export function addForbiddenTerm(t: string) {
+  const v = t.trim()
+  if (v && !REFERENTIEL.forbidden.some((f) => f.toLowerCase() === v.toLowerCase())) REFERENTIEL.forbidden.push(v)
+  return delay(REFERENTIEL.forbidden)
+}
+
+export function removeForbiddenTerm(t: string) {
+  REFERENTIEL.forbidden = REFERENTIEL.forbidden.filter((x) => x !== t)
+  return delay(REFERENTIEL.forbidden)
+}
+
+// Détection synchrone des deal-killers dans un texte (utilisé en direct dans l'UI).
+export function detectDealKillers(text: string): string[] {
+  const low = (text || '').toLowerCase()
+  return REFERENTIEL.forbidden.filter((f) => low.includes(f.toLowerCase()))
+}
+
 export function getAgents(): Promise<AgentConfig[]> {
   return delay([
     { id: 'scoring', name: 'Scoring', model: 'claude-haiku-4-5', temperature: 0.3, ragBlocks: ['icp_segments', 'qualification'], prompt: 'Tu es un agent de scoring. À partir des données du lead et des signaux, attribue un score 0-100 décomposé en Fit / Intent / Timing. Ne présente jamais un score comme une prédiction de signature.' },
