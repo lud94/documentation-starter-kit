@@ -3,7 +3,9 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Conversation, Visitor, LeadDetail } from '../types/prospector'
 import { STATUS_META } from '../types/prospector'
-import { getConversations, getVisitors, getLeadDetail, detectDealKillers } from '../lib/prospector/capabilities'
+import { getConversations, getVisitors, getLeadDetail, detectDealKillers, regenerateReply } from '../lib/prospector/capabilities'
+
+const REGEN_CHIPS = ['Plus court', 'Plus direct', 'Moins commercial', 'Autre angle']
 
 function initials(first: string, last: string) { return `${first[0]}${last[0]}`.toUpperCase() }
 function linkedinUrl(first: string, last: string) { return `https://linkedin.com/in/${first.toLowerCase()}-${last.toLowerCase()}` }
@@ -30,7 +32,11 @@ export default function InboxPage() {
   const [unreadOnly, setUnreadOnly] = useState(false)
   const [detail, setDetail] = useState<LeadDetail | null>(null)
   const [ctxOpen, setCtxOpen] = useState(false)
+  const [instruction, setInstruction] = useState('')
+  const [busy, setBusy] = useState(false)
   const threadRef = useRef<HTMLDivElement>(null)
+
+  const regen = async (leadId: string, ins: string) => { setBusy(true); const m = await regenerateReply(leadId, ins); setReply(m); setBusy(false) }
 
   useEffect(() => {
     getConversations().then((c) => { setConvs(c); setSelected((s) => s ?? c[0]?.id ?? null) })
@@ -153,16 +159,35 @@ export default function InboxPage() {
 
                 {/* Composer */}
                 <div className="border-t border-gray-100 p-3">
-                  <textarea value={reply} onChange={(e) => setReply(e.target.value)} rows={3} placeholder="Votre réponse… (générez avec l'IA puis modifiez librement)" className="w-full text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-indigo-400 focus:bg-white resize-none" />
+                  <textarea value={busy ? 'Régénération…' : reply} onChange={(e) => setReply(e.target.value)} rows={3} placeholder="Votre réponse… (générez avec l'IA puis modifiez librement)" className="w-full text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-indigo-400 focus:bg-white resize-none" />
                   {(() => {
                     const flagged = detectDealKillers(reply)
                     return flagged.length > 0
                       ? <p className="text-[11px] text-red-600 mt-1.5">⚠ Deal-killer : {flagged.map((f) => `« ${f} »`).join(', ')}</p>
                       : reply ? <p className="text-[11px] text-gray-400 mt-1.5">✎ Message modifiable avant envoi</p> : null
                   })()}
-                  <div className="flex items-center justify-between mt-2">
+
+                  {/* Régénération guidée */}
+                  {reply && (
+                    <>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {REGEN_CHIPS.map((c) => (
+                          <button key={c} onClick={() => regen(active.lead.id, c)} disabled={busy} className="text-[11px] font-medium text-gray-500 bg-gray-50 border border-gray-200 px-2 py-0.5 rounded-full hover:border-indigo-300 hover:text-indigo-600 transition-colors disabled:opacity-50">{c}</button>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <input value={instruction} onChange={(e) => setInstruction(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') regen(active.lead.id, instruction) }} placeholder="Dites à l'IA quoi changer…" className="flex-1 text-xs px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white" />
+                        <button onClick={() => regen(active.lead.id, instruction)} disabled={busy} className="text-xs font-semibold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors disabled:opacity-50 flex items-center gap-1"><span className="gradient-text">✦</span> Régénérer</button>
+                      </div>
+                    </>
+                  )}
+
+                  <div className="flex items-center justify-between mt-2 gap-2 flex-wrap">
                     <button onClick={() => setReply(active.suggestedReply)} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors flex items-center gap-1.5"><span className="gradient-text font-semibold">✦</span> Générer une réponse</button>
-                    <button disabled={!reply.trim()} className="gradient-brand text-white text-xs font-semibold px-4 py-1.5 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">Envoyer</button>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1 text-[11px] text-gray-400 bg-gray-50 px-2 py-1 rounded-lg"><ChannelIcon channel={active.channel} className="w-3 h-3" />Répondre via {CHANNEL[active.channel].label}</span>
+                      <button disabled={!reply.trim()} className="gradient-brand text-white text-xs font-semibold px-4 py-1.5 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">Envoyer</button>
+                    </div>
                   </div>
                 </div>
               </>

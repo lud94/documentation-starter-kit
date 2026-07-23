@@ -512,6 +512,20 @@ export function getWorkspaces(): Promise<Workspace[]> {
   ])
 }
 
+export function regenerateReply(leadId: string, instruction: string): Promise<string> {
+  const lead = LEADS[leadId]
+  if (!lead) return delay('')
+  const d = buildDetail(lead).dossier
+  const p = lead.firstName
+  const ins = instruction.toLowerCase()
+  if (ins.includes('court')) return delay(`${p}, ${d.questionAPoser}`)
+  if (ins.includes('direct')) return delay(`${p}, concrètement : ${d.questionAPoser} On peut caler 15 min ?`)
+  if (ins.includes('commercial') || ins.includes('doux') || ins.includes('douce')) return delay(`Sans rien vous vendre ${p} — ${d.questionAPoser}`)
+  if (ins.includes('angle')) return delay(`${p}, autre angle : ${d.accrochePivot}`)
+  if (instruction.trim()) return delay(`${p}, ${d.questionAPoser}`)
+  return delay(`${p}, ${d.accrochePivot} ${d.questionAPoser}`)
+}
+
 export function getVisitors(): Promise<Visitor[]> {
   const v = (leadId: string, viewedAt: string, times: number): Visitor => ({ lead: LEADS[leadId], viewedAt, times })
   return delay([
