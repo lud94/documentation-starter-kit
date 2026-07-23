@@ -134,7 +134,15 @@ export default function SequencesPage() {
                     </div>
                   </div>
 
-                  <p className="text-xs text-gray-400 mb-3">{draft.enrolled} leads enrôlés · {draft.responseRate}% de réponses · s'étale sur <span className="font-medium text-gray-500">{totalDays} jour{totalDays > 1 ? 's' : ''}</span> · <button onClick={() => setPickerOpen(true)} className="text-indigo-500 hover:text-indigo-700">+ Ajouter des leads</button></p>
+                  <div className="flex items-center justify-between gap-3 mb-4 flex-wrap bg-gray-50 rounded-xl px-3 py-2.5">
+                    <p className="text-xs text-gray-500">
+                      <span className="font-semibold text-gray-700">{draft.enrolled}</span> leads enrôlés · {draft.responseRate}% de réponses · s'étale sur <span className="font-medium text-gray-600">{totalDays} jour{totalDays > 1 ? 's' : ''}</span>
+                    </p>
+                    <button onClick={() => setPickerOpen(true)} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity flex items-center gap-1.5 flex-shrink-0">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v6m3-3h-6M13 7a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3z" /></svg>
+                      Ajouter des leads
+                    </button>
+                  </div>
 
                   {/* Validation */}
                   {(val.errors.length > 0 || val.warnings.length > 0) && (
