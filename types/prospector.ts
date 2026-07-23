@@ -225,8 +225,17 @@ export const CONDITION_LABEL: Record<StepCondition, string> = {
   if_responded: 'Si a répondu',
 }
 
+export type Channel = 'linkedin' | 'email' | 'whatsapp'
+
+export const CHANNEL_META: Record<Channel, { label: string; color: string; types: ActionType[] }> = {
+  linkedin: { label: 'LinkedIn', color: '#0a66c2', types: ['visit', 'invitation', 'message', 'relance'] },
+  email: { label: 'Email', color: '#059669', types: ['email', 'relance'] },
+  whatsapp: { label: 'WhatsApp', color: '#25d366', types: ['message', 'relance'] },
+}
+
 export interface SequenceStep {
   id: string
+  channel: Channel
   type: ActionType
   condition: StepCondition
   delayDays: number

@@ -292,35 +292,84 @@ export function getConversations(): Promise<Conversation[]> {
   ])
 }
 
+let SEQUENCES: Sequence[] = [
+  {
+    id: 's1', name: 'Founders tech · signal recrutement', status: 'active', enrolled: 34, responseRate: 18,
+    steps: [
+      { id: 'st1', channel: 'linkedin', type: 'visit', condition: 'always', delayDays: 0 },
+      { id: 'st2', channel: 'linkedin', type: 'invitation', condition: 'always', delayDays: 1 },
+      { id: 'st3', channel: 'linkedin', type: 'message', condition: 'if_connected', delayDays: 2 },
+      { id: 'st4', channel: 'linkedin', type: 'relance', condition: 'if_no_response', delayDays: 4 },
+      { id: 'st5', channel: 'email', type: 'relance', condition: 'if_no_response', delayDays: 7 },
+    ],
+  },
+  {
+    id: 's2', name: 'VP Sales · scale-up SaaS', status: 'active', enrolled: 21, responseRate: 24,
+    steps: [
+      { id: 'st1', channel: 'linkedin', type: 'invitation', condition: 'always', delayDays: 0 },
+      { id: 'st2', channel: 'linkedin', type: 'message', condition: 'if_connected', delayDays: 3 },
+      { id: 'st3', channel: 'email', type: 'relance', condition: 'if_no_response', delayDays: 5 },
+    ],
+  },
+  {
+    id: 's3', name: 'Visiteurs profil · réchauffage', status: 'paused', enrolled: 8, responseRate: 31,
+    steps: [
+      { id: 'st1', channel: 'linkedin', type: 'visit', condition: 'always', delayDays: 0 },
+      { id: 'st2', channel: 'linkedin', type: 'invitation', condition: 'always', delayDays: 2 },
+      { id: 'st3', channel: 'whatsapp', type: 'message', condition: 'if_connected', delayDays: 3 },
+    ],
+  },
+]
+
+let seqCounter = 100
+
 export function getSequences(): Promise<Sequence[]> {
-  return delay([
-    {
-      id: 's1', name: 'Founders tech · signal recrutement', status: 'active', enrolled: 34, responseRate: 18,
-      steps: [
-        { id: 'st1', type: 'visit', condition: 'always', delayDays: 0 },
-        { id: 'st2', type: 'invitation', condition: 'always', delayDays: 1 },
-        { id: 'st3', type: 'message', condition: 'if_connected', delayDays: 2 },
-        { id: 'st4', type: 'relance', condition: 'if_no_response', delayDays: 4 },
-        { id: 'st5', type: 'relance', condition: 'if_no_response', delayDays: 7 },
-      ],
-    },
-    {
-      id: 's2', name: 'VP Sales · scale-up SaaS', status: 'active', enrolled: 21, responseRate: 24,
-      steps: [
-        { id: 'st1', type: 'invitation', condition: 'always', delayDays: 0 },
-        { id: 'st2', type: 'message', condition: 'if_connected', delayDays: 3 },
-        { id: 'st3', type: 'relance', condition: 'if_no_response', delayDays: 5 },
-      ],
-    },
-    {
-      id: 's3', name: 'Visiteurs profil · réchauffage', status: 'paused', enrolled: 8, responseRate: 31,
-      steps: [
-        { id: 'st1', type: 'visit', condition: 'always', delayDays: 0 },
-        { id: 'st2', type: 'invitation', condition: 'always', delayDays: 2 },
-        { id: 'st3', type: 'message', condition: 'if_connected', delayDays: 3 },
-      ],
-    },
-  ])
+  return delay(SEQUENCES)
+}
+
+export function nextSequenceId(): string {
+  return 's' + (++seqCounter)
+}
+
+export function saveSequence(seq: Sequence) {
+  const i = SEQUENCES.findIndex((s) => s.id === seq.id)
+  if (i >= 0) SEQUENCES[i] = seq
+  else SEQUENCES = [...SEQUENCES, seq]
+  return delay(seq)
+}
+
+export function deleteSequence(id: string) {
+  SEQUENCES = SEQUENCES.filter((s) => s.id !== id)
+  return delay(true)
+}
+
+export function enrollLeadsInSequence(id: string, count: number) {
+  const s = SEQUENCES.find((x) => x.id === id)
+  if (s) s.enrolled += count
+  return delay(s)
+}
+
+export interface Channel {
+  key: 'linkedin' | 'email' | 'whatsapp'
+  label: string
+  connected: boolean
+  detail: string
+}
+
+const CHANNELS: Channel[] = [
+  { key: 'linkedin', label: 'LinkedIn', connected: true, detail: 'Connecté via Unipile · compte lié' },
+  { key: 'email', label: 'Email', connected: false, detail: 'À connecter (Unipile Mail)' },
+  { key: 'whatsapp', label: 'WhatsApp', connected: false, detail: 'À connecter (Unipile WhatsApp)' },
+]
+
+export function getChannels(): Promise<Channel[]> {
+  return delay(CHANNELS)
+}
+
+export function toggleChannel(key: Channel['key']) {
+  const c = CHANNELS.find((x) => x.key === key)
+  if (c) c.connected = !c.connected
+  return delay(CHANNELS)
 }
 
 export function generateMessage(leadId: string, variant: 'principal' | 'directe' | 'douce'): Promise<string> {
