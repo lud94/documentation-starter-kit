@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, PERSONAS } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
@@ -92,6 +92,7 @@ export default function PipelinePage() {
   const [query, setQuery] = useState('')
   const [statusF, setStatusF] = useState<Set<string>>(new Set())
   const [stageF, setStageF] = useState<Set<string>>(new Set())
+  const [personaF, setPersonaF] = useState<Set<string>>(new Set())
   const [enrichF, setEnrichF] = useState<'all' | 'enriched' | 'no_email' | 'no_phone'>('all')
   const [importOpen, setImportOpen] = useState(false)
   const [enrichOpen, setEnrichOpen] = useState(false)
@@ -108,13 +109,14 @@ export default function PipelinePage() {
     if (q && !`${l.firstName} ${l.lastName} ${l.company} ${l.title}`.toLowerCase().includes(q)) return false
     if (statusF.size > 0 && !statusF.has(l.status)) return false
     if (stageF.size > 0 && !stageF.has(l.stage)) return false
+    if (personaF.size > 0 && !personaF.has(l.persona ?? 'Autre')) return false
     if (enrichF === 'enriched' && !(l.email && l.phone)) return false
     if (enrichF === 'no_email' && l.email) return false
     if (enrichF === 'no_phone' && l.phone) return false
     return true
   })
   const byStage = (s: Stage) => filtered.filter((l) => l.stage === s)
-  const hasFilter = query || statusF.size || stageF.size || enrichF !== 'all'
+  const hasFilter = query || statusF.size || stageF.size || personaF.size || enrichF !== 'all'
 
   const changeStatus = async (id: string, status: LeadStatus) => { await setLeadStatus(id, status); refresh() }
   const doEnrich = async (ids: string[], mode: 'email' | 'full') => {
@@ -167,6 +169,7 @@ export default function PipelinePage() {
         </div>
         <MultiFilter label="Statut" options={STATUS_ORDER.map((s) => ({ value: s, label: STATUS_META[s].label }))} selected={statusF} onToggle={(v) => toggle(statusF, setStatusF, v)} onClear={() => setStatusF(new Set())} />
         <MultiFilter label="Stage" options={STAGE_ORDER.map((s) => ({ value: s, label: STAGE_META[s].label }))} selected={stageF} onToggle={(v) => toggle(stageF, setStageF, v)} onClear={() => setStageF(new Set())} />
+        <MultiFilter label="Persona" options={PERSONAS.map((p) => ({ value: p, label: p }))} selected={personaF} onToggle={(v) => toggle(personaF, setPersonaF, v)} onClear={() => setPersonaF(new Set())} />
         <select value={enrichF} onChange={(e) => setEnrichF(e.target.value as typeof enrichF)} className="text-sm font-medium text-gray-600 bg-white border border-gray-200 px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-400">
           <option value="all">Enrichissement : tous</option>
           <option value="enriched">Enrichis (email + tél)</option>
@@ -178,7 +181,7 @@ export default function PipelinePage() {
             <button key={v} onClick={() => setView(v)} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${view === v ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>{v === 'kanban' ? 'Kanban' : 'Table'}</button>
           ))}
         </div>
-        {hasFilter && <button onClick={() => { setQuery(''); setStatusF(new Set()); setStageF(new Set()); setEnrichF('all') }} className="text-sm text-gray-400 hover:text-gray-600 flex items-center gap-1"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>Effacer</button>}
+        {hasFilter && <button onClick={() => { setQuery(''); setStatusF(new Set()); setStageF(new Set()); setPersonaF(new Set()); setEnrichF('all') }} className="text-sm text-gray-400 hover:text-gray-600 flex items-center gap-1"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>Effacer</button>}
       </div>
 
       {/* Table */}
@@ -187,7 +190,7 @@ export default function PipelinePage() {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead><tr className="border-b border-gray-100 text-left">
-                {['Contact', 'Entreprise', 'Stage', 'Statut', 'Enrich.', 'Score'].map((h) => <th key={h} className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>)}
+                {['Contact', 'Entreprise', 'Persona', 'Stage', 'Statut', 'Enrich.', 'Score'].map((h) => <th key={h} className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>)}
               </tr></thead>
               <tbody>
                 {[...filtered].sort((a, b) => b.score - a.score).map((lead) => {
@@ -201,6 +204,7 @@ export default function PipelinePage() {
                         </Link>
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-600">{lead.company}</td>
+                      <td className="px-4 py-3">{lead.persona && <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-500">{lead.persona}</span>}</td>
                       <td className="px-4 py-3"><span className="text-xs font-medium px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: sm.color }}>{sm.label}</span></td>
                       <td className="px-4 py-3">
                         <select value={lead.status} onChange={(e) => changeStatus(lead.id, e.target.value as LeadStatus)} className="text-xs font-medium bg-transparent border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:border-indigo-400">
