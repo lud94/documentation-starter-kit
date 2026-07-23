@@ -222,24 +222,47 @@ export default function SequencesPage() {
   )
 }
 
+const PICKER_PERSONAS = ['Founder/CEO', 'Sales', 'Marketing', 'Ops']
+
 function LeadPicker({ onClose, onEnroll }: { onClose: () => void; onEnroll: (n: number) => void }) {
   const [leads, setLeads] = useState<Lead[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [q, setQ] = useState('')
+  const [persona, setPersona] = useState<string>('')
+  const [hideInSeq, setHideInSeq] = useState(true)
   useEffect(() => { getLeads().then(setLeads) }, [])
-  const filtered = leads.filter((l) => !q || `${l.firstName} ${l.lastName} ${l.company}`.toLowerCase().includes(q.toLowerCase()))
+
+  const filtered = leads.filter((l) =>
+    (!q || `${l.firstName} ${l.lastName} ${l.company}`.toLowerCase().includes(q.toLowerCase()))
+    && (!persona || l.persona === persona)
+    && (!hideInSeq || l.stage !== 'in_sequence'))
+
   const toggle = (id: string) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const selectAll = () => setSelected(new Set(filtered.map((l) => l.id)))
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative card w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+      <div className="relative card w-full max-w-lg max-h-[82vh] overflow-hidden flex flex-col">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-base font-bold text-gray-900">Enrôler des leads</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
         </div>
-        <div className="p-3">
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filtrer…" className="w-full text-sm px-3 py-2 rounded-xl bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400" />
+        <div className="p-3 space-y-2">
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Rechercher un nom, une entreprise…" className="w-full text-sm px-3 py-2 rounded-xl bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400" />
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={() => setPersona('')} className={`text-xs font-medium px-2.5 py-1 rounded-full transition-colors ${!persona ? 'gradient-brand text-white' : 'bg-gray-50 text-gray-500 border border-gray-200'}`}>Tous</button>
+            {PICKER_PERSONAS.map((p) => (
+              <button key={p} onClick={() => setPersona(persona === p ? '' : p)} className={`text-xs font-medium px-2.5 py-1 rounded-full transition-colors ${persona === p ? 'gradient-brand text-white' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:border-indigo-300'}`}>{p}</button>
+            ))}
+          </div>
+          <div className="flex items-center justify-between">
+            <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer">
+              <input type="checkbox" checked={hideInSeq} onChange={(e) => setHideInSeq(e.target.checked)} className="accent-indigo-500" />
+              Exclure ceux déjà en séquence
+            </label>
+            <button onClick={selectAll} className="text-xs font-medium text-indigo-600 hover:text-indigo-800">Tout sélectionner ({filtered.length})</button>
+          </div>
         </div>
         <div className="px-3 pb-2 overflow-y-auto flex-1">
           {filtered.map((l) => {
@@ -248,10 +271,12 @@ function LeadPicker({ onClose, onEnroll }: { onClose: () => void; onEnroll: (n: 
               <button key={l.id} onClick={() => toggle(l.id)} className="w-full flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-gray-50 text-left transition-colors">
                 <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${on ? 'gradient-brand border-transparent' : 'border-gray-300'}`}>{on && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}</span>
                 <span className="w-7 h-7 rounded-lg gradient-brand text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0">{`${l.firstName[0]}${l.lastName[0]}`.toUpperCase()}</span>
-                <span className="min-w-0 flex-1"><span className="block text-sm font-medium text-gray-800 truncate">{l.firstName} {l.lastName}</span><span className="block text-xs text-gray-400 truncate">{l.company}</span></span>
+                <span className="min-w-0 flex-1"><span className="block text-sm font-medium text-gray-800 truncate">{l.firstName} {l.lastName}</span><span className="block text-xs text-gray-400 truncate">{l.title} · {l.company}</span></span>
+                {l.persona && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-500 flex-shrink-0">{l.persona}</span>}
               </button>
             )
           })}
+          {filtered.length === 0 && <p className="text-sm text-gray-400 text-center py-8">Aucun lead pour ces critères</p>}
         </div>
         <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
           <span className="text-xs text-gray-400">{selected.size} sélectionné(s)</span>

@@ -49,6 +49,7 @@ export interface Lead {
   stage: Stage
   email: string | null
   phone: string | null
+  persona?: string
 }
 
 export interface Action {

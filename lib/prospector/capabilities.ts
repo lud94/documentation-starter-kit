@@ -109,8 +109,19 @@ export function getLead(id: string): Lead | undefined {
   return LEADS[id]
 }
 
+export const PERSONAS = ['Founder/CEO', 'Sales', 'Marketing', 'Ops', 'Autre']
+
+export function personaFromTitle(title: string): string {
+  const t = title.toLowerCase()
+  if (/founder|ceo|co-?founder|président|president/.test(t)) return 'Founder/CEO'
+  if (/sales|commercial|revenue|cro|account|sdr|business dev/.test(t)) return 'Sales'
+  if (/marketing|growth|cmo|demand|brand/.test(t)) return 'Marketing'
+  if (/ops|operations|coo|chief of staff/.test(t)) return 'Ops'
+  return 'Autre'
+}
+
 export function getLeads(): Promise<Lead[]> {
-  return delay(Object.values(LEADS))
+  return delay(Object.values(LEADS).map((l) => ({ ...l, persona: personaFromTitle(l.title) })))
 }
 
 // Enrichissement (mock — au câblage : Kaspr pour email/tél).
