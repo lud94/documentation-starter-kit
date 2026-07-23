@@ -270,22 +270,22 @@ export function refreshDossier(id: string) {
 }
 
 export function getConversations(): Promise<Conversation[]> {
-  const c = (id: string, leadId: string, unread: boolean, messages: Conversation['messages'], suggestedReply: string): Conversation => ({
-    id, lead: LEADS[leadId], unread, channel: 'linkedin', messages, suggestedReply,
+  const c = (id: string, leadId: string, unread: boolean, channel: Conversation['channel'], messages: Conversation['messages'], suggestedReply: string): Conversation => ({
+    id, lead: LEADS[leadId], unread, channel, messages, suggestedReply,
   })
   return delay([
-    c('c1', 'l7', true, [
+    c('c1', 'l7', true, 'linkedin', [
       { id: 'm1', from: 'us', text: 'Sarah, félicitations pour la traction de Lago. Vos équipes sales scalent vite — souvent le moment où l\'ops déraille. On outille cette phase, ça vous parle ?', time: 'lun. 09:12' },
       { id: 'm2', from: 'them', text: 'Salut ! Oui c\'est un vrai sujet en ce moment. Vous faites quoi exactement ?', time: 'lun. 14:30' },
     ], 'Bonne question — concrètement on met en place des agents qui qualifient et priorisent vos leads entrants automatiquement, pour que vos commerciaux ne passent que sur les comptes chauds. 15 min cette semaine pour vous montrer un cas concret ?'),
-    c('c2', 'l12', true, [
+    c('c2', 'l12', true, 'email', [
       { id: 'm1', from: 'us', text: 'Romain, vous scalez Dust très vite. Comment vous assurez-vous que le suivi commercial ne se dégrade pas ?', time: 'mar. 10:05' },
       { id: 'm2', from: 'them', text: 'Intéressant. On galère un peu sur le suivi post-démo justement.', time: 'mar. 16:40' },
     ], 'C\'est exactement là qu\'on intervient. On automatise les relances contextualisées post-démo pour qu\'aucune opportunité ne retombe. Je vous envoie un exemple ou on en parle de vive voix ?'),
-    c('c3', 'l1', false, [
+    c('c3', 'l1', false, 'linkedin', [
       { id: 'm1', from: 'us', text: 'Camille, on s\'est connectés la semaine dernière. Vous mentionniez vouloir structurer le suivi post-démo chez Fivory.', time: 'mer. 11:00' },
     ], 'Je reviens vers vous — j\'ai deux approches concrètes en tête pour Fivory. Un échange de 15 min cette semaine ?'),
-    c('c4', 'l13', false, [
+    c('c4', 'l13', false, 'whatsapp', [
       { id: 'm1', from: 'us', text: 'Emma, ravi de notre échange. Je vous confirme le créneau de jeudi 14h.', time: 'jeu. 08:20' },
       { id: 'm2', from: 'them', text: 'Parfait, à jeudi !', time: 'jeu. 09:00' },
     ], 'Au plaisir Emma — je vous envoie l\'invitation calendrier avec le lien visio.'),

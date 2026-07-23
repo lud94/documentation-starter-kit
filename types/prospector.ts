@@ -261,7 +261,7 @@ export interface Conversation {
   id: string
   lead: Lead
   unread: boolean
-  channel: 'linkedin' | 'email'
+  channel: 'linkedin' | 'email' | 'whatsapp'
   messages: Message[]
   suggestedReply: string
 }
