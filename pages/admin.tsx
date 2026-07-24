@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { UsageSummary, Diagnostic, Workspace } from '../types/prospector'
-import { getUsage, getDiagnostics, getWorkspaces } from '../lib/prospector/capabilities'
+import { getUsage, getDiagnostics, getWorkspaces, getChannels, connectChannel, disconnectChannel } from '../lib/prospector/capabilities'
+import type { Channel, ChannelConfig } from '../lib/prospector/capabilities'
 
-type Tab = 'usage' | 'diagnostic' | 'workspaces'
+type Tab = 'usage' | 'connexions' | 'diagnostic' | 'workspaces'
 
 function fmt(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -18,15 +19,18 @@ export default function AdminPage() {
   const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [diags, setDiags] = useState<Diagnostic[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [channels, setChannels] = useState<Channel[]>([])
 
   useEffect(() => {
     getUsage().then(setUsage)
     getDiagnostics().then(setDiags)
     getWorkspaces().then(setWorkspaces)
+    getChannels().then(setChannels)
   }, [])
 
   const TABS: { key: Tab; label: string }[] = [
     { key: 'usage', label: 'Usage & coûts' },
+    { key: 'connexions', label: 'Connexions' },
     { key: 'diagnostic', label: 'Diagnostic' },
     { key: 'workspaces', label: 'Workspaces clients' },
   ]
@@ -94,6 +98,10 @@ export default function AdminPage() {
         </>
       )}
 
+      {tab === 'connexions' && (
+        <ConnexionsTab channels={channels} onChange={setChannels} />
+      )}
+
       {tab === 'diagnostic' && (
         <div className="card p-5">
           <div className="flex items-center justify-between mb-4">
@@ -146,5 +154,97 @@ export default function AdminPage() {
         </div>
       )}
     </>
+  )
+}
+
+const fieldCls = 'w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white'
+const CHANNEL_ICON: Record<Channel['key'], string> = {
+  linkedin: 'in', email: '@', whatsapp: 'WA',
+}
+
+function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: (c: Channel[]) => void }) {
+  const [drafts, setDrafts] = useState<Record<string, ChannelConfig>>({})
+
+  const setDraft = (key: string, patch: ChannelConfig) => setDrafts((d) => ({ ...d, [key]: { ...d[key], ...patch } }))
+  const cfg = (c: Channel): ChannelConfig => ({ ...c.config, ...drafts[c.key] })
+
+  const connect = async (c: Channel) => onChange(await connectChannel(c.key, cfg(c)))
+  const disconnect = async (c: Channel) => onChange(await disconnectChannel(c.key))
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div className="card p-4 bg-indigo-50/40 border-indigo-100">
+        <p className="text-xs text-indigo-700">Tous les canaux passent par <strong>Unipile</strong> (une seule intégration). LinkedIn et WhatsApp se connectent via authentification hébergée / QR code ; l'email via Gmail, Outlook ou IMAP.</p>
+      </div>
+
+      {channels.map((c) => {
+        const d = cfg(c)
+        return (
+          <div key={c.key} className="card p-5">
+            <div className="flex items-center gap-3 mb-4">
+              <span className="w-9 h-9 rounded-xl gradient-brand text-white text-xs font-bold flex items-center justify-center flex-shrink-0">{CHANNEL_ICON[c.key]}</span>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-gray-800">{c.label}</p>
+                <p className="text-xs text-gray-400">{c.detail}</p>
+              </div>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${c.connected ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-400'}`}>{c.connected ? 'Connecté' : 'Non connecté'}</span>
+            </div>
+
+            {c.key === 'linkedin' && (
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Compte LinkedIn</label>
+                <input value={d.account || ''} onChange={(e) => setDraft(c.key, { account: e.target.value })} className={fieldCls} placeholder="Nom du compte lié" />
+              </div>
+            )}
+
+            {c.key === 'email' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Fournisseur</label>
+                  <select value={d.provider || ''} onChange={(e) => setDraft(c.key, { provider: e.target.value })} className={fieldCls}>
+                    <option value="">Choisir…</option><option>Gmail</option><option>Outlook</option><option>IMAP</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Adresse d'envoi</label>
+                  <input value={d.fromEmail || ''} onChange={(e) => setDraft(c.key, { fromEmail: e.target.value })} className={fieldCls} placeholder="ludwig@smart-ai.com" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Nom expéditeur</label>
+                  <input value={d.fromName || ''} onChange={(e) => setDraft(c.key, { fromName: e.target.value })} className={fieldCls} placeholder="Ludwig Graham" />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Signature</label>
+                  <textarea value={d.signature || ''} onChange={(e) => setDraft(c.key, { signature: e.target.value })} className={`${fieldCls} h-20 resize-none`} placeholder="Ludwig Graham · Smart.AI" />
+                </div>
+              </div>
+            )}
+
+            {c.key === 'whatsapp' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Numéro WhatsApp</label>
+                  <input value={d.phone || ''} onChange={(e) => setDraft(c.key, { phone: e.target.value })} className={fieldCls} placeholder="+33 6 12 34 56 78" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Nom affiché</label>
+                  <input value={d.displayName || ''} onChange={(e) => setDraft(c.key, { displayName: e.target.value })} className={fieldCls} placeholder="Ludwig · Smart.AI" />
+                </div>
+                <p className="md:col-span-2 text-[11px] text-gray-400">La connexion réelle se fait par scan d'un QR code depuis WhatsApp mobile (Unipile). Le numéro renseigné sert d'identifiant d'envoi.</p>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 mt-4">
+              <button onClick={() => connect(c)} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity">
+                {c.connected ? 'Enregistrer' : `Connecter ${c.label}`}
+              </button>
+              {c.connected && (
+                <button onClick={() => disconnect(c)} className="text-xs font-medium text-gray-400 px-3 py-1.5 rounded-lg hover:text-red-500 hover:bg-red-50 transition-colors">Déconnecter</button>
+              )}
+            </div>
+          </div>
+        )
+      })}
+    </div>
   )
 }

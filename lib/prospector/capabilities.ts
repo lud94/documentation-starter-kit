@@ -360,27 +360,59 @@ export function enrollLeadsInSequence(id: string, count: number) {
   return delay(s)
 }
 
+export interface ChannelConfig {
+  // Email (Unipile Mail — Gmail/Outlook/IMAP)
+  provider?: string       // 'Gmail' | 'Outlook' | 'IMAP'
+  fromEmail?: string
+  fromName?: string
+  signature?: string
+  // WhatsApp (Unipile WhatsApp — via QR sur le mobile)
+  phone?: string          // numéro E.164, ex +33 6 12 34 56 78
+  displayName?: string
+  // LinkedIn
+  account?: string
+}
+
 export interface Channel {
   key: 'linkedin' | 'email' | 'whatsapp'
   label: string
   connected: boolean
   detail: string
+  config: ChannelConfig
 }
 
 const CHANNELS: Channel[] = [
-  { key: 'linkedin', label: 'LinkedIn', connected: true, detail: 'Connecté via Unipile · compte lié' },
-  { key: 'email', label: 'Email', connected: false, detail: 'À connecter (Unipile Mail)' },
-  { key: 'whatsapp', label: 'WhatsApp', connected: false, detail: 'À connecter (Unipile WhatsApp)' },
+  { key: 'linkedin', label: 'LinkedIn', connected: true, detail: 'Connecté via Unipile', config: { account: 'Ludwig Graham' } },
+  { key: 'email', label: 'Email', connected: false, detail: 'À connecter (Unipile Mail)', config: {} },
+  { key: 'whatsapp', label: 'WhatsApp', connected: false, detail: 'À connecter (Unipile WhatsApp)', config: {} },
 ]
 
 export function getChannels(): Promise<Channel[]> {
-  return delay(CHANNELS)
+  return delay(CHANNELS.map((c) => ({ ...c, config: { ...c.config } })))
 }
 
 export function toggleChannel(key: Channel['key']) {
   const c = CHANNELS.find((x) => x.key === key)
   if (c) c.connected = !c.connected
   return delay(CHANNELS)
+}
+
+// Connecte un canal avec sa config (au câblage : Unipile hosted-auth / QR WhatsApp).
+export function connectChannel(key: Channel['key'], config: ChannelConfig) {
+  const c = CHANNELS.find((x) => x.key === key)
+  if (!c) return delay(CHANNELS)
+  c.config = { ...c.config, ...config }
+  c.connected = true
+  if (key === 'email' && config.fromEmail) c.detail = `Connecté · ${config.fromEmail}`
+  if (key === 'whatsapp' && config.phone) c.detail = `Connecté · ${config.phone}`
+  if (key === 'linkedin' && config.account) c.detail = `Connecté · ${config.account}`
+  return delay(CHANNELS.map((x) => ({ ...x, config: { ...x.config } })))
+}
+
+export function disconnectChannel(key: Channel['key']) {
+  const c = CHANNELS.find((x) => x.key === key)
+  if (c) { c.connected = false; c.detail = `À connecter (Unipile ${c.label})` }
+  return delay(CHANNELS.map((x) => ({ ...x, config: { ...x.config } })))
 }
 
 export function generateMessage(leadId: string, variant: 'principal' | 'directe' | 'douce'): Promise<string> {
@@ -680,19 +712,19 @@ export function updateActionMessage(id: string, message: string) {
 export const PERSONA_TARGETS = ['Founder/CEO', 'Head of Sales', 'Head of Marketing']
 
 let sourcedSeq = 0
-// SIREN déjà importés → évite les doublons dans le pipe.
-const importedSirens = new Set<string>()
+// SIREN → id de la carte « entreprise à enrichir » placeholder dans le pipe.
+const importedPlaceholders: Record<string, string> = {}
 
 // Importe des entreprises sourcées dans le pipeline comme cartes « à enrichir »
 // (aucun contact encore : la résolution se déclenche ensuite, à la demande).
 export function importCompaniesToPipeline(companies: SourcedCompany[]) {
   let added = 0
   companies.forEach((c) => {
-    if (importedSirens.has(c.id)) return
-    importedSirens.add(c.id)
+    if (importedPlaceholders[c.id]) return
     added++
     const [firstName, ...rest] = (c.dirigeant || '').split(' ')
     const id = `src${++sourcedSeq}`
+    importedPlaceholders[c.id] = id
     LEADS[id] = {
       id,
       firstName: firstName || c.name,
@@ -708,6 +740,35 @@ export function importCompaniesToPipeline(companies: SourcedCompany[]) {
     }
   })
   return delay({ added, skipped: companies.length - added })
+}
+
+// Transforme des contacts résolus en vraies cartes contact dans le pipe.
+// Remplace la carte placeholder « à enrichir » de l'entreprise si elle existe.
+export function addContactsToPipeline(company: SourcedCompany, contacts: ResolvedContact[]) {
+  // retire le placeholder de l'entreprise (on a mieux : de vrais contacts)
+  const placeholder = importedPlaceholders[company.id]
+  if (placeholder) { delete LEADS[placeholder]; delete importedPlaceholders[company.id] }
+
+  let added = 0
+  contacts.forEach((ct) => {
+    const [firstName, ...rest] = ct.name.split(' ')
+    const id = `src${++sourcedSeq}`
+    added++
+    LEADS[id] = {
+      id,
+      firstName: firstName || ct.name,
+      lastName: rest.join(' '),
+      title: ct.title || ct.persona,
+      company: company.name,
+      score: 0,
+      temperature: 'warm',
+      status: 'froid',
+      stage: 'to_invite',
+      email: ct.email || null,
+      phone: null,
+    }
+  })
+  return delay({ added })
 }
 
 // Plafond du lot de résolution (garde-fou coût, comme l'enrichissement Kaspr).

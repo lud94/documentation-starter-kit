@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact } from '../types/prospector'
-import { getSourcing, importCompaniesToPipeline, findContactsForCompany, findContactsForCompanies, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 
 const INDUSTRIES = [
   'Real Estate', 'Technology', 'Healthcare', 'Finance', 'Retail', 'Manufacturing',
@@ -142,6 +142,13 @@ export default function SourcingPage() {
     setResolving(true)
     const res = await findContactsForCompany(c, PERSONA_TARGETS)
     setContacts(res); setResolvedMap((m) => ({ ...m, [c.id]: res })); setResolving(false)
+  }
+
+  const [pushedContacts, setPushedContacts] = useState<Set<string>>(new Set())
+  const pushContacts = async (c: SourcedCompany) => {
+    await addContactsToPipeline(c, contacts)
+    setPushedContacts((s) => new Set(s).add(c.id))
+    setImported((s) => new Set(s).add(c.id))
   }
 
   const resolveBatch = async () => {
@@ -364,8 +371,17 @@ export default function SourcingPage() {
                 ))
               )}
             </div>
-            <div className="px-5 py-3 border-t border-gray-100 bg-amber-50/50">
-              <p className="text-[11px] text-amber-700">⚠️ Contacts simulés — au câblage : Pappers/societe.com pour les dirigeants, Unipile/LinkedIn pour les personas sales/marketing.</p>
+            <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-[11px] text-amber-700 flex-1 min-w-[200px]">⚠️ Contacts simulés tant que les clés Pappers/Unipile ne sont pas posées dans Vercel.</p>
+              {!resolving && contacts.length > 0 && (
+                <button
+                  onClick={() => contactsFor && pushContacts(contactsFor)}
+                  disabled={!!(contactsFor && pushedContacts.has(contactsFor.id))}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-opacity flex-shrink-0 ${contactsFor && pushedContacts.has(contactsFor.id) ? 'bg-emerald-50 text-emerald-600' : 'gradient-brand text-white hover:opacity-90'}`}
+                >
+                  {contactsFor && pushedContacts.has(contactsFor.id) ? '✓ Ajoutés au pipe' : `Ajouter ces ${contacts.length} contacts au pipe`}
+                </button>
+              )}
             </div>
           </div>
         </div>
