@@ -10,6 +10,8 @@ export default function handler(_req: NextApiRequest, res: NextApiResponse) {
       row('ANTHROPIC_API_KEY', 'Claude (cerveau : extraction + icebreaker)'),
       row('EXA_API_KEY', 'Exa (capteur : recherche de signaux)'),
       row('PERPLEXITY_API_KEY', 'Perplexity (Q&A web — optionnel)'),
+      row('OPENAI_API_KEY', 'OpenAI / ChatGPT (fallback + images)'),
+      row('GEMINI_API_KEY', 'Gemini (images + OCR docs)'),
       row('PAPPERS_API_KEY', 'Pappers (dirigeants / fondateurs)'),
       row('UNIPILE_DSN', 'Unipile DSN'),
       row('UNIPILE_API_KEY', 'Unipile API key'),

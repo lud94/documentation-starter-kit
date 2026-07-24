@@ -4,7 +4,9 @@ import type { UsageSummary, Diagnostic, Workspace } from '../types/prospector'
 import { getUsage, getDiagnostics, getWorkspaces, getChannels, connectChannel, disconnectChannel } from '../lib/prospector/capabilities'
 import type { Channel, ChannelConfig } from '../lib/prospector/capabilities'
 
-type Tab = 'usage' | 'connexions' | 'diagnostic' | 'workspaces'
+type Tab = 'usage' | 'connexions' | 'protocole' | 'diagnostic' | 'workspaces'
+
+interface ModelRouteRow { phase: string; provider: string; model: string; requires: string; why: string; fallback?: string; ready: boolean }
 
 function fmt(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -31,6 +33,7 @@ export default function AdminPage() {
   const TABS: { key: Tab; label: string }[] = [
     { key: 'usage', label: 'Usage & coûts' },
     { key: 'connexions', label: 'Connexions' },
+    { key: 'protocole', label: 'Protocole LLM' },
     { key: 'diagnostic', label: 'Diagnostic' },
     { key: 'workspaces', label: 'Workspaces clients' },
   ]
@@ -101,6 +104,8 @@ export default function AdminPage() {
       {tab === 'connexions' && (
         <ConnexionsTab channels={channels} onChange={setChannels} />
       )}
+
+      {tab === 'protocole' && <ProtocoleTab />}
 
       {tab === 'diagnostic' && (
         <div className="card p-5">
@@ -326,6 +331,54 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
           </div>
         )
       })}
+    </div>
+  )
+}
+
+const PROVIDER_STYLE: Record<string, string> = {
+  anthropic: 'bg-indigo-50 text-indigo-600', exa: 'bg-emerald-50 text-emerald-600',
+  perplexity: 'bg-purple-50 text-purple-600', openai: 'bg-teal-50 text-teal-600', gemini: 'bg-amber-50 text-amber-600',
+}
+
+function ProtocoleTab() {
+  const [routes, setRoutes] = useState<ModelRouteRow[]>([])
+  useEffect(() => { fetch('/api/config/models').then((r) => r.json()).then((d) => setRoutes(d.routes || [])).catch(() => {}) }, [])
+
+  return (
+    <div className="space-y-4 max-w-4xl">
+      <div className="card p-4 bg-indigo-50/40 border-indigo-100">
+        <p className="text-xs text-indigo-700">Chaque <strong>phase métier</strong> est routée vers le LLM le plus pertinent. Un point vert = la clé du provider est configurée (onglet Connexions). Modèles surchargeables par variable sans toucher au code.</p>
+      </div>
+      <div className="card overflow-hidden">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-gray-100 text-left">
+              {['Phase', 'Provider', 'Modèle', 'Pourquoi', 'Prêt'].map((h) => (
+                <th key={h} className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {routes.map((r) => (
+              <tr key={r.phase} className="border-b border-gray-50 align-top">
+                <td className="px-4 py-3">
+                  <p className="text-sm font-medium text-gray-800">{r.phase}</p>
+                  {r.fallback && <p className="text-[11px] text-gray-400">repli : {r.fallback}</p>}
+                </td>
+                <td className="px-4 py-3"><span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${PROVIDER_STYLE[r.provider] || 'bg-gray-100 text-gray-500'}`}>{r.provider}</span></td>
+                <td className="px-4 py-3"><code className="text-[11px] text-gray-600">{r.model}</code></td>
+                <td className="px-4 py-3"><p className="text-xs text-gray-500 leading-relaxed max-w-md">{r.why}</p></td>
+                <td className="px-4 py-3">
+                  <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${r.ready ? 'text-emerald-600' : 'text-gray-400'}`}>
+                    <span className={`w-2 h-2 rounded-full ${r.ready ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                    {r.ready ? 'prêt' : r.requires}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
