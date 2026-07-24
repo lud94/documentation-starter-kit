@@ -7,6 +7,8 @@ export default function LoginPage() {
   const [setup, setSetup] = useState<boolean | null>(null)
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
+  const [code, setCode] = useState('')
+  const [mfaStep, setMfaStep] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -23,9 +25,14 @@ export default function LoginPage() {
     setBusy(true)
     try {
       const url = setup === false ? '/api/auth/setup' : '/api/auth/login'
-      const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) })
+      const payload: any = { password }
+      if (mfaStep) payload.code = code
+      const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
       const d = await res.json()
-      if (!res.ok) throw new Error(d.error === 'not_setup' ? 'Aucun mot de passe défini.' : d.error || 'Échec')
+      if (!res.ok) {
+        if (d.error === 'mfa_required') { setMfaStep(true); setError(null); return }
+        throw new Error(d.error === 'not_setup' ? 'Aucun mot de passe défini.' : d.error || 'Échec')
+      }
       window.location.href = dest()
     } catch (e: any) {
       setError(e.message || 'Erreur')
@@ -45,6 +52,22 @@ export default function LoginPage() {
             <p className="text-sm text-gray-400">{isSetup ? 'Créez votre mot de passe d\'accès' : 'Connexion à la plateforme'}</p>
           </div>
 
+          {mfaStep ? (
+            <div className="card p-6">
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Code de vérification (MFA)</label>
+              <input
+                type="text" inputMode="numeric" maxLength={6} value={code} autoFocus autoComplete="one-time-code"
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} onKeyDown={(e) => e.key === 'Enter' && submit()}
+                className="w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white mb-3 tracking-[0.4em] text-center font-semibold"
+                placeholder="000000"
+              />
+              <p className="text-[11px] text-gray-400 mb-3">Ouvrez votre app d'authentification (Google Authenticator / Authy).</p>
+              {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
+              <button onClick={submit} disabled={busy || code.length !== 6} className="w-full gradient-brand text-white text-sm font-semibold py-2.5 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">
+                {busy ? '…' : 'Vérifier'}
+              </button>
+            </div>
+          ) : (
           <div className="card p-6">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Mot de passe</label>
             <input
@@ -69,6 +92,7 @@ export default function LoginPage() {
               {busy ? '…' : isSetup ? 'Créer et entrer' : 'Se connecter'}
             </button>
           </div>
+          )}
           <p className="text-[11px] text-gray-400 text-center mt-4">Accès réservé · Smart.AI</p>
         </div>
       </div>

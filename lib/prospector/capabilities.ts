@@ -549,12 +549,25 @@ export function getSourcing(period: Period = 'month'): Promise<SourcingData> {
   })
 }
 
+const WORKSPACES: Workspace[] = [
+  { id: 'ws_acme', name: 'Acme', leads: 388, users: 2, plan: 'Growth' },
+  { id: 'ws_fabel', name: 'Fabel', leads: 156, users: 1, plan: 'Starter' },
+  { id: 'ws_redsen', name: 'Redsen', leads: 92, users: 3, plan: 'Growth' },
+]
+
 export function getWorkspaces(): Promise<Workspace[]> {
-  return delay([
-    { id: 'w1', name: 'Acme', leads: 388, users: 2, plan: 'Growth' },
-    { id: 'w2', name: 'Fabel', leads: 156, users: 1, plan: 'Starter' },
-    { id: 'w3', name: 'Redsen', leads: 92, users: 3, plan: 'Growth' },
-  ])
+  return delay([...WORKSPACES])
+}
+
+// Crée un espace client avec un ID slugifié stable (ex: "ws_smart_ai").
+export function createWorkspace(name: string, plan = 'Starter'): Promise<Workspace> {
+  const base = 'ws_' + name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 24)
+  let id = base || 'ws_client'
+  let n = 2
+  while (WORKSPACES.some((w) => w.id === id)) { id = `${base}_${n++}` }
+  const ws: Workspace = { id, name: name.trim() || 'Nouveau client', leads: 0, users: 1, plan }
+  WORKSPACES.unshift(ws)
+  return delay(ws)
 }
 
 export function regenerateReply(leadId: string, instruction: string): Promise<string> {

@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { isSetup } from '../../../lib/prospector/auth'
+import { isSetup, mfaEnabled } from '../../../lib/prospector/auth'
 
-// Indique seulement si un mot de passe existe (pour afficher setup vs login).
+// Indique si un mot de passe existe (setup vs login) et si la MFA est active.
 export default function handler(_req: NextApiRequest, res: NextApiResponse) {
-  res.status(200).json({ setup: isSetup() })
+  res.status(200).json({ setup: isSetup(), mfa: mfaEnabled() })
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { UsageSummary, Diagnostic, Workspace } from '../types/prospector'
-import { getUsage, getDiagnostics, getWorkspaces, getChannels, connectChannel, disconnectChannel } from '../lib/prospector/capabilities'
+import { getUsage, getDiagnostics, getWorkspaces, createWorkspace, getChannels, connectChannel, disconnectChannel } from '../lib/prospector/capabilities'
 import type { Channel, ChannelConfig } from '../lib/prospector/capabilities'
 
 type Tab = 'usage' | 'connexions' | 'protocole' | 'diagnostic' | 'workspaces'
@@ -22,6 +22,15 @@ export default function AdminPage() {
   const [diags, setDiags] = useState<Diagnostic[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [channels, setChannels] = useState<Channel[]>([])
+  const [wsOpen, setWsOpen] = useState(false)
+  const [wsName, setWsName] = useState('')
+  const [wsPlan, setWsPlan] = useState('Starter')
+  const createWs = async () => {
+    if (!wsName.trim()) return
+    await createWorkspace(wsName, wsPlan)
+    setWsName(''); setWsPlan('Starter'); setWsOpen(false)
+    getWorkspaces().then(setWorkspaces)
+  }
 
   useEffect(() => {
     getUsage().then(setUsage)
@@ -129,8 +138,22 @@ export default function AdminPage() {
         <div className="card overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
             <h2 className="text-sm font-semibold text-gray-700">Espaces clients</h2>
-            <button className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity">+ Nouveau workspace</button>
+            <button onClick={() => setWsOpen((v) => !v)} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity">+ Nouveau workspace</button>
           </div>
+          {wsOpen && (
+            <div className="px-5 py-4 border-b border-gray-100 bg-gray-50/60 flex items-end gap-3 flex-wrap">
+              <div className="flex-1 min-w-[160px]">
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Nom du client</label>
+                <input value={wsName} onChange={(e) => setWsName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && createWs()} className={fieldCls} placeholder="ex: Smart.AI" autoFocus />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Plan</label>
+                <select value={wsPlan} onChange={(e) => setWsPlan(e.target.value)} className={fieldCls}><option>Starter</option><option>Growth</option><option>Scale</option></select>
+              </div>
+              <button onClick={createWs} disabled={!wsName.trim()} className="gradient-brand text-white text-xs font-semibold px-4 py-2 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">Créer l'espace</button>
+              {wsName.trim() && <span className="text-[11px] text-gray-400 pb-2">ID : <code>ws_{wsName.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 24)}</code></span>}
+            </div>
+          )}
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100 text-left">
@@ -182,6 +205,28 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
   const loadStatus = () => fetch('/api/config/status').then((r) => r.json()).then((d) => { setKeys(d.keys || []); setSigMode(d.signalsMode || '') }).catch(() => {})
   useEffect(() => { loadStatus() }, [])
 
+  // ── MFA ──
+  const [mfaOn, setMfaOn] = useState(false)
+  const [mfaSecret, setMfaSecret] = useState('')
+  const [mfaUri, setMfaUri] = useState('')
+  const [mfaCode, setMfaCode] = useState('')
+  const [mfaMsg, setMfaMsg] = useState('')
+  const loadMfa = () => fetch('/api/auth/status').then((r) => r.json()).then((d) => setMfaOn(!!d.mfa)).catch(() => {})
+  useEffect(() => { loadMfa() }, [])
+
+  const startMfa = async () => {
+    setMfaMsg('')
+    const d = await fetch('/api/auth/mfa/setup', { method: 'POST' }).then((r) => r.json())
+    setMfaSecret(d.secret || ''); setMfaUri(d.uri || '')
+  }
+  const confirmMfa = async () => {
+    const res = await fetch('/api/auth/mfa/enable', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: mfaCode }) })
+    const d = await res.json()
+    if (res.ok) { setMfaSecret(''); setMfaUri(''); setMfaCode(''); setMfaMsg('✓ MFA activée'); loadMfa() }
+    else setMfaMsg(d.error || 'Échec')
+  }
+  const disableMfa = async () => { await fetch('/api/auth/mfa/disable', { method: 'POST' }); setMfaMsg('MFA désactivée'); loadMfa() }
+
   const saveKeys = async () => {
     const patch: Record<string, string> = {}
     Object.entries(keyDrafts).forEach(([k, v]) => { if (v.trim()) patch[k] = v.trim() })
@@ -216,6 +261,37 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
     <div className="space-y-4 max-w-3xl">
       <div className="card p-4 bg-indigo-50/40 border-indigo-100">
         <p className="text-xs text-indigo-700">Tous les canaux passent par <strong>Unipile</strong> (une seule intégration). LinkedIn et WhatsApp se connectent via authentification hébergée / QR code ; l'email via Gmail, Outlook ou IMAP.</p>
+      </div>
+
+      {/* Sécurité — MFA */}
+      <div className="card p-5">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-gray-700">Sécurité du compte</h2>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${mfaOn ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>{mfaOn ? 'MFA activée' : 'MFA désactivée'}</span>
+          </div>
+          {mfaOn
+            ? <button onClick={disableMfa} className="text-xs font-medium text-gray-400 hover:text-red-500 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors">Désactiver la MFA</button>
+            : <button onClick={startMfa} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity">Activer la MFA (TOTP)</button>}
+        </div>
+        <p className="text-xs text-gray-400">Mot de passe hashé (bcrypt) + double authentification par application (Google Authenticator / Authy). Recommandé avant de poser des clés de production.</p>
+
+        {mfaSecret && !mfaOn && (
+          <div className="mt-4 border-t border-gray-100 pt-4">
+            <p className="text-xs text-gray-600 mb-2">1. Ajoutez ce compte dans votre app d'authentification (saisie manuelle de la clé, ou via l'URI <code className="text-[10px]">otpauth</code>) :</p>
+            <div className="bg-gray-50 rounded-lg p-3 mb-3">
+              <p className="text-[11px] text-gray-400">Clé secrète</p>
+              <code className="text-sm font-mono font-semibold text-gray-800 tracking-wider break-all">{mfaSecret}</code>
+              <p className="text-[10px] text-gray-400 mt-2 break-all">{mfaUri}</p>
+            </div>
+            <p className="text-xs text-gray-600 mb-2">2. Entrez le code à 6 chiffres généré :</p>
+            <div className="flex items-center gap-2">
+              <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" className={`${fieldCls} w-32 text-center tracking-[0.3em] font-semibold`} />
+              <button onClick={confirmMfa} disabled={mfaCode.length !== 6} className="gradient-brand text-white text-xs font-semibold px-3 py-2 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">Confirmer</button>
+            </div>
+          </div>
+        )}
+        {mfaMsg && <p className="text-xs text-emerald-600 mt-3">{mfaMsg}</p>}
       </div>
 
       {/* Clés API — statut lecture seule (les valeurs se posent dans Vercel, jamais ici) */}
