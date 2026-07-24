@@ -33,7 +33,7 @@ const CITY_TO_DEP: Record<string, string> = {
   'nantes': '44', 'toulouse': '31', 'nice': '06', 'strasbourg': '67', 'montpellier': '34', 'rennes': '35',
 }
 
-export interface SourcingQuery { sector?: string; location?: string; size?: string; page?: number }
+export interface SourcingQuery { sector?: string; location?: string; size?: string; page?: number; activeOnly?: boolean }
 
 // L'API plafonne per_page à 25 ; on pagine pour aller au-delà.
 const PER_PAGE = 25
@@ -57,6 +57,9 @@ export function buildSearchUrl(q: SourcingQuery): string {
   // Un filtre NAF/dep/effectif suffit. On n'ajoute `q` (texte, sémantique ET)
   // que si AUCUN autre critère n'est présent, sinon il sur-filtre → 0 résultat.
   if (Array.from(params.keys()).length === 0) params.set('q', q.sector || 'entreprise')
+
+  // Société active seulement (exclut radiées/cessées) — ajouté après le check `q`.
+  if (q.activeOnly !== false) params.set('etat_administratif', 'A')
 
   params.set('page', String(Math.max(1, q.page || 1)))
   params.set('per_page', String(PER_PAGE))
@@ -89,9 +92,13 @@ export async function fetchCompanies(
     const eff = TRANCHE[r.tranche_effectif_salarie] || ''
     const city = r.siege?.libelle_commune || ''
     const dep = r.siege?.departement || ''
+    const dateCreation = r.date_creation || r.siege?.date_creation || ''
+    const year = dateCreation ? parseInt(String(dateCreation).slice(0, 4), 10) : 0
+    const young = year > 0 && new Date().getFullYear() - year < 3
     const signals: string[] = []
     if (eff) signals.push(`${eff} sal.`)
     if (city) signals.push(city)
+    if (young) signals.push('récente')
     return {
       id: String(r.siren),
       name: r.nom_complet || r.nom_raison_sociale || 'Entreprise',
@@ -101,6 +108,8 @@ export async function fetchCompanies(
       city,
       dep,
       dirigeant: dir ? `${String(dir.prenoms || '').split(' ')[0]} ${dir.nom}`.trim() : undefined,
+      dateCreation: dateCreation || undefined,
+      young,
       signals,
     }
   })

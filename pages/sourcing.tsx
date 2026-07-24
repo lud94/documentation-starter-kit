@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact } from '../types/prospector'
-import { getSourcing, importCompaniesToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 
 const INDUSTRIES = [
   'Real Estate', 'Technology', 'Healthcare', 'Finance', 'Retail', 'Manufacturing',
@@ -82,8 +82,13 @@ export default function SourcingPage() {
   const [fSector, setFSector] = useState('')
   const [fLocation, setFLocation] = useState('')
   const [fSize, setFSize] = useState('')
+  const [activeOnly, setActiveOnly] = useState(true)
+  const [excludePipe, setExcludePipe] = useState(true)
+  const [sortYoung, setSortYoung] = useState(false)
+  const [inPipe, setInPipe] = useState<Set<string>>(new Set())
 
   useEffect(() => { getSourcing(period).then(setData) }, [period])
+  useEffect(() => { getImportedSirens().then((s) => setInPipe(new Set(s))) }, [])
 
   const toggleSignal = (s: string) => setPickedSignals((p) => { const n = new Set(p); n.has(s) ? n.delete(s) : n.add(s); return n })
 
@@ -92,8 +97,18 @@ export default function SourcingPage() {
     if (fSector) params.set('sector', fSector)
     if (fLocation) params.set('location', fLocation)
     if (fSize) params.set('size', fSize)
+    if (!activeOnly) params.set('activeOnly', '0')
     return params
   }
+
+  // Vue dérivée : exclusion des comptes déjà en pipe + tri fraîcheur.
+  const visibleCompanies = (() => {
+    let list = companies
+    if (excludePipe) list = list.filter((c) => !inPipe.has(c.id) && !imported.has(c.id))
+    if (sortYoung) list = [...list].sort((a, b) => (b.dateCreation || '').localeCompare(a.dateCreation || ''))
+    return list
+  })()
+  const hiddenCount = companies.length - visibleCompanies.length
 
   const launch = async () => {
     setRunning(true); setLastRun(null); setRunError(false); setPage(1)
@@ -131,7 +146,7 @@ export default function SourcingPage() {
     setImported((s) => new Set(s).add(c.id))
   }
   const importAll = async () => {
-    const toAdd = companies.filter((c) => !imported.has(c.id))
+    const toAdd = visibleCompanies.filter((c) => !imported.has(c.id))
     await importCompaniesToPipeline(toAdd)
     setImported((s) => { const n = new Set(s); toAdd.forEach((c) => n.add(c.id)); return n })
   }
@@ -162,7 +177,7 @@ export default function SourcingPage() {
   }
 
   const sectorMax = data ? Math.max(...data.bySector.map((s) => s.count)) : 1
-  const allImported = companies.length > 0 && companies.every((c) => imported.has(c.id))
+  const allImported = visibleCompanies.length > 0 && visibleCompanies.every((c) => imported.has(c.id))
 
   return (
     <>
@@ -249,6 +264,11 @@ export default function SourcingPage() {
           </div>
           <p className="text-[11px] text-gray-400 mb-4">La pastille indique la faisabilité de détection : <span className="text-emerald-600">facile</span> (API structurée), <span className="text-amber-600">moyen</span> (presse + résolution), <span className="text-red-500">difficile</span> (scraping / payant).</p>
 
+          <label className="flex items-center gap-2 text-xs text-gray-500 mb-4 cursor-pointer w-fit">
+            <input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} className="accent-indigo-500" />
+            Sociétés actives uniquement <span className="text-gray-400">(exclut les radiées / cessées)</span>
+          </label>
+
           <div className="flex items-center gap-3">
             <button onClick={launch} disabled={running} className="gradient-brand text-white text-sm font-semibold px-4 py-2.5 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-2">
               {running ? 'Recherche…' : <><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>Lancer la recherche</>}
@@ -273,13 +293,26 @@ export default function SourcingPage() {
               )}
             </div>
             <p className="text-xs text-gray-400 mb-1">Importez l'entreprise dans le pipe, puis « Trouver les contacts » pour résoudre vos personas (CEO, Head of Sales…).</p>
-            {batchNote && <p className="text-xs text-emerald-600 mb-3">{batchNote}</p>}
-            {!batchNote && <div className="mb-3" />}
+            {batchNote && <p className="text-xs text-emerald-600 mb-2">{batchNote}</p>}
+            {companies.length > 0 && (
+              <div className="flex items-center gap-4 mb-3 flex-wrap text-xs">
+                <label className="flex items-center gap-1.5 text-gray-500 cursor-pointer">
+                  <input type="checkbox" checked={excludePipe} onChange={(e) => setExcludePipe(e.target.checked)} className="accent-indigo-500" />
+                  Masquer celles déjà dans le pipe{hiddenCount > 0 && excludePipe ? ` (${hiddenCount})` : ''}
+                </label>
+                <label className="flex items-center gap-1.5 text-gray-500 cursor-pointer">
+                  <input type="checkbox" checked={sortYoung} onChange={(e) => setSortYoung(e.target.checked)} className="accent-indigo-500" />
+                  Plus récentes d'abord
+                </label>
+              </div>
+            )}
             {companies.length === 0 ? (
               <p className="text-sm text-gray-400 text-center py-8">Lancez une recherche pour voir des entreprises.</p>
+            ) : visibleCompanies.length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-8">Toutes les entreprises de cette page sont déjà dans le pipe.</p>
             ) : (
               <div className="space-y-2">
-                {companies.map((c) => {
+                {visibleCompanies.map((c) => {
                   const done = imported.has(c.id)
                   return (
                     <div key={c.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50/50 transition-colors flex-wrap">

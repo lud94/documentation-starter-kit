@@ -742,6 +742,11 @@ export function importCompaniesToPipeline(companies: SourcedCompany[]) {
   return delay({ added, skipped: companies.length - added })
 }
 
+// SIREN déjà présents dans le pipe (placeholders) → l'UI peut les exclure du sourcing.
+export function getImportedSirens(): Promise<string[]> {
+  return delay(Object.keys(importedPlaceholders))
+}
+
 // Transforme des contacts résolus en vraies cartes contact dans le pipe.
 // Remplace la carte placeholder « à enrichir » de l'entreprise si elle existe.
 export function addContactsToPipeline(company: SourcedCompany, contacts: ResolvedContact[]) {

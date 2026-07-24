@@ -151,6 +151,8 @@ export interface SourcedCompany {
   city: string
   dep: string
   dirigeant?: string  // dirigeant SIRENE (best-effort, pas un persona ciblé)
+  dateCreation?: string // AAAA-MM-JJ
+  young?: boolean     // créée il y a < 3 ans (proxy startup)
   signals: string[]   // ville, effectif… (signaux structurels)
 }
 

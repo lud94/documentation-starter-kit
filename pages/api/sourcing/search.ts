@@ -9,6 +9,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     location: str(req.query.location),
     size: str(req.query.size),
     page: Math.max(1, parseInt(str(req.query.page) || '1', 10) || 1),
+    activeOnly: str(req.query.activeOnly) !== '0',
   }
   if (req.query.debug) {
     try { return res.status(200).json(await debugSearch(query)) }
