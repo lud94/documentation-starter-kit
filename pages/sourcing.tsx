@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../types/prospector'
-import { getSourcing, importCompaniesToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 
 const INDUSTRIES = [
   'Real Estate', 'Technology', 'Healthcare', 'Finance', 'Retail', 'Manufacturing',
@@ -164,11 +164,7 @@ export default function SourcingPage() {
   }
 
   const importSignal = async (h: SignalHit) => {
-    const company: SourcedCompany = {
-      id: h.siren || `sig-${h.company}`, name: h.company, naf: '', sector: h.sector || '',
-      effectif: '', city: h.city || '', dep: '', signals: [h.detail], young: false,
-    }
-    await importCompaniesToPipeline([company])
+    await importSignalToPipeline(h)
     setSigImported((s) => new Set(s).add(h.company))
   }
 

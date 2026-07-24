@@ -60,6 +60,7 @@ export default function LeadDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [handoffOpen, setHandoffOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [iceCopied, setIceCopied] = useState(false)
 
   const reload = () => { if (typeof id === 'string') getLeadDetail(id).then(setD) }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
@@ -190,6 +191,30 @@ export default function LeadDetailPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Colonne gauche */}
         <div className="space-y-4">
+          {/* Signal & accroche (issus de la recherche par signal) */}
+          {(lead.signal || lead.icebreaker) && (
+            <div className="card p-4 border-indigo-100 bg-indigo-50/30">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-6 h-6 rounded-lg gradient-brand text-white text-[11px] font-bold flex items-center justify-center">✦</span>
+                <span className="text-xs font-semibold text-gray-700">Signal détecté</span>
+              </div>
+              {lead.signal && <p className="text-xs text-gray-500 mb-2">📌 {lead.signal}</p>}
+              {lead.icebreaker && (
+                <>
+                  <div className="bg-white border border-indigo-100 rounded-lg p-2.5 mb-2">
+                    <p className="text-xs text-gray-700 italic">« {lead.icebreaker} »</p>
+                  </div>
+                  <button
+                    onClick={() => { navigator.clipboard?.writeText(lead.icebreaker || ''); setIceCopied(true); setTimeout(() => setIceCopied(false), 1500) }}
+                    className="text-xs font-medium text-indigo-600 hover:underline"
+                  >
+                    {iceCopied ? '✓ Accroche copiée' : "Copier l'accroche"}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
           {/* Prochaine action */}
           {d.nextAction && (
             <div className="card p-4 flex items-center gap-3">

@@ -50,6 +50,8 @@ export interface Lead {
   email: string | null
   phone: string | null
   persona?: string
+  signal?: string       // signal détecté (ex: "recrute un Head of Sales")
+  icebreaker?: string   // accroche prête, issue de la recherche par signal
 }
 
 export interface Action {

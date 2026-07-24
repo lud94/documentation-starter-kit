@@ -2,7 +2,7 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData, SourcedCompany, ResolvedContact } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
 export type Period = 'week' | 'month' | 'quarter' | 'year'
@@ -420,13 +420,15 @@ export function generateMessage(leadId: string, variant: 'principal' | 'directe'
   if (!lead) return delay('')
   const d = buildDetail(lead).dossier
   const prenom = lead.firstName
+  // Si un icebreaker issu du signal existe, il sert d'accroche (plus contextuel).
+  const accroche = lead.icebreaker || d.accrochePivot
   if (variant === 'directe') {
-    return delay(`${prenom}, ${d.accrochePivot} On aide des équipes comme ${lead.company} à structurer ça. ${d.questionAPoser}`)
+    return delay(`${prenom}, ${accroche} On aide des équipes comme ${lead.company} à structurer ça. ${d.questionAPoser}`)
   }
   if (variant === 'douce') {
     return delay(`Bonjour ${prenom}, je suis votre parcours chez ${lead.company} avec intérêt. Sans agenda commercial : ${d.questionAPoser}`)
   }
-  return delay(`${prenom}, ${d.accrochePivot}\n\n${d.questionAPoser}`)
+  return delay(`${prenom}, ${accroche}\n\n${d.questionAPoser}`)
 }
 
 export interface Referentiel {
@@ -742,6 +744,31 @@ export function importCompaniesToPipeline(companies: SourcedCompany[]) {
   return delay({ added, skipped: companies.length - added })
 }
 
+// Importe une entreprise détectée par SIGNAL, en attachant le signal + l'icebreaker
+// au lead → l'accroche devient actionnable (fiche + pré-remplissage 1er message).
+export function importSignalToPipeline(hit: SignalHit) {
+  const siren = hit.siren || `sig-${hit.company}`
+  if (importedPlaceholders[siren]) return delay({ added: 0, id: importedPlaceholders[siren] })
+  const id = `src${++sourcedSeq}`
+  importedPlaceholders[siren] = id
+  LEADS[id] = {
+    id,
+    firstName: hit.company,
+    lastName: '',
+    title: 'Contact à trouver',
+    company: hit.company,
+    score: 0,
+    temperature: 'warm',
+    status: 'froid',
+    stage: 'to_invite',
+    email: null,
+    phone: null,
+    signal: hit.detail,
+    icebreaker: hit.icebreaker,
+  }
+  return delay({ added: 1, id })
+}
+
 // SIREN déjà présents dans le pipe (placeholders) → l'UI peut les exclure du sourcing.
 export function getImportedSirens(): Promise<string[]> {
   return delay(Object.keys(importedPlaceholders))
@@ -750,8 +777,11 @@ export function getImportedSirens(): Promise<string[]> {
 // Transforme des contacts résolus en vraies cartes contact dans le pipe.
 // Remplace la carte placeholder « à enrichir » de l'entreprise si elle existe.
 export function addContactsToPipeline(company: SourcedCompany, contacts: ResolvedContact[]) {
-  // retire le placeholder de l'entreprise (on a mieux : de vrais contacts)
+  // retire le placeholder de l'entreprise (on a mieux : de vrais contacts),
+  // mais récupère d'abord le signal/icebreaker pour le transmettre aux contacts.
   const placeholder = importedPlaceholders[company.id]
+  const inheritedSignal = placeholder ? LEADS[placeholder]?.signal : undefined
+  const inheritedIce = placeholder ? LEADS[placeholder]?.icebreaker : undefined
   if (placeholder) { delete LEADS[placeholder]; delete importedPlaceholders[company.id] }
 
   let added = 0
@@ -771,6 +801,8 @@ export function addContactsToPipeline(company: SourcedCompany, contacts: Resolve
       stage: 'to_invite',
       email: ct.email || null,
       phone: null,
+      signal: inheritedSignal,
+      icebreaker: inheritedIce,
     }
   })
   return delay({ added })
