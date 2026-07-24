@@ -285,7 +285,15 @@ export default function SourcingPage() {
                     <div key={c.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50/50 transition-colors flex-wrap">
                       <span className="w-9 h-9 rounded-xl gradient-brand text-white text-xs font-bold flex items-center justify-center flex-shrink-0">{c.name.slice(0, 2).toUpperCase()}</span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-gray-800 truncate">{c.name}</p>
+                        <p className="text-sm font-medium text-gray-800 truncate flex items-center gap-1.5">
+                          {c.name}
+                          <a href={`https://annuaire-entreprises.data.gouv.fr/entreprise/${c.id}`} target="_blank" rel="noopener noreferrer" title="Vérifier la fiche officielle (annuaire des entreprises)" className="text-gray-300 hover:text-indigo-500 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                          </a>
+                          <a href={`https://www.google.com/search?q=${encodeURIComponent(c.name + ' ' + c.city)}`} target="_blank" rel="noopener noreferrer" title="Recherche web" className="text-gray-300 hover:text-indigo-500 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                          </a>
+                        </p>
                         <p className="text-xs text-gray-400 truncate">{c.sector}{c.dirigeant ? ` · dir. ${c.dirigeant}` : ''}</p>
                       </div>
                       <div className="flex items-center gap-1.5 flex-wrap">

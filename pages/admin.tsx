@@ -164,12 +164,26 @@ const CHANNEL_ICON: Record<Channel['key'], string> = {
 
 function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: (c: Channel[]) => void }) {
   const [drafts, setDrafts] = useState<Record<string, ChannelConfig>>({})
+  const [linking, setLinking] = useState<string | null>(null)
+  const [linkMsg, setLinkMsg] = useState<Record<string, string>>({})
 
   const setDraft = (key: string, patch: ChannelConfig) => setDrafts((d) => ({ ...d, [key]: { ...d[key], ...patch } }))
   const cfg = (c: Channel): ChannelConfig => ({ ...c.config, ...drafts[c.key] })
 
   const connect = async (c: Channel) => onChange(await connectChannel(c.key, cfg(c)))
   const disconnect = async (c: Channel) => onChange(await disconnectChannel(c.key))
+
+  // Lance la connexion réelle via Unipile (hosted auth). Ouvre le lien si configuré.
+  const linkUnipile = async (c: Channel) => {
+    setLinking(c.key); setLinkMsg((m) => ({ ...m, [c.key]: '' }))
+    try {
+      const res = await fetch(`/api/unipile/connect?provider=${c.key}`)
+      const d = await res.json()
+      if (d.url) window.open(d.url, '_blank', 'noopener')
+      else setLinkMsg((m) => ({ ...m, [c.key]: d.message || d.error || 'Unipile indisponible' }))
+    } catch { setLinkMsg((m) => ({ ...m, [c.key]: 'Erreur réseau' })) }
+    finally { setLinking(null) }
+  }
 
   return (
     <div className="space-y-4 max-w-3xl">
@@ -234,13 +248,17 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
               </div>
             )}
 
-            <div className="flex items-center gap-2 mt-4">
-              <button onClick={() => connect(c)} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity">
-                {c.connected ? 'Enregistrer' : `Connecter ${c.label}`}
+            <div className="flex items-center gap-2 mt-4 flex-wrap">
+              <button onClick={() => linkUnipile(c)} disabled={linking === c.key} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">
+                {linking === c.key ? 'Ouverture…' : `Connecter via Unipile`}
+              </button>
+              <button onClick={() => connect(c)} className="text-xs font-semibold text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors">
+                Enregistrer les paramètres
               </button>
               {c.connected && (
                 <button onClick={() => disconnect(c)} className="text-xs font-medium text-gray-400 px-3 py-1.5 rounded-lg hover:text-red-500 hover:bg-red-50 transition-colors">Déconnecter</button>
               )}
+              {linkMsg[c.key] && <span className="text-[11px] text-amber-600 w-full">{linkMsg[c.key]}</span>}
             </div>
           </div>
         )
