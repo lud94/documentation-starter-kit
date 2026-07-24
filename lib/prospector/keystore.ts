@@ -4,8 +4,9 @@
 // redeploy, non partagé entre instances. Pour du durable → Vercel env ou Supabase.
 
 export const MANAGED_KEYS = [
-  'ANTHROPIC_API_KEY', 'EXA_API_KEY', 'PERPLEXITY_API_KEY', 'PAPPERS_API_KEY',
-  'UNIPILE_DSN', 'UNIPILE_API_KEY', 'UNIPILE_ACCOUNT_ID', 'SIGNALS_MODEL',
+  'ANTHROPIC_API_KEY', 'EXA_API_KEY', 'PERPLEXITY_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY',
+  'PAPPERS_API_KEY', 'UNIPILE_DSN', 'UNIPILE_API_KEY', 'UNIPILE_ACCOUNT_ID', 'SIGNALS_MODEL',
+  'APP_PASSWORD',
 ] as const
 export type ManagedKey = typeof MANAGED_KEYS[number]
 
