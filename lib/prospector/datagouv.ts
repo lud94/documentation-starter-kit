@@ -13,12 +13,13 @@ const TRANCHE: Record<string, string> = {
 }
 
 // Secteur (UI) → code NAF principal (best-effort)
+// NB : l'API exige le NAF AVEC le point (ex. 62.01Z, pas 6201Z).
 const SECTOR_TO_NAF: Record<string, string> = {
-  'technology': '6201Z', 'saas b2b': '6201Z', 'ia / ml': '6201Z', 'martech': '6201Z',
-  'cybersécurité': '6202A', 'fintech': '6419Z', 'finance': '6419Z', 'consulting': '7022Z',
-  'real estate': '6831Z', 'healthcare': '8610Z', 'marketing': '7311Z', 'media': '5814Z',
-  'logistics': '5229B', 'construction': '4120A', 'education': '8559A', 'manufacturing': '2599B',
-  'retail': '4711D', 'hospitality': '5510Z', 'energy': '3514Z', 'legal': '6910Z',
+  'technology': '62.01Z', 'saas b2b': '62.01Z', 'ia / ml': '62.01Z', 'martech': '62.01Z',
+  'cybersécurité': '62.02A', 'fintech': '64.19Z', 'finance': '64.19Z', 'consulting': '70.22Z',
+  'real estate': '68.31Z', 'healthcare': '86.10Z', 'marketing': '73.11Z', 'media': '58.14Z',
+  'logistics': '52.29B', 'construction': '41.20A', 'education': '85.59A', 'manufacturing': '25.99B',
+  'retail': '47.11D', 'hospitality': '55.10Z', 'energy': '35.14Z', 'legal': '69.10Z',
 }
 
 // Taille (UI) → code(s) tranche effectif
@@ -50,8 +51,9 @@ export function buildSearchUrl(q: SourcingQuery): string {
   const tr = q.size ? SIZE_TO_TRANCHE[q.size] : undefined
   if (tr) params.set('tranche_effectif_salarie', tr)
 
-  // L'API exige un paramètre `q` (texte) : on en met toujours un.
-  if (!params.has('q')) params.set('q', q.sector || 'entreprise')
+  // Un filtre NAF/dep/effectif suffit. On n'ajoute `q` (texte, sémantique ET)
+  // que si AUCUN autre critère n'est présent, sinon il sur-filtre → 0 résultat.
+  if (Array.from(params.keys()).length === 0) params.set('q', q.sector || 'entreprise')
 
   params.set('page', '1')
   params.set('per_page', '15')
