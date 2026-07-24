@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
-import type { SourcingData, SourcedCompany, ResolvedContact } from '../types/prospector'
+import type { SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../types/prospector'
 import { getSourcing, importCompaniesToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 
 const INDUSTRIES = [
@@ -27,6 +27,20 @@ const FEAS_STYLE: Record<string, string> = {
   facile: 'bg-emerald-50 text-emerald-600',
   moyen: 'bg-amber-50 text-amber-600',
   difficile: 'bg-red-50 text-red-500',
+}
+
+// Thèses de signal pré-remplies (l'utilisateur peut charger ses propres mots-clés).
+const SIGNAL_PRESETS = [
+  'Startups fintech qui recrutent des sales',
+  'Sociétés de conseil en cybersécurité en levée de fonds',
+  'Scale-ups SaaS B2B qui recrutent un Head of Sales',
+  "ESN qui recrutent des business developers en Île-de-France",
+  'Startups IA ayant levé des fonds récemment',
+]
+
+const SIG_STYLE: Record<string, string> = {
+  recrutement: 'bg-blue-50 text-blue-600', 'levée': 'bg-emerald-50 text-emerald-600',
+  actu: 'bg-purple-50 text-purple-600', autre: 'bg-gray-100 text-gray-500',
 }
 
 const PERIODS: { key: Period; label: string }[] = [
@@ -57,7 +71,16 @@ const SOURCE_STYLE: Record<string, string> = {
 export default function SourcingPage() {
   const [data, setData] = useState<SourcingData | null>(null)
   const [period, setPeriod] = useState<Period>('month')
-  const [tab, setTab] = useState<'recherche' | 'prospects'>('recherche')
+  const [tab, setTab] = useState<'recherche' | 'signal' | 'prospects'>('recherche')
+
+  // Recherche par signal (agent Claude web)
+  const [sigThesis, setSigThesis] = useState('')
+  const [sigRunning, setSigRunning] = useState(false)
+  const [sigHits, setSigHits] = useState<SignalHit[]>([])
+  const [sigMock, setSigMock] = useState(false)
+  const [sigError, setSigError] = useState<string | null>(null)
+  const [sigImported, setSigImported] = useState<Set<string>>(new Set())
+  const [copied, setCopied] = useState<string | null>(null)
   const [pickedSignals, setPickedSignals] = useState<Set<string>>(new Set())
   const [running, setRunning] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -124,6 +147,31 @@ export default function SourcingPage() {
       setRunError(true); setLastRun('Échec : ' + (e.message || 'API indisponible'))
     } finally { setRunning(false) }
   }
+
+  const runSignal = async (thesis?: string) => {
+    const q = (thesis ?? sigThesis).trim()
+    if (!q) return
+    setSigThesis(q); setSigRunning(true); setSigError(null); setSigHits([])
+    try {
+      const res = await fetch(`/api/signals/search?thesis=${encodeURIComponent(q)}`)
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
+      setSigHits(d.hits); setSigMock(!!d.mock)
+    } catch (e: any) {
+      setSigError(e.message || 'Agent indisponible')
+    } finally { setSigRunning(false) }
+  }
+
+  const importSignal = async (h: SignalHit) => {
+    const company: SourcedCompany = {
+      id: h.siren || `sig-${h.company}`, name: h.company, naf: '', sector: h.sector || '',
+      effectif: '', city: h.city || '', dep: '', signals: [h.detail], young: false,
+    }
+    await importCompaniesToPipeline([company])
+    setSigImported((s) => new Set(s).add(h.company))
+  }
+
+  const copyIce = (h: SignalHit) => { navigator.clipboard?.writeText(h.icebreaker); setCopied(h.company); setTimeout(() => setCopied(null), 1500) }
 
   const loadMore = async () => {
     setLoadingMore(true)
@@ -218,7 +266,11 @@ export default function SourcingPage() {
 
       {/* Onglets */}
       <div className="flex bg-gray-100 rounded-xl p-1 w-fit mb-5">
-        <button onClick={() => setTab('recherche')} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${tab === 'recherche' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>Nouvelle recherche</button>
+        <button onClick={() => setTab('recherche')} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${tab === 'recherche' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>Par critères</button>
+        <button onClick={() => setTab('signal')} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${tab === 'signal' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>
+          Par signal
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded gradient-brand text-white">IA</span>
+        </button>
         <button onClick={() => setTab('prospects')} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2 ${tab === 'prospects' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>
           Entreprises sourcées
           {companies.length > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full gradient-brand text-white">{companies.length}</span>}
@@ -275,6 +327,59 @@ export default function SourcingPage() {
             </button>
             {lastRun && <span className={`text-xs ${runError ? 'text-red-600' : 'text-emerald-600'}`}>{lastRun}</span>}
           </div>
+        </div>
+      ) : tab === 'signal' ? (
+        <div className="space-y-4">
+          <div className="card p-6 max-w-3xl">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Thèse de prospection <span className="font-normal text-gray-400">— l'agent cherche sur le web les entreprises qui émettent ce signal, puis vérifie leur existence (SIREN)</span></label>
+            <div className="flex gap-2 mb-3">
+              <input value={sigThesis} onChange={(e) => setSigThesis(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && runSignal()} className={inputClass} placeholder="ex: sociétés de conseil en cybersécurité qui recrutent des sales" />
+              <button onClick={() => runSignal()} disabled={sigRunning || !sigThesis.trim()} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 flex-shrink-0">
+                {sigRunning ? 'Recherche…' : 'Chercher'}
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <span className="text-[11px] text-gray-400 self-center mr-1">Exemples :</span>
+              {SIGNAL_PRESETS.map((p) => (
+                <button key={p} onClick={() => runSignal(p)} className="text-xs font-medium px-2.5 py-1 rounded-full text-gray-500 bg-gray-50 border border-gray-200 hover:border-indigo-300 transition-colors">{p}</button>
+              ))}
+            </div>
+            {sigError && <p className="text-xs text-red-600 mt-3">Échec : {sigError}</p>}
+            {sigMock && sigHits.length > 0 && <p className="text-[11px] text-amber-600 mt-3">⚠️ Résultats simulés — ajoute ANTHROPIC_API_KEY dans Vercel pour la recherche web réelle.</p>}
+          </div>
+
+          {sigHits.length > 0 && (
+            <div className="card p-5 max-w-3xl">
+              <h2 className="text-sm font-semibold text-gray-700 mb-1">Entreprises détectées ({sigHits.filter((h) => h.verified).length} vérifiées)</h2>
+              <p className="text-xs text-gray-400 mb-4">Chaque entreprise citée par l'agent est réconciliée sur un SIREN réel. Les non-vérifiées sont à contrôler manuellement (lien de recherche).</p>
+              <div className="space-y-2">
+                {sigHits.map((h) => (
+                  <div key={h.company} className="p-3 rounded-xl border border-gray-100">
+                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                      <span className="text-sm font-medium text-gray-800">{h.company}</span>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${SIG_STYLE[h.signalType]}`}>{h.signalType}</span>
+                      {h.verified
+                        ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">✓ existe (SIREN {h.siren})</span>
+                        : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">non vérifiée</span>}
+                      {h.city && <span className="text-xs text-gray-400">{h.city}</span>}
+                    </div>
+                    <p className="text-xs text-gray-500 mb-2">📌 {h.detail}</p>
+                    <div className="bg-indigo-50/40 border border-indigo-100 rounded-lg p-2.5 mb-2">
+                      <p className="text-xs text-gray-700 italic">« {h.icebreaker} »</p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button onClick={() => copyIce(h)} className="text-xs font-medium text-gray-500 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition-colors">{copied === h.company ? '✓ Copié' : 'Copier l\'accroche'}</button>
+                      {h.sourceUrl && <a href={h.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-indigo-600 hover:underline">Source</a>}
+                      {!h.verified && <a href={`https://www.google.com/search?q=${encodeURIComponent(h.company + ' ' + (h.city || ''))}`} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-amber-600 hover:underline">Vérifier</a>}
+                      <button onClick={() => importSignal(h)} disabled={sigImported.has(h.company)} className={`text-xs font-semibold px-3 py-1 rounded-lg ml-auto transition-opacity ${sigImported.has(h.company) ? 'bg-emerald-50 text-emerald-600' : 'gradient-brand text-white hover:opacity-90'}`}>
+                        {sigImported.has(h.company) ? '✓ Dans le pipe' : '+ Importer'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

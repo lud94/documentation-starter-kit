@@ -67,6 +67,25 @@ export function buildSearchUrl(q: SourcingQuery): string {
   return `https://recherche-entreprises.api.gouv.fr/search?${params.toString()}`
 }
 
+// Réconcilie un nom d'entreprise (issu d'un signal) sur un SIREN réel.
+// Sert à vérifier qu'une entreprise citée par l'agent existe vraiment.
+export async function reconcileByName(
+  name: string,
+): Promise<{ siren: string; sector: string; city: string } | null> {
+  if (!name || name.length < 2) return null
+  const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(name)}&page=1&per_page=1&etat_administratif=A`
+  try {
+    const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
+    if (!res.ok) return null
+    const data = await res.json()
+    const r = (data.results || [])[0]
+    if (!r) return null
+    return { siren: String(r.siren), sector: r.activite_principale || '', city: r.siege?.libelle_commune || '' }
+  } catch {
+    return null
+  }
+}
+
 export async function debugSearch(q: SourcingQuery) {
   const url = buildSearchUrl(q)
   const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })

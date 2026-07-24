@@ -156,6 +156,19 @@ export interface SourcedCompany {
   signals: string[]   // ville, effectif… (signaux structurels)
 }
 
+// Recherche par SIGNAL : entreprise détectée via une annonce/actu, avec icebreaker.
+export interface SignalHit {
+  company: string
+  siren?: string          // réconcilié sur data.gouv (undefined si non trouvé)
+  signalType: 'recrutement' | 'levée' | 'actu' | 'autre'
+  detail: string          // "recrute un Head of Sales (cybersécurité)"
+  icebreaker: string      // accroche prête à l'emploi
+  sourceUrl?: string
+  sector?: string
+  city?: string
+  verified: boolean       // true si réconcilié à un SIREN (existe vraiment)
+}
+
 // Étape 3 : contact résolu (Pappers dirigeants / Unipile LinkedIn personas).
 export interface ResolvedContact {
   name: string
