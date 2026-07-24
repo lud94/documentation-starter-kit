@@ -78,6 +78,7 @@ export default function SourcingPage() {
   const [sigRunning, setSigRunning] = useState(false)
   const [sigHits, setSigHits] = useState<SignalHit[]>([])
   const [sigMock, setSigMock] = useState(false)
+  const [sigMode, setSigMode] = useState('')
   const [sigError, setSigError] = useState<string | null>(null)
   const [sigImported, setSigImported] = useState<Set<string>>(new Set())
   const [copied, setCopied] = useState<string | null>(null)
@@ -156,7 +157,7 @@ export default function SourcingPage() {
       const res = await fetch(`/api/signals/search?thesis=${encodeURIComponent(q)}`)
       const d = await res.json()
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
-      setSigHits(d.hits); setSigMock(!!d.mock)
+      setSigHits(d.hits); setSigMock(!!d.mock); setSigMode(d.mode || '')
     } catch (e: any) {
       setSigError(e.message || 'Agent indisponible')
     } finally { setSigRunning(false) }
@@ -345,7 +346,13 @@ export default function SourcingPage() {
               ))}
             </div>
             {sigError && <p className="text-xs text-red-600 mt-3">Échec : {sigError}</p>}
-            {sigMock && sigHits.length > 0 && <p className="text-[11px] text-amber-600 mt-3">⚠️ Résultats simulés — ajoute ANTHROPIC_API_KEY dans Vercel pour la recherche web réelle.</p>}
+            {sigHits.length > 0 && (
+              <p className={`text-[11px] mt-3 ${sigMode === 'exa+claude' ? 'text-emerald-600' : sigMode === 'claude-web' ? 'text-amber-600' : 'text-amber-600'}`}>
+                {sigMode === 'exa+claude' ? '⚡ Capteur Exa → cerveau Claude (réel)'
+                  : sigMode === 'claude-web' ? '⚡ Claude web seul (ajoute EXA_API_KEY pour un capteur plus frais)'
+                  : '⚠️ Résultats simulés — ajoute ANTHROPIC_API_KEY (+ EXA_API_KEY) dans Vercel pour le réel.'}
+              </p>
+            )}
           </div>
 
           {sigHits.length > 0 && (

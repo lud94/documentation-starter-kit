@@ -162,10 +162,18 @@ const CHANNEL_ICON: Record<Channel['key'], string> = {
   linkedin: 'in', email: '@', whatsapp: 'WA',
 }
 
+interface KeyStatus { key: string; label: string; set: boolean }
+
 function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: (c: Channel[]) => void }) {
   const [drafts, setDrafts] = useState<Record<string, ChannelConfig>>({})
   const [linking, setLinking] = useState<string | null>(null)
   const [linkMsg, setLinkMsg] = useState<Record<string, string>>({})
+  const [keys, setKeys] = useState<KeyStatus[]>([])
+  const [sigMode, setSigMode] = useState<string>('')
+
+  useEffect(() => {
+    fetch('/api/config/status').then((r) => r.json()).then((d) => { setKeys(d.keys || []); setSigMode(d.signalsMode || '') }).catch(() => {})
+  }, [])
 
   const setDraft = (key: string, patch: ChannelConfig) => setDrafts((d) => ({ ...d, [key]: { ...d[key], ...patch } }))
   const cfg = (c: Channel): ChannelConfig => ({ ...c.config, ...drafts[c.key] })
@@ -189,6 +197,29 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
     <div className="space-y-4 max-w-3xl">
       <div className="card p-4 bg-indigo-50/40 border-indigo-100">
         <p className="text-xs text-indigo-700">Tous les canaux passent par <strong>Unipile</strong> (une seule intégration). LinkedIn et WhatsApp se connectent via authentification hébergée / QR code ; l'email via Gmail, Outlook ou IMAP.</p>
+      </div>
+
+      {/* Clés API — statut lecture seule (les valeurs se posent dans Vercel, jamais ici) */}
+      <div className="card p-5">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h2 className="text-sm font-semibold text-gray-700">Clés API & modèles</h2>
+          {sigMode && (
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${sigMode === 'exa+claude' ? 'bg-emerald-50 text-emerald-600' : sigMode === 'claude-web' ? 'bg-amber-50 text-amber-600' : 'bg-gray-100 text-gray-400'}`}>
+              Signaux : {sigMode === 'exa+claude' ? 'Exa → Claude' : sigMode === 'claude-web' ? 'Claude web seul' : 'mode simulé'}
+            </span>
+          )}
+        </div>
+        <div className="space-y-1">
+          {keys.map((k) => (
+            <div key={k.key} className="flex items-center gap-3 py-2 border-b border-gray-50 last:border-0">
+              <span className={`w-2 h-2 rounded-full ${k.set ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+              <span className="text-sm text-gray-700">{k.label}</span>
+              <code className="text-[11px] text-gray-400">{k.key}</code>
+              <span className={`text-xs ml-auto font-medium ${k.set ? 'text-emerald-600' : 'text-gray-400'}`}>{k.set ? 'configurée' : 'manquante'}</span>
+            </div>
+          ))}
+        </div>
+        <p className="text-[11px] text-gray-400 mt-3">🔒 Pour des raisons de sécurité, les clés se posent dans <strong>Vercel → Settings → Environment Variables</strong> (côté serveur), jamais dans le navigateur. Ce tableau montre seulement lesquelles sont détectées.</p>
       </div>
 
       {channels.map((c) => {

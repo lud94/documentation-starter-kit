@@ -5,9 +5,17 @@
 
 import type { SignalHit } from '../../types/prospector'
 import { reconcileByName } from './datagouv'
+import { searchExa, exaConfigured, type ExaDoc } from './exa'
 
 export function signalsConfigured(): boolean {
   return !!process.env.ANTHROPIC_API_KEY
+}
+
+// Décrit la voie active pour l'affichage (transparence coût/source).
+export function signalsMode(): 'exa+claude' | 'claude-web' | 'mock' {
+  if (process.env.ANTHROPIC_API_KEY && exaConfigured()) return 'exa+claude'
+  if (process.env.ANTHROPIC_API_KEY) return 'claude-web'
+  return 'mock'
 }
 
 const SYSTEM = `Tu es un agent de veille commerciale B2B pour une agence française.
@@ -43,15 +51,42 @@ async function callClaude(thesis: string, max: number): Promise<SignalHit[]> {
   })
   if (!res.ok) throw new Error(`Anthropic ${res.status} — ${(await res.text()).slice(0, 150)}`)
   const data = await res.json()
+  const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+  return parseHits(text)
+}
 
-  // concatène les blocs texte de la réponse
-  const text: string = (data.content || [])
-    .filter((b: any) => b.type === 'text')
-    .map((b: any) => b.text)
-    .join('\n')
+// Claude EXTRACTEUR : à partir des documents Exa, sort les entreprises + signaux
+// + icebreakers. Pas de web tool ici (Exa a déjà cherché) → plus rapide/moins cher.
+async function extractWithClaude(thesis: string, docs: ExaDoc[], max: number): Promise<SignalHit[]> {
+  const key = process.env.ANTHROPIC_API_KEY
+  if (!key || docs.length === 0) return []
+  const model = process.env.SIGNALS_MODEL || 'claude-opus-4-8'
+
+  const corpus = docs
+    .map((d, i) => `[${i + 1}] ${d.title}\nURL: ${d.url}\n${d.text}`)
+    .join('\n\n')
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2000,
+      system: `${SYSTEM}\nOn te fournit des extraits web déjà collectés. N'invente RIEN au-delà de ces extraits. Attribue à chaque entreprise l'URL source d'où vient le signal.`,
+      messages: [{ role: 'user', content: `Thèse: ${thesis}\n\nExtraits web:\n${corpus}\n\n${jsonInstruction(max)}` }],
+    }),
+  })
+  if (!res.ok) throw new Error(`Anthropic ${res.status} — ${(await res.text()).slice(0, 150)}`)
+  const data = await res.json()
+  const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+  return parseHits(text)
+}
+
+function parseHits(text: string): SignalHit[] {
   const match = text.match(/\{[\s\S]*\}/)
   if (!match) return []
-  const parsed = JSON.parse(match[0])
+  let parsed: any
+  try { parsed = JSON.parse(match[0]) } catch { return [] }
   return (parsed.hits || []).map((h: any): SignalHit => ({
     company: String(h.company || '').trim(),
     signalType: ['recrutement', 'levée', 'actu'].includes(h.signalType) ? h.signalType : 'autre',
@@ -74,15 +109,21 @@ function mockHits(thesis: string): SignalHit[] {
   ]
 }
 
-export async function searchSignals(thesis: string, max = 8): Promise<{ mock: boolean; hits: SignalHit[] }> {
+export async function searchSignals(thesis: string, max = 8): Promise<{ mock: boolean; mode: string; hits: SignalHit[] }> {
+  const mode = signalsMode()
   let hits: SignalHit[]
   let mock = false
   try {
-    hits = signalsConfigured() ? await callClaude(thesis, max) : mockHits(thesis)
-    if (!signalsConfigured()) mock = true
+    if (mode === 'exa+claude') {
+      const docs = await searchExa(thesis)
+      hits = docs.length ? await extractWithClaude(thesis, docs, max) : await callClaude(thesis, max)
+    } else if (mode === 'claude-web') {
+      hits = await callClaude(thesis, max)
+    } else {
+      hits = mockHits(thesis); mock = true
+    }
   } catch {
-    hits = mockHits(thesis)
-    mock = true
+    hits = mockHits(thesis); mock = true
   }
 
   // Réconciliation SIREN — vérifie l'existence réelle, filtre les hallucinations.
@@ -94,5 +135,5 @@ export async function searchSignals(thesis: string, max = 8): Promise<{ mock: bo
         : { ...h, verified: false }
     }),
   )
-  return { mock, hits: reconciled }
+  return { mock, mode, hits: reconciled }
 }
