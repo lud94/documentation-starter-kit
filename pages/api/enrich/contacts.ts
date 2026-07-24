@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import type { ResolvedContact } from '../../../types/prospector'
 import { fetchDirigeants, pappersConfigured } from '../../../lib/prospector/pappers'
 import { findPersonas, unipileConfigured } from '../../../lib/prospector/unipile'
+import { hydrateKeystore } from '../../../lib/prospector/keystore'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
@@ -26,6 +27,7 @@ function mockContacts(siren: string, company: string, personas: string[], dirige
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  await hydrateKeystore()
   const siren = str(req.query.siren)
   const company = str(req.query.company)
   const dirigeant = str(req.query.dirigeant) || undefined

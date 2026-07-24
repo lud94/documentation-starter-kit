@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { getKey } from '../../../lib/prospector/keystore'
+import { getKey, hydrateKeystore } from '../../../lib/prospector/keystore'
 
 // Génère un lien d'authentification hébergée Unipile (hosted auth).
 // L'utilisateur clique → connecte son compte LinkedIn/WhatsApp/Email chez Unipile
@@ -11,6 +11,7 @@ const PROVIDERS: Record<string, string> = {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  await hydrateKeystore()
   const provider = String((Array.isArray(req.query.provider) ? req.query.provider[0] : req.query.provider) || 'linkedin')
   const dsn = getKey('UNIPILE_DSN')
   const key = getKey('UNIPILE_API_KEY')

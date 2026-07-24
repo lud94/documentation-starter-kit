@@ -1,10 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { maskPII, countPII } from '../../../lib/prospector/anonymize'
-import { getKey, setKeys } from '../../../lib/prospector/keystore'
+import { getKey, setKeys, hydrateKeystore } from '../../../lib/prospector/keystore'
 
 // GET  → état du réglage global (activé par défaut).
 // POST { text, terms?, enabled? } → prévisualise le masquage et/ou change le réglage.
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  await hydrateKeystore()
   if (req.method === 'GET') {
     return res.status(200).json({ enabled: getKey('PII_MASKING') !== '0' })
   }

@@ -8,6 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.8",
     "@types/bcryptjs": "^2.4.6",
     "bcryptjs": "^3.0.3",
     "next": "^13.0.6",

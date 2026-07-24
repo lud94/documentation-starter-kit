@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { UsageSummary, Diagnostic, Workspace } from '../types/prospector'
-import { getUsage, getDiagnostics, getWorkspaces, createWorkspace, getChannels, connectChannel, disconnectChannel } from '../lib/prospector/capabilities'
+import { getUsage, getDiagnostics, getChannels, connectChannel, disconnectChannel } from '../lib/prospector/capabilities'
 import type { Channel, ChannelConfig } from '../lib/prospector/capabilities'
 
 type Tab = 'usage' | 'connexions' | 'protocole' | 'diagnostic' | 'workspaces'
@@ -25,17 +25,18 @@ export default function AdminPage() {
   const [wsOpen, setWsOpen] = useState(false)
   const [wsName, setWsName] = useState('')
   const [wsPlan, setWsPlan] = useState('Starter')
+  const loadWs = () => fetch('/api/workspaces').then((r) => r.json()).then((d) => setWorkspaces(d.workspaces || [])).catch(() => {})
   const createWs = async () => {
     if (!wsName.trim()) return
-    await createWorkspace(wsName, wsPlan)
+    await fetch('/api/workspaces', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: wsName, plan: wsPlan }) })
     setWsName(''); setWsPlan('Starter'); setWsOpen(false)
-    getWorkspaces().then(setWorkspaces)
+    loadWs()
   }
 
   useEffect(() => {
     getUsage().then(setUsage)
     getDiagnostics().then(setDiags)
-    getWorkspaces().then(setWorkspaces)
+    loadWs()
     getChannels().then(setChannels)
   }, [])
 
@@ -202,7 +203,8 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
   const [savingKeys, setSavingKeys] = useState(false)
   const [keySaved, setKeySaved] = useState(false)
 
-  const loadStatus = () => fetch('/api/config/status').then((r) => r.json()).then((d) => { setKeys(d.keys || []); setSigMode(d.signalsMode || '') }).catch(() => {})
+  const [persistence, setPersistence] = useState('')
+  const loadStatus = () => fetch('/api/config/status').then((r) => r.json()).then((d) => { setKeys(d.keys || []); setSigMode(d.signalsMode || ''); setPersistence(d.persistence || '') }).catch(() => {})
   useEffect(() => { loadStatus() }, [])
 
   // ── MFA ──
@@ -298,11 +300,18 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
       <div className="card p-5">
         <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h2 className="text-sm font-semibold text-gray-700">Clés API & modèles</h2>
-          {sigMode && (
-            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${sigMode === 'exa+claude' ? 'bg-emerald-50 text-emerald-600' : sigMode === 'claude-web' ? 'bg-amber-50 text-amber-600' : 'bg-gray-100 text-gray-400'}`}>
-              Signaux : {sigMode === 'exa+claude' ? 'Exa → Claude' : sigMode === 'claude-web' ? 'Claude web seul' : 'mode simulé'}
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {persistence && (
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${persistence === 'supabase' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                {persistence === 'supabase' ? 'Persistance : Supabase' : 'Persistance : mémoire'}
+              </span>
+            )}
+            {sigMode && (
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${sigMode === 'exa+claude' ? 'bg-emerald-50 text-emerald-600' : sigMode === 'claude-web' ? 'bg-amber-50 text-amber-600' : 'bg-gray-100 text-gray-400'}`}>
+                Signaux : {sigMode === 'exa+claude' ? 'Exa → Claude' : sigMode === 'claude-web' ? 'Claude web seul' : 'mode simulé'}
+              </span>
+            )}
+          </div>
         </div>
         <div className="space-y-2.5">
           {keys.map((k) => (

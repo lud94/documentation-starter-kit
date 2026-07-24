@@ -1,12 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { isSetup, setPassword } from '../../../lib/prospector/auth'
 import { createSessionToken, SESSION_COOKIE } from '../../../lib/auth/session'
+import { hydrateKeystore } from '../../../lib/prospector/keystore'
 
 const TTL = 60 * 60 * 12
 
 // Création du mot de passe à la première visite (tant qu'aucun n'existe).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
+  await hydrateKeystore()
   if (isSetup()) return res.status(409).json({ error: 'already_setup' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body

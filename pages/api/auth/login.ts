@@ -2,11 +2,13 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { checkPassword, isSetup, mfaEnabled, getTotpSecret } from '../../../lib/prospector/auth'
 import { verifyTotp } from '../../../lib/auth/totp'
 import { createSessionToken, SESSION_COOKIE } from '../../../lib/auth/session'
+import { hydrateKeystore } from '../../../lib/prospector/keystore'
 
 const TTL = 60 * 60 * 12 // 12 h
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
+  await hydrateKeystore()
   if (!isSetup()) return res.status(409).json({ error: 'not_setup' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body

@@ -18,6 +18,20 @@ export function getKey(name: string): string | undefined {
   return store.get(name) || process.env[name] || undefined
 }
 
+// Hydrate le store mémoire depuis Supabase (une seule fois par instance).
+// À `await` en tête des routes API qui lisent des clés, pour la durabilité.
+export async function hydrateKeystore(): Promise<void> {
+  if (g.__prospectorHydrated) return g.__prospectorHydrated
+  g.__prospectorHydrated = (async () => {
+    try {
+      const { loadAllSettings } = await import('../supabase/settings')
+      const rows = await loadAllSettings()
+      for (const [k, v] of Object.entries(rows)) if (v) store.set(k, v)
+    } catch { /* Supabase absent → on garde la mémoire */ }
+  })()
+  return g.__prospectorHydrated
+}
+
 export function hasKey(name: string): boolean {
   return !!getKey(name)
 }
@@ -35,5 +49,14 @@ export function setKeys(patch: Record<string, string>) {
     const val = (v || '').trim()
     if (val) store.set(k, val)
     else store.delete(k) // valeur vide → efface la clé saisie (retombe sur l'env)
+    // write-through vers Supabase (best-effort, non bloquant)
+    void persist(k, val)
   }
+}
+
+async function persist(key: string, value: string) {
+  try {
+    const { saveSetting } = await import('../supabase/settings')
+    await saveSetting(key, value)
+  } catch { /* pas de Supabase → mémoire seulement */ }
 }
