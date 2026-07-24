@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
-import type { SourcingData, SourcedLead } from '../types/prospector'
-import { getSourcing, type Period } from '../lib/prospector/capabilities'
+import type { SourcingData, SourcedCompany, ResolvedContact } from '../types/prospector'
+import { getSourcing, importCompaniesToPipeline, findContactsForCompany, PERSONA_TARGETS, type Period } from '../lib/prospector/capabilities'
 
 const INDUSTRIES = [
   'Real Estate', 'Technology', 'Healthcare', 'Finance', 'Retail', 'Manufacturing',
@@ -10,10 +10,9 @@ const INDUSTRIES = [
 ]
 const SIZES = ['1-10', '11-20', '21-50', '51-100', '101-250', '251-500', '501-1000', '1000+']
 const COMPANY_TYPES = ['Tous types', 'Éditeur SaaS', 'ESN / conseil IT', 'Cabinet de conseil', 'Agence', 'Startup', 'Scale-up', 'Grand groupe', 'PME']
-const SENIORITY = ['Tous', 'Founder', 'C-level', 'VP', 'Director', 'Manager']
 const REVENUES = ['Aucun minimum', '500K', '1M', '5M', '10M', '50M', '100M']
 
-// Signaux avec leur source technique et leur faisabilité (cf. réponse point 4)
+// Signaux avec leur source technique et leur faisabilité
 const SIGNALS: { label: string; feasibility: 'facile' | 'moyen' | 'difficile' }[] = [
   { label: 'Recrute des sales', feasibility: 'facile' },
   { label: 'Recrute du marketing', feasibility: 'facile' },
@@ -37,69 +36,111 @@ const PERIODS: { key: Period; label: string }[] = [
   { key: 'year', label: 'Année' },
 ]
 
-function scoreColor(s: number) { return s >= 80 ? '#059669' : s >= 65 ? '#f59e0b' : '#94a3b8' }
-
-function exportCsv(data: SourcingData, incoming: SourcedLead[], period: Period) {
+function exportCsv(companies: SourcedCompany[], period: Period) {
   const rows: (string | number)[][] = [
-    ['Rapport Sourcing', period],
+    ['Rapport Sourcing entreprises', period],
     [],
-    ['Leads sourcés', data.totalSourced],
-    ['Taux de qualification (%)', data.qualificationRate],
-    [],
-    ['Par secteur', ''],
-    ...data.bySector.map((s) => [s.sector, s.count] as (string | number)[]),
-    [],
-    ['Leads à trier', ''],
-    ['Nom', 'Titre', 'Entreprise', 'Secteur', 'Score', 'Signaux'],
-    ...incoming.map((l) => [l.name, l.title, l.company, l.sector, l.score, l.signals.join(' · ')] as (string | number)[]),
+    ['SIREN', 'Entreprise', 'Secteur', 'Effectif', 'Ville', 'Dép', 'Dirigeant SIRENE'],
+    ...companies.map((c) => [c.id, c.name, c.sector, c.effectif, c.city, c.dep, c.dirigeant || ''] as (string | number)[]),
   ]
   const csv = '﻿' + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
-  const a = document.createElement('a'); a.href = url; a.download = `prospector-sourcing-${period}.csv`; a.click(); URL.revokeObjectURL(url)
+  const a = document.createElement('a'); a.href = url; a.download = `prospector-entreprises-${period}.csv`; a.click(); URL.revokeObjectURL(url)
 }
 
 const inputClass = 'w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white'
+const SOURCE_STYLE: Record<string, string> = {
+  pappers: 'bg-blue-50 text-blue-600', unipile: 'bg-purple-50 text-purple-600', sirene: 'bg-gray-100 text-gray-500',
+}
 
 export default function SourcingPage() {
   const [data, setData] = useState<SourcingData | null>(null)
-  const [incoming, setIncoming] = useState<SourcedLead[]>([])
   const [period, setPeriod] = useState<Period>('month')
   const [tab, setTab] = useState<'recherche' | 'prospects'>('recherche')
   const [pickedSignals, setPickedSignals] = useState<Set<string>>(new Set())
   const [running, setRunning] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [lastRun, setLastRun] = useState<string | null>(null)
   const [runError, setRunError] = useState(false)
-  const [drill, setDrill] = useState<{ title: string; items: SourcedLead[] } | null>(null)
+
+  // Résultats entreprises (live data.gouv)
+  const [companies, setCompanies] = useState<SourcedCompany[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [imported, setImported] = useState<Set<string>>(new Set())
+
+  // Résolution de contacts (étape 3)
+  const [contactsFor, setContactsFor] = useState<SourcedCompany | null>(null)
+  const [contacts, setContacts] = useState<ResolvedContact[]>([])
+  const [resolving, setResolving] = useState(false)
+
   const [fSector, setFSector] = useState('')
   const [fLocation, setFLocation] = useState('')
   const [fSize, setFSize] = useState('')
 
-  useEffect(() => { getSourcing(period).then((d) => { setData(d); setIncoming(d.incoming) }) }, [period])
+  useEffect(() => { getSourcing(period).then(setData) }, [period])
 
   const toggleSignal = (s: string) => setPickedSignals((p) => { const n = new Set(p); n.has(s) ? n.delete(s) : n.add(s); return n })
 
+  const query = () => {
+    const params = new URLSearchParams()
+    if (fSector) params.set('sector', fSector)
+    if (fLocation) params.set('location', fLocation)
+    if (fSize) params.set('size', fSize)
+    return params
+  }
+
   const launch = async () => {
-    setRunning(true); setLastRun(null); setRunError(false)
+    setRunning(true); setLastRun(null); setRunError(false); setPage(1)
     try {
-      const params = new URLSearchParams()
-      if (fSector) params.set('sector', fSector)
-      if (fLocation) params.set('location', fLocation)
-      if (fSize) params.set('size', fSize)
+      const params = query(); params.set('page', '1')
       const res = await fetch(`/api/sourcing/search?${params.toString()}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-      setIncoming(data.results)
-      if (data.results.length === 0) { setRunError(true); setLastRun('Aucune entreprise pour ces critères — élargis le secteur ou la localisation.') }
-      else { setLastRun(`${data.total} entreprises trouvées (data.gouv) · ${data.results.length} à trier.`); setTab('prospects') }
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
+      setCompanies(d.results); setTotal(d.total); setTotalPages(d.totalPages || 1)
+      if (d.results.length === 0) { setRunError(true); setLastRun('Aucune entreprise pour ces critères — élargis le secteur ou la localisation.') }
+      else { setLastRun(`${d.total} entreprises trouvées (data.gouv) · page 1/${d.totalPages}.`); setTab('prospects') }
     } catch (e: any) {
       setRunError(true); setLastRun('Échec : ' + (e.message || 'API indisponible'))
-    } finally {
-      setRunning(false)
-    }
+    } finally { setRunning(false) }
   }
-  const triage = (id: string) => setIncoming((l) => l.filter((x) => x.id !== id))
+
+  const loadMore = async () => {
+    setLoadingMore(true)
+    try {
+      const next = page + 1
+      const params = query(); params.set('page', String(next))
+      const res = await fetch(`/api/sourcing/search?${params.toString()}`)
+      const d = await res.json()
+      if (res.ok) {
+        // dédoublonne par SIREN
+        setCompanies((prev) => { const seen = new Set(prev.map((c) => c.id)); return [...prev, ...d.results.filter((c: SourcedCompany) => !seen.has(c.id))] })
+        setPage(next); setTotalPages(d.totalPages || totalPages)
+        setLastRun(`${total} entreprises · ${companies.length + d.results.length} chargées (page ${next}/${d.totalPages}).`)
+      }
+    } finally { setLoadingMore(false) }
+  }
+
+  const importOne = async (c: SourcedCompany) => {
+    await importCompaniesToPipeline([c])
+    setImported((s) => new Set(s).add(c.id))
+  }
+  const importAll = async () => {
+    const toAdd = companies.filter((c) => !imported.has(c.id))
+    await importCompaniesToPipeline(toAdd)
+    setImported((s) => { const n = new Set(s); toAdd.forEach((c) => n.add(c.id)); return n })
+  }
+
+  const resolveContacts = async (c: SourcedCompany) => {
+    setContactsFor(c); setResolving(true); setContacts([])
+    const res = await findContactsForCompany(c, PERSONA_TARGETS)
+    setContacts(res); setResolving(false)
+  }
+
   const sectorMax = data ? Math.max(...data.bySector.map((s) => s.count)) : 1
+  const allImported = companies.length > 0 && companies.every((c) => imported.has(c.id))
 
   return (
     <>
@@ -108,7 +149,7 @@ export default function SourcingPage() {
       <div className="flex items-start justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Sourcing</h1>
-          <p className="text-gray-400 text-sm mt-0.5">Trouvez de nouveaux comptes filtrés par signal, puis triez-les vers le pipeline.</p>
+          <p className="text-gray-400 text-sm mt-0.5">Trouvez des <strong className="font-semibold text-gray-500">entreprises</strong> cibles, importez-les dans le pipe, puis résolvez les contacts.</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex bg-gray-100 rounded-xl p-1">
@@ -116,36 +157,25 @@ export default function SourcingPage() {
               <button key={p.key} onClick={() => setPeriod(p.key)} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${period === p.key ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>{p.label}</button>
             ))}
           </div>
-          <button onClick={() => data && exportCsv(data, incoming, period)} disabled={!data} className="text-sm font-medium text-gray-600 bg-white border border-gray-200 px-3 py-2 rounded-xl hover:bg-gray-50 transition-colors flex items-center gap-2 disabled:opacity-50">
+          <button onClick={() => exportCsv(companies, period)} disabled={companies.length === 0} className="text-sm font-medium text-gray-600 bg-white border border-gray-200 px-3 py-2 rounded-xl hover:bg-gray-50 transition-colors flex items-center gap-2 disabled:opacity-50">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M4 4h16v16H4z" /></svg>
             Exporter
           </button>
         </div>
       </div>
 
-      {/* Stats — cliquables */}
+      {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
         {[
-          { key: 'sourced', label: 'Leads sourcés', value: data ? String(data.totalSourced) : '—', sub: 'échantillon récent' },
-          { key: 'qualif', label: 'Taux de qualification', value: data ? `${data.qualificationRate}%` : '—', sub: 'passent le gate signal' },
-          { key: 'triage', label: 'À trier', value: String(incoming.length), sub: 'en attente' },
+          { label: 'Entreprises trouvées', value: total ? String(total) : (data ? String(data.totalSourced) : '—'), sub: 'via data.gouv / SIRENE' },
+          { label: 'Chargées à l\'écran', value: String(companies.length), sub: `page ${page}/${totalPages || 1}` },
+          { label: 'Importées au pipe', value: String(imported.size), sub: 'prêtes à enrichir' },
         ].map((k) => (
-          <button
-            key={k.key}
-            onClick={() => data && setDrill({
-              title: k.key === 'qualif' ? 'Leads qualifiés par le gate' : k.key === 'triage' ? 'Leads à trier' : 'Leads sourcés (échantillon)',
-              items: incoming,
-            })}
-            disabled={!data}
-            className="card p-5 text-left transition-all enabled:hover:shadow-md enabled:hover:border-indigo-100 group"
-          >
-            <div className="flex items-center justify-between mb-1">
-              <p className="text-xs font-semibold text-gray-400">{k.label}</p>
-              <svg className="w-3.5 h-3.5 text-gray-300 group-hover:text-indigo-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-            </div>
+          <div key={k.label} className="card p-5">
+            <p className="text-xs font-semibold text-gray-400 mb-1">{k.label}</p>
             <p className="text-2xl font-bold gradient-text">{k.value}</p>
             <p className="text-xs text-gray-400 mt-0.5">{k.sub}</p>
-          </button>
+          </div>
         ))}
       </div>
 
@@ -153,8 +183,8 @@ export default function SourcingPage() {
       <div className="flex bg-gray-100 rounded-xl p-1 w-fit mb-5">
         <button onClick={() => setTab('recherche')} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${tab === 'recherche' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>Nouvelle recherche</button>
         <button onClick={() => setTab('prospects')} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2 ${tab === 'prospects' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>
-          Prospects sourcés
-          {incoming.length > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full gradient-brand text-white">{incoming.length}</span>}
+          Entreprises sourcées
+          {companies.length > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full gradient-brand text-white">{companies.length}</span>}
         </button>
       </div>
 
@@ -168,10 +198,6 @@ export default function SourcingPage() {
             <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Localisation</label>
               <input value={fLocation} onChange={(e) => setFLocation(e.target.value)} className={inputClass} placeholder="ex: Paris, 75, Lyon…" />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Niveau hiérarchique</label>
-              <select className={inputClass}>{SENIORITY.map((s) => <option key={s}>{s}</option>)}</select>
             </div>
             <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Type d'entreprise</label>
@@ -210,35 +236,50 @@ export default function SourcingPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Leads à trier */}
           <div className="lg:col-span-2 card p-5">
-            <h2 className="text-sm font-semibold text-gray-700 mb-1">Leads sourcés à trier</h2>
-            <p className="text-xs text-gray-400 mb-4">Qualifiés par le gate signal. Ajoutez-les au pipeline ou écartez-les.</p>
-            {incoming.length === 0 ? (
-              <p className="text-sm text-gray-400 text-center py-8">Tout est trié 🎉</p>
+            <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+              <h2 className="text-sm font-semibold text-gray-700">Entreprises sourcées</h2>
+              {companies.length > 0 && (
+                <button onClick={importAll} disabled={allImported} className="text-xs font-semibold text-indigo-600 border border-indigo-200 bg-indigo-50/50 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition-colors disabled:opacity-50">
+                  {allImported ? 'Toutes importées' : 'Tout importer dans le pipe'}
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-gray-400 mb-4">Importez l'entreprise dans le pipe, puis « Trouver les contacts » pour résoudre vos personas (CEO, Head of Sales…).</p>
+            {companies.length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-8">Lancez une recherche pour voir des entreprises.</p>
             ) : (
               <div className="space-y-2">
-                {incoming.map((l) => (
-                  <div key={l.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50/50 transition-colors flex-wrap">
-                    <span className="w-8 h-8 rounded-full text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0" style={{ backgroundColor: scoreColor(l.score) }}>{l.score}</span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-800 truncate">{l.name} <span className="text-gray-400 font-normal">· {l.title}</span></p>
-                      <p className="text-xs text-gray-400 truncate">{l.company} · {l.sector}</p>
+                {companies.map((c) => {
+                  const done = imported.has(c.id)
+                  return (
+                    <div key={c.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50/50 transition-colors flex-wrap">
+                      <span className="w-9 h-9 rounded-xl gradient-brand text-white text-xs font-bold flex items-center justify-center flex-shrink-0">{c.name.slice(0, 2).toUpperCase()}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-800 truncate">{c.name}</p>
+                        <p className="text-xs text-gray-400 truncate">{c.sector}{c.dirigeant ? ` · dir. ${c.dirigeant}` : ''}</p>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {c.signals.map((s) => <span key={s} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-500">{s}</span>)}
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
+                        <button onClick={() => resolveContacts(c)} className="text-xs font-semibold text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-gray-50 transition-colors">Trouver les contacts</button>
+                        <button onClick={() => importOne(c)} disabled={done} className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-opacity ${done ? 'bg-emerald-50 text-emerald-600' : 'gradient-brand text-white hover:opacity-90'}`}>
+                          {done ? '✓ Dans le pipe' : '+ Importer'}
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {l.signals.map((s) => <span key={s} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-500">{s}</span>)}
-                    </div>
-                    <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-                      <button onClick={() => triage(l.id)} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity">+ Pipeline</button>
-                      <button onClick={() => triage(l.id)} className="text-xs font-medium text-gray-400 px-2 py-1.5 rounded-lg hover:text-red-500 hover:bg-red-50 transition-colors">Ignorer</button>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
+                {page < totalPages && (
+                  <button onClick={loadMore} disabled={loadingMore} className="w-full text-sm font-medium text-gray-600 border border-dashed border-gray-300 rounded-xl py-2.5 hover:bg-gray-50 transition-colors disabled:opacity-50 mt-1">
+                    {loadingMore ? 'Chargement…' : `Charger plus (${companies.length}/${total})`}
+                  </button>
+                )}
               </div>
             )}
           </div>
 
-          {/* Par secteur + runs */}
           <div className="space-y-4">
             <div className="card p-5">
               <h2 className="text-sm font-semibold text-gray-700 mb-3">Par secteur</h2>
@@ -271,28 +312,36 @@ export default function SourcingPage() {
         </div>
       )}
 
-      {/* Drill-down KPI */}
-      {drill && (
+      {/* Résolution de contacts */}
+      {contactsFor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setDrill(null)} />
+          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setContactsFor(null)} />
           <div className="relative card w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="text-base font-bold text-gray-900">{drill.title}</h2>
-              <button onClick={() => setDrill(null)} className="text-gray-400 hover:text-gray-700"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+              <div>
+                <h2 className="text-base font-bold text-gray-900">Contacts · {contactsFor.name}</h2>
+                <p className="text-xs text-gray-400">Personas résolus via Pappers (dirigeants) + Unipile / LinkedIn.</p>
+              </div>
+              <button onClick={() => setContactsFor(null)} className="text-gray-400 hover:text-gray-700"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
             </div>
-            <div className="p-3 overflow-y-auto space-y-1">
-              {drill.items.map((l) => (
-                <div key={l.id} className="flex items-center gap-3 px-2 py-2.5 rounded-xl hover:bg-gray-50 transition-colors">
-                  <span className="w-8 h-8 rounded-full text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0" style={{ backgroundColor: scoreColor(l.score) }}>{l.score}</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-gray-800 truncate">{l.name} <span className="text-gray-400 font-normal">· {l.title}</span></p>
-                    <p className="text-xs text-gray-400 truncate">{l.company} · {l.sector}</p>
+            <div className="p-3 overflow-y-auto space-y-2">
+              {resolving ? (
+                <p className="text-sm text-gray-400 text-center py-8">Résolution des personas…</p>
+              ) : (
+                contacts.map((ct, i) => (
+                  <div key={i} className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-gray-100">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-800 truncate">{ct.name} <span className="text-gray-400 font-normal">· {ct.persona}</span></p>
+                      <p className="text-xs text-gray-400 truncate">{ct.email}</p>
+                    </div>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${SOURCE_STYLE[ct.source]}`}>{ct.source}</span>
+                    {ct.linkedinUrl && <a href={ct.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 hover:underline">LinkedIn</a>}
                   </div>
-                  <div className="flex flex-wrap gap-1 justify-end max-w-[45%]">
-                    {l.signals.map((s) => <span key={s} className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-500">{s}</span>)}
-                  </div>
-                </div>
-              ))}
+                ))
+              )}
+            </div>
+            <div className="px-5 py-3 border-t border-gray-100 bg-amber-50/50">
+              <p className="text-[11px] text-amber-700">⚠️ Contacts simulés — au câblage : Pappers/societe.com pour les dirigeants, Unipile/LinkedIn pour les personas sales/marketing.</p>
             </div>
           </div>
         </div>

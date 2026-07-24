@@ -3,7 +3,7 @@
 // Renvoie des ENTREPRISES (pas des contacts) : SIREN, NAF, effectif, ville, dirigeant.
 // Le persona/contact et le scoring signal se font en aval (LinkedIn/Unipile + gate).
 
-import type { SourcedLead } from '../../types/prospector'
+import type { SourcedCompany } from '../../types/prospector'
 
 // Code tranche d'effectif INSEE → libellé
 const TRANCHE: Record<string, string> = {
@@ -33,7 +33,10 @@ const CITY_TO_DEP: Record<string, string> = {
   'nantes': '44', 'toulouse': '31', 'nice': '06', 'strasbourg': '67', 'montpellier': '34', 'rennes': '35',
 }
 
-export interface SourcingQuery { sector?: string; location?: string; size?: string }
+export interface SourcingQuery { sector?: string; location?: string; size?: string; page?: number }
+
+// L'API plafonne per_page à 25 ; on pagine pour aller au-delà.
+const PER_PAGE = 25
 
 export function buildSearchUrl(q: SourcingQuery): string {
   const params = new URLSearchParams()
@@ -55,8 +58,8 @@ export function buildSearchUrl(q: SourcingQuery): string {
   // que si AUCUN autre critère n'est présent, sinon il sur-filtre → 0 résultat.
   if (Array.from(params.keys()).length === 0) params.set('q', q.sector || 'entreprise')
 
-  params.set('page', '1')
-  params.set('per_page', '15')
+  params.set('page', String(Math.max(1, q.page || 1)))
+  params.set('per_page', String(PER_PAGE))
 
   return `https://recherche-entreprises.api.gouv.fr/search?${params.toString()}`
 }
@@ -68,7 +71,9 @@ export async function debugSearch(q: SourcingQuery) {
   return { url, status: res.status, body: body.slice(0, 500) }
 }
 
-export async function fetchCompanies(q: SourcingQuery): Promise<{ total: number; results: SourcedLead[] }> {
+export async function fetchCompanies(
+  q: SourcingQuery,
+): Promise<{ total: number; page: number; totalPages: number; results: SourcedCompany[] }> {
   const url = buildSearchUrl(q)
   const res = await fetch(url, {
     headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0 (+https://smartagency-ai.com)' },
@@ -79,23 +84,31 @@ export async function fetchCompanies(q: SourcingQuery): Promise<{ total: number;
   }
   const data = await res.json()
 
-  const results: SourcedLead[] = (data.results || []).map((r: any) => {
+  const results: SourcedCompany[] = (data.results || []).map((r: any) => {
     const dir = (r.dirigeants || []).find((d: any) => d && d.nom)
-    const eff = TRANCHE[r.tranche_effectif_salarie]
-    const city = r.siege?.libelle_commune
+    const eff = TRANCHE[r.tranche_effectif_salarie] || ''
+    const city = r.siege?.libelle_commune || ''
+    const dep = r.siege?.departement || ''
     const signals: string[] = []
     if (eff) signals.push(`${eff} sal.`)
     if (city) signals.push(city)
     return {
       id: String(r.siren),
-      name: dir ? `${String(dir.prenoms || '').split(' ')[0]} ${dir.nom}`.trim() : '—',
-      title: dir?.qualite || 'Dirigeant',
-      company: r.nom_complet || r.nom_raison_sociale || 'Entreprise',
+      name: r.nom_complet || r.nom_raison_sociale || 'Entreprise',
+      naf: r.activite_principale || '',
       sector: q.sector || r.activite_principale || '',
-      score: 0, // non scoré : le gate signal interviendra ensuite
+      effectif: eff,
+      city,
+      dep,
+      dirigeant: dir ? `${String(dir.prenoms || '').split(' ')[0]} ${dir.nom}`.trim() : undefined,
       signals,
     }
   })
 
-  return { total: data.total_results ?? results.length, results }
+  return {
+    total: data.total_results ?? results.length,
+    page: data.page ?? (q.page || 1),
+    totalPages: data.total_pages ?? 1,
+    results,
+  }
 }

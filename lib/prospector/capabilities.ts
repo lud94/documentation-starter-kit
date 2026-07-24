@@ -2,7 +2,7 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData, SourcedCompany, ResolvedContact } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
 export type Period = 'week' | 'month' | 'quarter' | 'year'
@@ -668,4 +668,69 @@ export function updateActionMessage(id: string, message: string) {
   const a = ACTIONS.find((x) => x.id === id)
   if (a) a.generatedMessage = message
   return delay(a)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sourcing → Pipeline → Résolution de contacts
+// Capabilities nommées, appelables par l'UI aujourd'hui et par Jarvis demain.
+// Étape 1 (data.gouv) donne des ENTREPRISES. Étape 3 résout les CONTACTS.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Personas ciblés à résoudre pour chaque entreprise (ICP Smart.AI).
+export const PERSONA_TARGETS = ['Founder/CEO', 'Head of Sales', 'Head of Marketing']
+
+let sourcedSeq = 0
+// SIREN déjà importés → évite les doublons dans le pipe.
+const importedSirens = new Set<string>()
+
+// Importe des entreprises sourcées dans le pipeline comme cartes « à enrichir »
+// (aucun contact encore : la résolution se déclenche ensuite, à la demande).
+export function importCompaniesToPipeline(companies: SourcedCompany[]) {
+  let added = 0
+  companies.forEach((c) => {
+    if (importedSirens.has(c.id)) return
+    importedSirens.add(c.id)
+    added++
+    const [firstName, ...rest] = (c.dirigeant || '').split(' ')
+    const id = `src${++sourcedSeq}`
+    LEADS[id] = {
+      id,
+      firstName: firstName || c.name,
+      lastName: rest.join(' '),
+      title: c.dirigeant ? 'Dirigeant (SIRENE)' : 'Contact à trouver',
+      company: c.name,
+      score: 0,
+      temperature: 'warm',
+      status: 'froid',
+      stage: 'to_invite',
+      email: null,
+      phone: null,
+    }
+  })
+  return delay({ added, skipped: companies.length - added })
+}
+
+// Résout les contacts d'une entreprise pour les personas demandés.
+// MOCK — au câblage : Pappers/societe.com (dirigeants) + Unipile/LinkedIn (personas).
+export function findContactsForCompany(
+  company: SourcedCompany,
+  personas: string[] = PERSONA_TARGETS,
+): Promise<ResolvedContact[]> {
+  const firsts = ['Julien', 'Marie', 'Alexandre', 'Sophie', 'Nicolas', 'Camille']
+  const lasts = ['Durand', 'Leroy', 'Moreau', 'Simon', 'Michel', 'Garcia']
+  const slug = company.name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 14)
+  const contacts: ResolvedContact[] = personas.map((persona, i) => {
+    const f = firsts[(company.id.charCodeAt(0) + i) % firsts.length]
+    const l = lasts[(company.id.charCodeAt(1) + i) % lasts.length]
+    const isDir = persona.includes('Founder') || persona.includes('CEO')
+    return {
+      name: isDir && company.dirigeant ? company.dirigeant : `${f} ${l}`,
+      persona,
+      title: persona,
+      linkedinUrl: `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${f} ${l} ${company.name}`)}`,
+      email: `${f}.${l}@${slug}.com`.toLowerCase(),
+      source: isDir ? 'pappers' : 'unipile',
+    }
+  })
+  return delay(contacts)
 }

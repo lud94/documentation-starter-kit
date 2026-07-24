@@ -141,6 +141,29 @@ export interface SourcedLead {
   signals: string[]
 }
 
+// Étape 1 : sourcing = ENTREPRISES (data.gouv/SIRENE). Pas de contact ici.
+export interface SourcedCompany {
+  id: string          // SIREN
+  name: string        // raison sociale / nom complet
+  naf: string         // code activité principal
+  sector: string      // secteur (label UI de la recherche)
+  effectif: string    // libellé tranche effectif
+  city: string
+  dep: string
+  dirigeant?: string  // dirigeant SIRENE (best-effort, pas un persona ciblé)
+  signals: string[]   // ville, effectif… (signaux structurels)
+}
+
+// Étape 3 : contact résolu (Pappers dirigeants / Unipile LinkedIn personas).
+export interface ResolvedContact {
+  name: string
+  persona: string     // CEO, Head of Sales, Head of Marketing…
+  title: string
+  linkedinUrl?: string
+  email?: string
+  source: 'pappers' | 'unipile' | 'sirene'
+}
+
 export interface SourcingRun {
   id: string
   label: string
