@@ -34,7 +34,7 @@ const CITY_TO_DEP: Record<string, string> = {
 
 export interface SourcingQuery { sector?: string; location?: string; size?: string }
 
-export async function fetchCompanies(q: SourcingQuery): Promise<{ total: number; results: SourcedLead[] }> {
+export function buildSearchUrl(q: SourcingQuery): string {
   const params = new URLSearchParams()
 
   const naf = SECTOR_TO_NAF[(q.sector || '').toLowerCase()]
@@ -42,7 +42,7 @@ export async function fetchCompanies(q: SourcingQuery): Promise<{ total: number;
 
   const loc = (q.location || '').trim()
   if (loc) {
-    if (/^\d{2}$/.test(loc)) params.set('departement', loc)
+    if (/^\d{2,3}$/.test(loc)) params.set('departement', loc)
     else if (CITY_TO_DEP[loc.toLowerCase()]) params.set('departement', CITY_TO_DEP[loc.toLowerCase()])
     else params.set('q', loc)
   }
@@ -50,15 +50,24 @@ export async function fetchCompanies(q: SourcingQuery): Promise<{ total: number;
   const tr = q.size ? SIZE_TO_TRANCHE[q.size] : undefined
   if (tr) params.set('tranche_effectif_salarie', tr)
 
-  // L'API exige au moins un critère de recherche
-  const hasCriteria = ['activite_principale', 'departement', 'q', 'tranche_effectif_salarie'].some((k) => params.has(k))
-  if (!hasCriteria) params.set('q', q.sector || 'entreprise')
+  // L'API exige un paramètre `q` (texte) : on en met toujours un.
+  if (!params.has('q')) params.set('q', q.sector || 'entreprise')
 
-  params.set('etat_administratif', 'A')
-  params.set('per_page', '15')
   params.set('page', '1')
+  params.set('per_page', '15')
 
-  const url = `https://recherche-entreprises.api.gouv.fr/search?${params.toString()}`
+  return `https://recherche-entreprises.api.gouv.fr/search?${params.toString()}`
+}
+
+export async function debugSearch(q: SourcingQuery) {
+  const url = buildSearchUrl(q)
+  const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
+  const body = await res.text()
+  return { url, status: res.status, body: body.slice(0, 500) }
+}
+
+export async function fetchCompanies(q: SourcingQuery): Promise<{ total: number; results: SourcedLead[] }> {
+  const url = buildSearchUrl(q)
   const res = await fetch(url, {
     headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0 (+https://smartagency-ai.com)' },
   })

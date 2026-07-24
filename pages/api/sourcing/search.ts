@@ -1,15 +1,20 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { fetchCompanies } from '../../../lib/prospector/datagouv'
+import { fetchCompanies, debugSearch } from '../../../lib/prospector/datagouv'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const query = {
+    sector: str(req.query.sector),
+    location: str(req.query.location),
+    size: str(req.query.size),
+  }
+  if (req.query.debug) {
+    try { return res.status(200).json(await debugSearch(query)) }
+    catch (e: any) { return res.status(200).json({ error: e?.message, stack: String(e) }) }
+  }
   try {
-    const data = await fetchCompanies({
-      sector: str(req.query.sector),
-      location: str(req.query.location),
-      size: str(req.query.size),
-    })
+    const data = await fetchCompanies(query)
     // cache léger côté edge/CDN
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600')
     res.status(200).json(data)
