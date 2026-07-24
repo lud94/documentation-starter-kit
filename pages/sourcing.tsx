@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact } from '../types/prospector'
-import { getSourcing, importCompaniesToPipeline, findContactsForCompany, PERSONA_TARGETS, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, findContactsForCompany, findContactsForCompanies, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 
 const INDUSTRIES = [
   'Real Estate', 'Technology', 'Healthcare', 'Finance', 'Retail', 'Manufacturing',
@@ -75,6 +75,9 @@ export default function SourcingPage() {
   const [contactsFor, setContactsFor] = useState<SourcedCompany | null>(null)
   const [contacts, setContacts] = useState<ResolvedContact[]>([])
   const [resolving, setResolving] = useState(false)
+  const [resolvedMap, setResolvedMap] = useState<Record<string, ResolvedContact[]>>({})
+  const [batchRunning, setBatchRunning] = useState(false)
+  const [batchNote, setBatchNote] = useState<string | null>(null)
 
   const [fSector, setFSector] = useState('')
   const [fLocation, setFLocation] = useState('')
@@ -134,9 +137,21 @@ export default function SourcingPage() {
   }
 
   const resolveContacts = async (c: SourcedCompany) => {
-    setContactsFor(c); setResolving(true); setContacts([])
+    setContactsFor(c); setContacts(resolvedMap[c.id] || [])
+    if (resolvedMap[c.id]) return
+    setResolving(true)
     const res = await findContactsForCompany(c, PERSONA_TARGETS)
-    setContacts(res); setResolving(false)
+    setContacts(res); setResolvedMap((m) => ({ ...m, [c.id]: res })); setResolving(false)
+  }
+
+  const resolveBatch = async () => {
+    setBatchRunning(true); setBatchNote(null)
+    const targets = companies.filter((c) => !resolvedMap[c.id])
+    const { results, capped } = await findContactsForCompanies(targets, PERSONA_TARGETS)
+    setResolvedMap((m) => { const n = { ...m }; results.forEach((r) => { n[r.company.id] = r.contacts }); return n })
+    const mock = results.some((r) => r.mock)
+    setBatchNote(`${results.length} entreprises résolues${capped ? ` (lot plafonné à ${CONTACT_BATCH_CAP})` : ''}${mock ? ' · mode simulé (clés non posées)' : ''}.`)
+    setBatchRunning(false)
   }
 
   const sectorMax = data ? Math.max(...data.bySector.map((s) => s.count)) : 1
@@ -240,12 +255,19 @@ export default function SourcingPage() {
             <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
               <h2 className="text-sm font-semibold text-gray-700">Entreprises sourcées</h2>
               {companies.length > 0 && (
-                <button onClick={importAll} disabled={allImported} className="text-xs font-semibold text-indigo-600 border border-indigo-200 bg-indigo-50/50 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition-colors disabled:opacity-50">
-                  {allImported ? 'Toutes importées' : 'Tout importer dans le pipe'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button onClick={resolveBatch} disabled={batchRunning} className="text-xs font-semibold text-gray-600 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50">
+                    {batchRunning ? 'Résolution…' : `Résoudre les contacts (lot ${CONTACT_BATCH_CAP})`}
+                  </button>
+                  <button onClick={importAll} disabled={allImported} className="text-xs font-semibold text-indigo-600 border border-indigo-200 bg-indigo-50/50 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition-colors disabled:opacity-50">
+                    {allImported ? 'Toutes importées' : 'Tout importer dans le pipe'}
+                  </button>
+                </div>
               )}
             </div>
-            <p className="text-xs text-gray-400 mb-4">Importez l'entreprise dans le pipe, puis « Trouver les contacts » pour résoudre vos personas (CEO, Head of Sales…).</p>
+            <p className="text-xs text-gray-400 mb-1">Importez l'entreprise dans le pipe, puis « Trouver les contacts » pour résoudre vos personas (CEO, Head of Sales…).</p>
+            {batchNote && <p className="text-xs text-emerald-600 mb-3">{batchNote}</p>}
+            {!batchNote && <div className="mb-3" />}
             {companies.length === 0 ? (
               <p className="text-sm text-gray-400 text-center py-8">Lancez une recherche pour voir des entreprises.</p>
             ) : (
@@ -263,7 +285,9 @@ export default function SourcingPage() {
                         {c.signals.map((s) => <span key={s} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-500">{s}</span>)}
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-                        <button onClick={() => resolveContacts(c)} className="text-xs font-semibold text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-gray-50 transition-colors">Trouver les contacts</button>
+                        <button onClick={() => resolveContacts(c)} className="text-xs font-semibold text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-gray-50 transition-colors">
+                          {resolvedMap[c.id] ? `${resolvedMap[c.id].length} contacts` : 'Trouver les contacts'}
+                        </button>
                         <button onClick={() => importOne(c)} disabled={done} className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-opacity ${done ? 'bg-emerald-50 text-emerald-600' : 'gradient-brand text-white hover:opacity-90'}`}>
                           {done ? '✓ Dans le pipe' : '+ Importer'}
                         </button>

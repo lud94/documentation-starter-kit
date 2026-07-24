@@ -710,27 +710,44 @@ export function importCompaniesToPipeline(companies: SourcedCompany[]) {
   return delay({ added, skipped: companies.length - added })
 }
 
-// Résout les contacts d'une entreprise pour les personas demandés.
-// MOCK — au câblage : Pappers/societe.com (dirigeants) + Unipile/LinkedIn (personas).
-export function findContactsForCompany(
+// Plafond du lot de résolution (garde-fou coût, comme l'enrichissement Kaspr).
+export const CONTACT_BATCH_CAP = 20
+
+export interface ContactResult { company: SourcedCompany; contacts: ResolvedContact[]; mock: boolean }
+
+// Résout les contacts d'UNE entreprise pour les personas demandés.
+// Passe par /api/enrich/contacts → Pappers (dirigeants) + Unipile (personas),
+// avec fallback mock tant que les clés ne sont pas configurées.
+export async function findContactsForCompany(
   company: SourcedCompany,
   personas: string[] = PERSONA_TARGETS,
 ): Promise<ResolvedContact[]> {
-  const firsts = ['Julien', 'Marie', 'Alexandre', 'Sophie', 'Nicolas', 'Camille']
-  const lasts = ['Durand', 'Leroy', 'Moreau', 'Simon', 'Michel', 'Garcia']
-  const slug = company.name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 14)
-  const contacts: ResolvedContact[] = personas.map((persona, i) => {
-    const f = firsts[(company.id.charCodeAt(0) + i) % firsts.length]
-    const l = lasts[(company.id.charCodeAt(1) + i) % lasts.length]
-    const isDir = persona.includes('Founder') || persona.includes('CEO')
-    return {
-      name: isDir && company.dirigeant ? company.dirigeant : `${f} ${l}`,
-      persona,
-      title: persona,
-      linkedinUrl: `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${f} ${l} ${company.name}`)}`,
-      email: `${f}.${l}@${slug}.com`.toLowerCase(),
-      source: isDir ? 'pappers' : 'unipile',
-    }
+  const r = await resolveOne(company, personas)
+  return r.contacts
+}
+
+async function resolveOne(company: SourcedCompany, personas: string[]): Promise<ContactResult> {
+  const params = new URLSearchParams({
+    siren: company.id, company: company.name, personas: personas.join(','),
   })
-  return delay(contacts)
+  if (company.dirigeant) params.set('dirigeant', company.dirigeant)
+  try {
+    const res = await fetch(`/api/enrich/contacts?${params.toString()}`)
+    const d = await res.json()
+    return { company, contacts: d.contacts || [], mock: !!d.mock }
+  } catch {
+    return { company, contacts: [], mock: true }
+  }
+}
+
+// Résout un LOT d'entreprises, plafonné à CONTACT_BATCH_CAP (défaut par l'UI :
+// unité ; le lot est explicite et borné pour maîtriser le coût connecteur).
+export async function findContactsForCompanies(
+  companies: SourcedCompany[],
+  personas: string[] = PERSONA_TARGETS,
+): Promise<{ results: ContactResult[]; capped: boolean }> {
+  const capped = companies.length > CONTACT_BATCH_CAP
+  const batch = companies.slice(0, CONTACT_BATCH_CAP)
+  const results = await Promise.all(batch.map((c) => resolveOne(c, personas)))
+  return { results, capped }
 }
