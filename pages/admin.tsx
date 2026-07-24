@@ -162,7 +162,7 @@ const CHANNEL_ICON: Record<Channel['key'], string> = {
   linkedin: 'in', email: '@', whatsapp: 'WA',
 }
 
-interface KeyStatus { key: string; label: string; set: boolean }
+interface KeyStatus { key: string; label: string; set: boolean; source: 'app' | 'env' | null }
 
 function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: (c: Channel[]) => void }) {
   const [drafts, setDrafts] = useState<Record<string, ChannelConfig>>({})
@@ -170,10 +170,24 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
   const [linkMsg, setLinkMsg] = useState<Record<string, string>>({})
   const [keys, setKeys] = useState<KeyStatus[]>([])
   const [sigMode, setSigMode] = useState<string>('')
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({})
+  const [savingKeys, setSavingKeys] = useState(false)
+  const [keySaved, setKeySaved] = useState(false)
 
-  useEffect(() => {
-    fetch('/api/config/status').then((r) => r.json()).then((d) => { setKeys(d.keys || []); setSigMode(d.signalsMode || '') }).catch(() => {})
-  }, [])
+  const loadStatus = () => fetch('/api/config/status').then((r) => r.json()).then((d) => { setKeys(d.keys || []); setSigMode(d.signalsMode || '') }).catch(() => {})
+  useEffect(() => { loadStatus() }, [])
+
+  const saveKeys = async () => {
+    const patch: Record<string, string> = {}
+    Object.entries(keyDrafts).forEach(([k, v]) => { if (v.trim()) patch[k] = v.trim() })
+    if (Object.keys(patch).length === 0) return
+    setSavingKeys(true)
+    try {
+      await fetch('/api/config/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+      setKeyDrafts({}); setKeySaved(true); setTimeout(() => setKeySaved(false), 2000)
+      await loadStatus()
+    } finally { setSavingKeys(false) }
+  }
 
   const setDraft = (key: string, patch: ChannelConfig) => setDrafts((d) => ({ ...d, [key]: { ...d[key], ...patch } }))
   const cfg = (c: Channel): ChannelConfig => ({ ...c.config, ...drafts[c.key] })
@@ -209,17 +223,35 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
             </span>
           )}
         </div>
-        <div className="space-y-1">
+        <div className="space-y-2.5">
           {keys.map((k) => (
-            <div key={k.key} className="flex items-center gap-3 py-2 border-b border-gray-50 last:border-0">
-              <span className={`w-2 h-2 rounded-full ${k.set ? 'bg-emerald-500' : 'bg-gray-300'}`} />
-              <span className="text-sm text-gray-700">{k.label}</span>
-              <code className="text-[11px] text-gray-400">{k.key}</code>
-              <span className={`text-xs ml-auto font-medium ${k.set ? 'text-emerald-600' : 'text-gray-400'}`}>{k.set ? 'configurée' : 'manquante'}</span>
+            <div key={k.key} className="flex items-center gap-3 flex-wrap">
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${k.set ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+              <div className="min-w-[180px] flex-shrink-0">
+                <p className="text-sm text-gray-700 leading-tight">{k.label}</p>
+                <code className="text-[10px] text-gray-400">{k.key}</code>
+              </div>
+              <input
+                type="password"
+                value={keyDrafts[k.key] ?? ''}
+                onChange={(e) => setKeyDrafts((d) => ({ ...d, [k.key]: e.target.value }))}
+                placeholder={k.set ? '•••••••• (configurée — laisser vide pour garder)' : 'Coller la clé…'}
+                autoComplete="off"
+                className={`${fieldCls} flex-1 min-w-[180px]`}
+              />
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${k.source === 'app' ? 'bg-indigo-50 text-indigo-600' : k.source === 'env' ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-400'}`}>
+                {k.source === 'app' ? 'saisie app' : k.source === 'env' ? 'Vercel env' : 'manquante'}
+              </span>
             </div>
           ))}
         </div>
-        <p className="text-[11px] text-gray-400 mt-3">🔒 Pour des raisons de sécurité, les clés se posent dans <strong>Vercel → Settings → Environment Variables</strong> (côté serveur), jamais dans le navigateur. Ce tableau montre seulement lesquelles sont détectées.</p>
+        <div className="flex items-center gap-3 mt-4">
+          <button onClick={saveKeys} disabled={savingKeys} className="gradient-brand text-white text-xs font-semibold px-4 py-2 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">
+            {savingKeys ? 'Enregistrement…' : 'Enregistrer les clés'}
+          </button>
+          {keySaved && <span className="text-xs text-emerald-600">✓ Clés enregistrées</span>}
+        </div>
+        <p className="text-[11px] text-amber-600 mt-3">⚠️ Les clés saisies ici sont stockées <strong>en mémoire serveur</strong> : pratique pour tester, mais elles peuvent être réinitialisées après une mise en veille / un redéploiement. Pour du <strong>durable</strong>, pose-les aussi dans Vercel → Environment Variables (ou on branchera Supabase). Ne partage jamais cet écran.</p>
       </div>
 
       {channels.map((c) => {

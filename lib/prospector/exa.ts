@@ -3,10 +3,12 @@
 // Rôle : trouver les pages d'annonces/actu fraîches qui portent le signal,
 // et en renvoyer le CONTENU brut que Claude extraira ensuite.
 
+import { getKey } from './keystore'
+
 export interface ExaDoc { title: string; url: string; text: string; publishedDate?: string }
 
 export function exaConfigured(): boolean {
-  return !!process.env.EXA_API_KEY
+  return !!getKey('EXA_API_KEY')
 }
 
 // Domaines où vivent les signaux (annonces emploi FR + presse startup/levées).
@@ -16,7 +18,7 @@ const SIGNAL_DOMAINS = [
 ]
 
 export async function searchExa(thesis: string, numResults = 12): Promise<ExaDoc[]> {
-  const key = process.env.EXA_API_KEY
+  const key = getKey('EXA_API_KEY')
   if (!key || !thesis) return []
 
   const res = await fetch('https://api.exa.ai/search', {

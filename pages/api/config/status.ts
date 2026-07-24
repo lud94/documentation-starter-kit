@@ -1,20 +1,21 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
+import { hasKey, keySource } from '../../../lib/prospector/keystore'
 
-// Renvoie UNIQUEMENT des booléens : quelles clés sont configurées côté serveur.
-// Ne renvoie JAMAIS la valeur d'un secret. Les clés se posent dans Vercel (env),
-// jamais saisies dans le navigateur.
+// Renvoie UNIQUEMENT des booléens/source : quelles clés sont configurées.
+// Ne renvoie JAMAIS la valeur d'un secret.
 export default function handler(_req: NextApiRequest, res: NextApiResponse) {
-  const has = (k: string) => !!process.env[k]
+  const row = (key: string, label: string) => ({ key, label, set: hasKey(key), source: keySource(key) })
   res.status(200).json({
     keys: [
-      { key: 'ANTHROPIC_API_KEY', label: 'Claude (cerveau : extraction + icebreaker)', set: has('ANTHROPIC_API_KEY') },
-      { key: 'EXA_API_KEY', label: 'Exa (capteur : recherche de signaux)', set: has('EXA_API_KEY') },
-      { key: 'PAPPERS_API_KEY', label: 'Pappers (dirigeants / fondateurs)', set: has('PAPPERS_API_KEY') },
-      { key: 'UNIPILE_DSN', label: 'Unipile DSN', set: has('UNIPILE_DSN') },
-      { key: 'UNIPILE_API_KEY', label: 'Unipile API key', set: has('UNIPILE_API_KEY') },
-      { key: 'UNIPILE_ACCOUNT_ID', label: 'Unipile compte LinkedIn lié', set: has('UNIPILE_ACCOUNT_ID') },
+      row('ANTHROPIC_API_KEY', 'Claude (cerveau : extraction + icebreaker)'),
+      row('EXA_API_KEY', 'Exa (capteur : recherche de signaux)'),
+      row('PERPLEXITY_API_KEY', 'Perplexity (Q&A web — optionnel)'),
+      row('PAPPERS_API_KEY', 'Pappers (dirigeants / fondateurs)'),
+      row('UNIPILE_DSN', 'Unipile DSN'),
+      row('UNIPILE_API_KEY', 'Unipile API key'),
+      row('UNIPILE_ACCOUNT_ID', 'Unipile compte LinkedIn lié'),
     ],
-    signalsMode: has('ANTHROPIC_API_KEY') && has('EXA_API_KEY') ? 'exa+claude'
-      : has('ANTHROPIC_API_KEY') ? 'claude-web' : 'mock',
+    signalsMode: hasKey('ANTHROPIC_API_KEY') && hasKey('EXA_API_KEY') ? 'exa+claude'
+      : hasKey('ANTHROPIC_API_KEY') ? 'claude-web' : 'mock',
   })
 }

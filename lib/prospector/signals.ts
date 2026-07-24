@@ -6,15 +6,16 @@
 import type { SignalHit } from '../../types/prospector'
 import { reconcileByName } from './datagouv'
 import { searchExa, exaConfigured, type ExaDoc } from './exa'
+import { getKey } from './keystore'
 
 export function signalsConfigured(): boolean {
-  return !!process.env.ANTHROPIC_API_KEY
+  return !!getKey('ANTHROPIC_API_KEY')
 }
 
 // Décrit la voie active pour l'affichage (transparence coût/source).
 export function signalsMode(): 'exa+claude' | 'claude-web' | 'mock' {
-  if (process.env.ANTHROPIC_API_KEY && exaConfigured()) return 'exa+claude'
-  if (process.env.ANTHROPIC_API_KEY) return 'claude-web'
+  if (getKey('ANTHROPIC_API_KEY') && exaConfigured()) return 'exa+claude'
+  if (getKey('ANTHROPIC_API_KEY')) return 'claude-web'
   return 'mock'
 }
 
@@ -30,9 +31,9 @@ function jsonInstruction(max: number) {
 }
 
 async function callClaude(thesis: string, max: number): Promise<SignalHit[]> {
-  const key = process.env.ANTHROPIC_API_KEY
+  const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return []
-  const model = process.env.SIGNALS_MODEL || 'claude-opus-4-8'
+  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -58,9 +59,9 @@ async function callClaude(thesis: string, max: number): Promise<SignalHit[]> {
 // Claude EXTRACTEUR : à partir des documents Exa, sort les entreprises + signaux
 // + icebreakers. Pas de web tool ici (Exa a déjà cherché) → plus rapide/moins cher.
 async function extractWithClaude(thesis: string, docs: ExaDoc[], max: number): Promise<SignalHit[]> {
-  const key = process.env.ANTHROPIC_API_KEY
+  const key = getKey('ANTHROPIC_API_KEY')
   if (!key || docs.length === 0) return []
-  const model = process.env.SIGNALS_MODEL || 'claude-opus-4-8'
+  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
 
   const corpus = docs
     .map((d, i) => `[${i + 1}] ${d.title}\nURL: ${d.url}\n${d.text}`)

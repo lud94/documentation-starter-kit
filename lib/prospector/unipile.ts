@@ -4,9 +4,10 @@
 // Sans config : renvoie [] pour laisser le fallback mock opérer en amont.
 
 import type { ResolvedContact } from '../../types/prospector'
+import { getKey } from './keystore'
 
 export function unipileConfigured(): boolean {
-  return !!(process.env.UNIPILE_DSN && process.env.UNIPILE_API_KEY && process.env.UNIPILE_ACCOUNT_ID)
+  return !!(getKey('UNIPILE_DSN') && getKey('UNIPILE_API_KEY') && getKey('UNIPILE_ACCOUNT_ID'))
 }
 
 // Mots-clés de recherche par persona ciblé.
@@ -17,9 +18,9 @@ const PERSONA_KEYWORDS: Record<string, string> = {
 }
 
 export async function findPersonas(companyName: string, personas: string[]): Promise<ResolvedContact[]> {
-  const dsn = process.env.UNIPILE_DSN
-  const key = process.env.UNIPILE_API_KEY
-  const account = process.env.UNIPILE_ACCOUNT_ID
+  const dsn = getKey('UNIPILE_DSN')
+  const key = getKey('UNIPILE_API_KEY')
+  const account = getKey('UNIPILE_ACCOUNT_ID')
   if (!dsn || !key || !account || !companyName) return []
 
   const out: ResolvedContact[] = []

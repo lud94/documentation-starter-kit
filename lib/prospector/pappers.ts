@@ -3,13 +3,14 @@
 // Sans clé : renvoie [] pour laisser le fallback mock opérer en amont.
 
 import type { ResolvedContact } from '../../types/prospector'
+import { getKey } from './keystore'
 
 export function pappersConfigured(): boolean {
-  return !!process.env.PAPPERS_API_KEY
+  return !!getKey('PAPPERS_API_KEY')
 }
 
 export async function fetchDirigeants(siren: string): Promise<ResolvedContact[]> {
-  const key = process.env.PAPPERS_API_KEY
+  const key = getKey('PAPPERS_API_KEY')
   if (!key || !siren) return []
 
   const url = `https://api.pappers.fr/v2/entreprise?api_token=${encodeURIComponent(key)}&siren=${encodeURIComponent(siren)}`
