@@ -70,11 +70,33 @@ export default function SourcingPage() {
   const [running, setRunning] = useState(false)
   const [lastRun, setLastRun] = useState<string | null>(null)
   const [drill, setDrill] = useState<{ title: string; items: SourcedLead[] } | null>(null)
+  const [fSector, setFSector] = useState('')
+  const [fLocation, setFLocation] = useState('')
+  const [fSize, setFSize] = useState('')
 
   useEffect(() => { getSourcing(period).then((d) => { setData(d); setIncoming(d.incoming) }) }, [period])
 
   const toggleSignal = (s: string) => setPickedSignals((p) => { const n = new Set(p); n.has(s) ? n.delete(s) : n.add(s); return n })
-  const launch = () => { setRunning(true); setTimeout(() => { setRunning(false); setLastRun('Recherche lancée — les leads qualifiés apparaîtront dans « Prospects sourcés ».'); setTab('prospects') }, 900) }
+
+  const launch = async () => {
+    setRunning(true); setLastRun(null)
+    try {
+      const params = new URLSearchParams()
+      if (fSector) params.set('sector', fSector)
+      if (fLocation) params.set('location', fLocation)
+      if (fSize) params.set('size', fSize)
+      const res = await fetch(`/api/sourcing/search?${params.toString()}`)
+      if (!res.ok) throw new Error((await res.json()).error || 'Erreur')
+      const data = await res.json()
+      setIncoming(data.results)
+      setLastRun(`${data.total} entreprises trouvées (data.gouv). ${data.results.length} affichées à trier.`)
+      setTab('prospects')
+    } catch (e: any) {
+      setLastRun('Échec de la recherche : ' + (e.message || 'API indisponible'))
+    } finally {
+      setRunning(false)
+    }
+  }
   const triage = (id: string) => setIncoming((l) => l.filter((x) => x.id !== id))
   const sectorMax = data ? Math.max(...data.bySector.map((s) => s.count)) : 1
 
@@ -140,11 +162,11 @@ export default function SourcingPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Secteur d'activité</label>
-              <select className={inputClass}><option>Sélectionner…</option>{INDUSTRIES.map((i) => <option key={i}>{i}</option>)}</select>
+              <select value={fSector} onChange={(e) => setFSector(e.target.value)} className={inputClass}><option value="">Sélectionner…</option>{INDUSTRIES.map((i) => <option key={i} value={i}>{i}</option>)}</select>
             </div>
             <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Localisation</label>
-              <input className={inputClass} placeholder="ex: France, Paris, Europe…" />
+              <input value={fLocation} onChange={(e) => setFLocation(e.target.value)} className={inputClass} placeholder="ex: Paris, 75, Lyon…" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Niveau hiérarchique</label>
@@ -156,7 +178,7 @@ export default function SourcingPage() {
             </div>
             <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Taille de l'entreprise</label>
-              <select className={inputClass}><option>Toutes tailles</option>{SIZES.map((s) => <option key={s}>{s} employés</option>)}</select>
+              <select value={fSize} onChange={(e) => setFSize(e.target.value)} className={inputClass}><option value="">Toutes tailles</option>{SIZES.map((s) => <option key={s} value={s}>{s} employés</option>)}</select>
             </div>
             <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Revenue annuel minimum</label>
