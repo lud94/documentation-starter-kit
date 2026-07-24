@@ -335,6 +335,8 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
         <p className="text-[11px] text-amber-600 mt-3">⚠️ Les clés saisies ici sont stockées <strong>en mémoire serveur</strong> : pratique pour tester, mais elles peuvent être réinitialisées après une mise en veille / un redéploiement. Pour du <strong>durable</strong>, pose-les aussi dans Vercel → Environment Variables (ou on branchera Supabase). Ne partage jamais cet écran.</p>
       </div>
 
+      <AnonymizationCard />
+
       {channels.map((c) => {
         const d = cfg(c)
         return (
@@ -455,6 +457,43 @@ function ProtocoleTab() {
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+function AnonymizationCard() {
+  const [enabled, setEnabled] = useState(true)
+  const [text, setText] = useState('Contactez Jean Dupont au 06 12 34 56 78 ou jean.dupont@acme.fr — SIREN 552100554.')
+  const [preview, setPreview] = useState<{ masked: string; total: number; counts: Record<string, number> } | null>(null)
+
+  useEffect(() => { fetch('/api/config/anonymize').then((r) => r.json()).then((d) => setEnabled(d.enabled !== false)).catch(() => {}) }, [])
+
+  const toggle = async () => {
+    const next = !enabled; setEnabled(next)
+    await fetch('/api/config/anonymize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: next }) })
+  }
+  const run = async () => {
+    const d = await fetch('/api/config/anonymize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) }).then((r) => r.json())
+    setPreview(d.preview)
+  }
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <h2 className="text-sm font-semibold text-gray-700">Anonymisation des données (DLP)</h2>
+        <button onClick={toggle} className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-400'}`}>
+          {enabled ? 'Activée pour les documents' : 'Désactivée'}
+        </button>
+      </div>
+      <p className="text-xs text-gray-400 mb-3">Masque les PII (emails, téléphones, IBAN, SIREN/SIRET) avant l'envoi à un LLM, puis ré-injecte les vraies valeurs dans la réponse. À garder OFF pour la rédaction d'accroche (besoin du vrai nom), ON pour l'analyse de documents sensibles.</p>
+      <textarea value={text} onChange={(e) => setText(e.target.value)} className={`${fieldCls} h-20 resize-none mb-2`} />
+      <button onClick={run} className="text-xs font-semibold text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors">Prévisualiser le masquage</button>
+      {preview && (
+        <div className="mt-3 bg-gray-50 rounded-lg p-3">
+          <p className="text-xs text-gray-700 font-mono break-words">{preview.masked}</p>
+          <p className="text-[11px] text-gray-400 mt-2">{preview.total} PII masquées{Object.keys(preview.counts).length ? ' · ' + Object.entries(preview.counts).map(([k, v]) => `${v} ${k}`).join(', ') : ''}</p>
+        </div>
+      )}
     </div>
   )
 }
