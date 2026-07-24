@@ -59,8 +59,13 @@ export async function fetchCompanies(q: SourcingQuery): Promise<{ total: number;
   params.set('page', '1')
 
   const url = `https://recherche-entreprises.api.gouv.fr/search?${params.toString()}`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`DataGouv API ${res.status}`)
+  const res = await fetch(url, {
+    headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0 (+https://smartagency-ai.com)' },
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`DataGouv API ${res.status} — ${body.slice(0, 150)}`)
+  }
   const data = await res.json()
 
   const results: SourcedLead[] = (data.results || []).map((r: any) => {

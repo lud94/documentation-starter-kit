@@ -69,6 +69,7 @@ export default function SourcingPage() {
   const [pickedSignals, setPickedSignals] = useState<Set<string>>(new Set())
   const [running, setRunning] = useState(false)
   const [lastRun, setLastRun] = useState<string | null>(null)
+  const [runError, setRunError] = useState(false)
   const [drill, setDrill] = useState<{ title: string; items: SourcedLead[] } | null>(null)
   const [fSector, setFSector] = useState('')
   const [fLocation, setFLocation] = useState('')
@@ -79,20 +80,20 @@ export default function SourcingPage() {
   const toggleSignal = (s: string) => setPickedSignals((p) => { const n = new Set(p); n.has(s) ? n.delete(s) : n.add(s); return n })
 
   const launch = async () => {
-    setRunning(true); setLastRun(null)
+    setRunning(true); setLastRun(null); setRunError(false)
     try {
       const params = new URLSearchParams()
       if (fSector) params.set('sector', fSector)
       if (fLocation) params.set('location', fLocation)
       if (fSize) params.set('size', fSize)
       const res = await fetch(`/api/sourcing/search?${params.toString()}`)
-      if (!res.ok) throw new Error((await res.json()).error || 'Erreur')
       const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
       setIncoming(data.results)
-      setLastRun(`${data.total} entreprises trouvées (data.gouv). ${data.results.length} affichées à trier.`)
-      setTab('prospects')
+      if (data.results.length === 0) { setRunError(true); setLastRun('Aucune entreprise pour ces critères — élargis le secteur ou la localisation.') }
+      else { setLastRun(`${data.total} entreprises trouvées (data.gouv) · ${data.results.length} à trier.`); setTab('prospects') }
     } catch (e: any) {
-      setLastRun('Échec de la recherche : ' + (e.message || 'API indisponible'))
+      setRunError(true); setLastRun('Échec : ' + (e.message || 'API indisponible'))
     } finally {
       setRunning(false)
     }
@@ -204,7 +205,7 @@ export default function SourcingPage() {
             <button onClick={launch} disabled={running} className="gradient-brand text-white text-sm font-semibold px-4 py-2.5 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-2">
               {running ? 'Recherche…' : <><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>Lancer la recherche</>}
             </button>
-            {lastRun && <span className="text-xs text-emerald-600">{lastRun}</span>}
+            {lastRun && <span className={`text-xs ${runError ? 'text-red-600' : 'text-emerald-600'}`}>{lastRun}</span>}
           </div>
         </div>
       ) : (
