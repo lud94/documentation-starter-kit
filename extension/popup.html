@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; width: 300px; margin: 0; padding: 14px; color: #1f2937; }
+    h1 { font-size: 14px; margin: 0 0 2px; }
+    p.sub { font-size: 11px; color: #9ca3af; margin: 0 0 12px; }
+    label { display: block; font-size: 11px; font-weight: 600; color: #6b7280; margin: 8px 0 3px; }
+    input { width: 100%; box-sizing: border-box; padding: 7px 9px; font-size: 13px; border: 1px solid #e5e7eb; border-radius: 8px; }
+    button { width: 100%; margin-top: 12px; padding: 9px; font-size: 13px; font-weight: 600; color: #fff; background: linear-gradient(135deg,#667eea,#764ba2); border: none; border-radius: 8px; cursor: pointer; }
+    button:disabled { opacity: .5; }
+    .muted { background: none; color: #6b7280; font-weight: 500; margin-top: 6px; }
+    .msg { font-size: 12px; margin-top: 10px; }
+    .ok { color: #059669; } .err { color: #dc2626; }
+    details { margin-top: 10px; } summary { font-size: 11px; color: #9ca3af; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>Ajouter à Prospector</h1>
+  <p class="sub">Le profil de l'onglet courant sera ajouté au pipe.</p>
+
+  <label>Nom</label>
+  <input id="name" placeholder="Prénom Nom" />
+  <label>Entreprise</label>
+  <input id="company" placeholder="(optionnel)" />
+  <label>Titre</label>
+  <input id="title" placeholder="(optionnel)" />
+
+  <button id="add">+ Ajouter le lead</button>
+  <div class="msg" id="msg"></div>
+
+  <details>
+    <summary>Réglages de connexion</summary>
+    <label>URL Prospector</label>
+    <input id="base" placeholder="https://prospector.smartagency-ai.fr" />
+    <label>Jeton d'ingestion</label>
+    <input id="token" type="password" placeholder="INGEST_TOKEN" />
+    <button class="muted" id="save">Enregistrer les réglages</button>
+  </details>
+
+  <script src="popup.js"></script>
+</body>
+</html>

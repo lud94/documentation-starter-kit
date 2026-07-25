@@ -52,6 +52,7 @@ export interface Lead {
   persona?: string
   signal?: string       // signal détecté (ex: "recrute un Head of Sales")
   icebreaker?: string   // accroche prête, issue de la recherche par signal
+  linkedinUrl?: string  // profil LinkedIn (ex: ajouté via l'extension)
 }
 
 export interface Action {
