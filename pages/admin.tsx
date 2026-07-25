@@ -13,6 +13,21 @@ const USAGE_PERIODS: { key: Period; label: string }[] = [
 ]
 const LOG_STYLE: Record<LogEntry['level'], string> = { info: 'bg-gray-300', warn: 'bg-amber-400', error: 'bg-red-500' }
 
+const FULL_SQL = `create table if not exists prospector_settings (key text primary key, value text, updated_at timestamptz default now());
+create table if not exists prospector_leads (id text primary key, data jsonb, created_at timestamptz default now());
+create table if not exists prospector_workspaces (id text primary key, name text not null, leads int default 0, users int default 1, plan text default 'Starter', created_at timestamptz default now());
+alter table prospector_workspaces add column if not exists client_email text;
+alter table prospector_workspaces add column if not exists status text default 'active';
+alter table prospector_workspaces add column if not exists permissions jsonb;
+alter table prospector_workspaces add column if not exists client_password_hash text;
+create table if not exists prospector_pappers_cache (siren text primary key, data jsonb, created_at timestamptz default now());
+create table if not exists prospector_usage (key text primary key, count int default 0, updated_at timestamptz default now());
+alter table prospector_settings enable row level security;
+alter table prospector_leads enable row level security;
+alter table prospector_workspaces enable row level security;
+alter table prospector_pappers_cache enable row level security;
+alter table prospector_usage enable row level security;`
+
 interface ModelRouteRow { phase: string; provider: string; model: string; requires: string; why: string; fallback?: string; ready: boolean }
 
 function fmt(n: number) {
@@ -275,6 +290,13 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
 
   const [persistence, setPersistence] = useState('')
   const [diag, setDiag] = useState<string>('')
+  const [dbRows, setDbRows] = useState<{ table: string; ok: boolean; error: string | null }[] | null>(null)
+  const [showSql, setShowSql] = useState(false)
+  const checkDb = async () => {
+    setDbRows(null)
+    try { const d = await fetch('/api/config/db-check').then((r) => r.json()); setDbRows(d.results || []) }
+    catch { setDbRows([]) }
+  }
   const testPersistence = async () => {
     setDiag('Test en cours…')
     try {
@@ -387,6 +409,7 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
               </span>
             )}
             <button onClick={testPersistence} className="text-[10px] font-semibold text-gray-500 border border-gray-200 px-2 py-0.5 rounded-full hover:bg-gray-50 transition-colors">Tester Supabase</button>
+            <button onClick={checkDb} className="text-[10px] font-semibold text-gray-500 border border-gray-200 px-2 py-0.5 rounded-full hover:bg-gray-50 transition-colors">Vérifier les tables</button>
             {sigMode && (
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${sigMode === 'exa+claude' ? 'bg-emerald-50 text-emerald-600' : sigMode === 'claude-web' ? 'bg-amber-50 text-amber-600' : 'bg-gray-100 text-gray-400'}`}>
                 Signaux : {sigMode === 'exa+claude' ? 'Exa → Claude' : sigMode === 'claude-web' ? 'Claude web seul' : 'mode simulé'}
@@ -430,6 +453,26 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
           </div>
         )}
         {diag && <p className="text-[11px] text-gray-600 mt-3 font-mono bg-gray-50 rounded-lg p-2 break-words">{diag}</p>}
+        {dbRows && (
+          <div className="mt-3 bg-gray-50 rounded-lg p-3">
+            <p className="text-[11px] font-semibold text-gray-600 mb-2">État des tables Supabase</p>
+            <div className="space-y-1">
+              {dbRows.map((r) => (
+                <div key={r.table} className="flex items-center gap-2 text-[11px]">
+                  <span className={`w-2 h-2 rounded-full ${r.ok ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                  <code className="text-gray-600">{r.table}</code>
+                  <span className={`ml-auto ${r.ok ? 'text-emerald-600' : 'text-red-600'}`}>{r.ok ? 'OK' : (r.error || 'manquante')}</span>
+                </div>
+              ))}
+            </div>
+            {dbRows.some((r) => !r.ok) && (
+              <button onClick={() => setShowSql((v) => !v)} className="text-[11px] text-indigo-600 hover:underline mt-2">{showSql ? 'Masquer' : 'Afficher'} le SQL à exécuter</button>
+            )}
+            {showSql && (
+              <pre className="text-[10px] text-gray-600 bg-white border border-gray-200 rounded-lg p-2 mt-2 overflow-x-auto whitespace-pre">{FULL_SQL}</pre>
+            )}
+          </div>
+        )}
         <p className="text-[11px] text-amber-600 mt-3">⚠️ Les clés saisies ici sont stockées <strong>en mémoire serveur</strong> : pratique pour tester, mais elles peuvent être réinitialisées après une mise en veille / un redéploiement. Pour du <strong>durable</strong>, pose-les aussi dans Vercel → Environment Variables (ou on branchera Supabase). Ne partage jamais cet écran.</p>
       </div>
 
