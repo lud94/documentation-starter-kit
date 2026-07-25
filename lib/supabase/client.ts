@@ -13,6 +13,7 @@ function url(): string | undefined {
 function serviceKey(): string | undefined {
   return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY
     || process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_KEY || process.env.SERVICE_ROLE_KEY
+    || process.env.service_role || process.env.SERVICE_ROLE
 }
 
 export function supabaseConfigured(): boolean {

@@ -4,7 +4,7 @@ import { supabase, supabaseConfigured } from '../../../lib/supabase/client'
 // Diagnostic RÉEL : teste écriture + lecture Supabase et renvoie l'erreur exacte.
 export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
   // Liste les noms de variables Supabase détectés (pour repérer un mauvais nom).
-  const seen = ['SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_PROJECT_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SERVICE_KEY', 'SUPABASE_SECRET_KEY', 'SUPABASE_KEY', 'SERVICE_ROLE_KEY'].filter((n) => !!process.env[n])
+  const seen = ['SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_PROJECT_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SERVICE_KEY', 'SUPABASE_SECRET_KEY', 'SUPABASE_KEY', 'SERVICE_ROLE_KEY', 'service_role', 'SERVICE_ROLE'].filter((n) => !!process.env[n])
   const out: any = { configured: supabaseConfigured(), varsDetected: seen, writeOk: false, readOk: false, error: null }
 
   const sb = supabase()
