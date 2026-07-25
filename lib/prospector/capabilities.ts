@@ -43,39 +43,11 @@ export interface DashboardData {
 
 function email(f: string, l: string, c: string) { return `${f}.${l}@${c.toLowerCase().replace(/[^a-z0-9]/g, '')}.com` }
 
-const LEADS: Record<string, Lead> = {
-  l1: { id: 'l1', firstName: 'Camille', lastName: 'Roux', title: 'VP Sales', company: 'Fivory', score: 82, temperature: 'hot', status: 'chaud', stage: 'connected', email: email('camille', 'roux', 'Fivory'), phone: '+33 6 12 34 56 78' },
-  l2: { id: 'l2', firstName: 'Thomas', lastName: 'Lefèvre', title: 'Head of Growth', company: 'Nudge', score: 74, temperature: 'warm', status: 'tiede', stage: 'connected', email: email('thomas', 'lefevre', 'Nudge'), phone: null },
-  l3: { id: 'l3', firstName: 'Inès', lastName: 'Bernard', title: 'CMO', company: 'Payflow', score: 68, temperature: 'warm', status: 'tiede', stage: 'in_sequence', email: email('ines', 'bernard', 'Payflow'), phone: null },
-  l4: { id: 'l4', firstName: 'Hugo', lastName: 'Martin', title: 'CEO & Co-founder', company: 'Kairos AI', score: 91, temperature: 'hot', status: 'chaud', stage: 'to_invite', email: null, phone: null },
-  l5: { id: 'l5', firstName: 'Léa', lastName: 'Dubois', title: 'Head of Sales Ops', company: 'Swan', score: 59, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null },
-  l6: { id: 'l6', firstName: 'Antoine', lastName: 'Girard', title: 'Directeur Commercial', company: 'Spendesk', score: 71, temperature: 'warm', status: 'tiede', stage: 'in_sequence', email: email('antoine', 'girard', 'Spendesk'), phone: null },
-  l7: { id: 'l7', firstName: 'Sarah', lastName: 'Moreau', title: 'Founder', company: 'Lago', score: 88, temperature: 'hot', status: 'chaud', stage: 'connected', email: email('sarah', 'moreau', 'Lago'), phone: '+33 6 98 76 54 32' },
-  l8: { id: 'l8', firstName: 'Maxime', lastName: 'Petit', title: 'Head of Marketing', company: 'Qonto', score: 63, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null },
-  l9: { id: 'l9', firstName: 'Julie', lastName: 'Fontaine', title: 'VP Marketing', company: 'Pennylane', score: 66, temperature: 'warm', status: 'tiede', stage: 'invited', email: email('julie', 'fontaine', 'Pennylane'), phone: null },
-  l10: { id: 'l10', firstName: 'Nicolas', lastName: 'Laurent', title: 'Chief Revenue Officer', company: 'Alan', score: 79, temperature: 'hot', status: 'chaud', stage: 'invited', email: email('nicolas', 'laurent', 'Alan'), phone: null },
-  l11: { id: 'l11', firstName: 'Chloé', lastName: 'Garnier', title: 'Head of Sales', company: 'Ledger', score: 72, temperature: 'warm', status: 'tiede', stage: 'responded', email: email('chloe', 'garnier', 'Ledger'), phone: '+33 6 45 67 89 01' },
-  l12: { id: 'l12', firstName: 'Romain', lastName: 'Faure', title: 'CEO', company: 'Dust', score: 85, temperature: 'hot', status: 'chaud', stage: 'responded', email: email('romain', 'faure', 'Dust'), phone: null },
-  l13: { id: 'l13', firstName: 'Emma', lastName: 'Rousseau', title: 'Founder & CEO', company: 'Photoroom', score: 90, temperature: 'hot', status: 'chaud', stage: 'meeting', email: email('emma', 'rousseau', 'Photoroom'), phone: '+33 6 23 45 67 89' },
-  l14: { id: 'l14', firstName: 'Lucas', lastName: 'Mercier', title: 'Head of Growth', company: 'Aircall', score: 77, temperature: 'hot', status: 'converti', stage: 'closed', email: email('lucas', 'mercier', 'Aircall'), phone: '+33 6 34 56 78 90' },
-}
+// Plateforme vierge : aucune fausse donnée. Les leads se créent via
+// sourcing / ajout manuel / import CSV.
+const LEADS: Record<string, Lead> = {}
 
-let ACTIONS: Action[] = [
-  { id: 'a1', leadId: 'l4', type: 'invitation', status: 'pending', scheduledLabel: null, createdAt: '06:00',
-    generatedMessage: "Hugo, votre post sur l'agent d'onboarding de Kairos m'a marqué — surtout le passage sur le temps commercial récupéré. On aide justement des équipes tech à industrialiser ça. Curieux d'échanger ?" },
-  { id: 'a2', leadId: 'l1', type: 'message', status: 'pending', scheduledLabel: null, createdAt: '06:00',
-    generatedMessage: "Camille, on s'est connectés la semaine dernière. Vous mentionniez vouloir structurer le suivi post-démo chez Fivory. J'ai deux approches concrètes en tête — je vous envoie ça ou on en parle 15 min ?" },
-  { id: 'a3', leadId: 'l7', type: 'message', status: 'pending', scheduledLabel: null, createdAt: '06:00',
-    generatedMessage: "Sarah, félicitations pour la traction de Lago sur le métered billing. Vos équipes sales scalent vite — souvent le moment où l'ops déraille. On outille exactement cette phase, ça vous parle ?" },
-  { id: 'a4', leadId: 'l2', type: 'relance', status: 'pending', scheduledLabel: null, createdAt: '06:00',
-    generatedMessage: "Thomas, je reviens vers vous sans insister — j'ai pensé à Nudge en voyant une étude sur l'automatisation du nurturing B2B. Je vous la partage, sans agenda commercial derrière." },
-  { id: 'a5', leadId: 'l5', type: 'invitation', status: 'pending', scheduledLabel: null, createdAt: '06:00',
-    generatedMessage: "Léa, votre parcours sur l'ops sales chez Swan est exactement le genre de profil dont j'apprends beaucoup. Ravi de me connecter." },
-  { id: 'a6', leadId: 'l8', type: 'visit', status: 'pending', scheduledLabel: null, createdAt: '06:00', generatedMessage: null },
-  { id: 'a7', leadId: 'l3', type: 'message', status: 'pending', scheduledLabel: null, createdAt: '06:00',
-    generatedMessage: "Inès, chez Payflow vous gérez sûrement un mix de canaux d'acquisition costaud. On voit beaucoup de CMO tech récupérer un temps fou en automatisant le scoring des leads entrants. Un angle qui vous intéresse ?" },
-  { id: 'a8', leadId: 'l6', type: 'visit', status: 'pending', scheduledLabel: null, createdAt: '06:00', generatedMessage: null },
-]
+let ACTIONS: Action[] = []
 
 const QUOTAS: Record<Quota['type'], Quota> = {
   invitation: { type: 'invitation', used: 6, max: 18 },
@@ -281,56 +253,10 @@ export function refreshDossier(id: string) {
 }
 
 export function getConversations(): Promise<Conversation[]> {
-  const c = (id: string, leadId: string, unread: boolean, channel: Conversation['channel'], messages: Conversation['messages'], suggestedReply: string): Conversation => ({
-    id, lead: LEADS[leadId], unread, channel, messages, suggestedReply,
-  })
-  return delay([
-    c('c1', 'l7', true, 'linkedin', [
-      { id: 'm1', from: 'us', text: 'Sarah, félicitations pour la traction de Lago. Vos équipes sales scalent vite — souvent le moment où l\'ops déraille. On outille cette phase, ça vous parle ?', time: 'lun. 09:12' },
-      { id: 'm2', from: 'them', text: 'Salut ! Oui c\'est un vrai sujet en ce moment. Vous faites quoi exactement ?', time: 'lun. 14:30' },
-    ], 'Bonne question — concrètement on met en place des agents qui qualifient et priorisent vos leads entrants automatiquement, pour que vos commerciaux ne passent que sur les comptes chauds. 15 min cette semaine pour vous montrer un cas concret ?'),
-    c('c2', 'l12', true, 'email', [
-      { id: 'm1', from: 'us', text: 'Romain, vous scalez Dust très vite. Comment vous assurez-vous que le suivi commercial ne se dégrade pas ?', time: 'mar. 10:05' },
-      { id: 'm2', from: 'them', text: 'Intéressant. On galère un peu sur le suivi post-démo justement.', time: 'mar. 16:40' },
-    ], 'C\'est exactement là qu\'on intervient. On automatise les relances contextualisées post-démo pour qu\'aucune opportunité ne retombe. Je vous envoie un exemple ou on en parle de vive voix ?'),
-    c('c3', 'l1', false, 'linkedin', [
-      { id: 'm1', from: 'us', text: 'Camille, on s\'est connectés la semaine dernière. Vous mentionniez vouloir structurer le suivi post-démo chez Fivory.', time: 'mer. 11:00' },
-    ], 'Je reviens vers vous — j\'ai deux approches concrètes en tête pour Fivory. Un échange de 15 min cette semaine ?'),
-    c('c4', 'l13', false, 'whatsapp', [
-      { id: 'm1', from: 'us', text: 'Emma, ravi de notre échange. Je vous confirme le créneau de jeudi 14h.', time: 'jeu. 08:20' },
-      { id: 'm2', from: 'them', text: 'Parfait, à jeudi !', time: 'jeu. 09:00' },
-    ], 'Au plaisir Emma — je vous envoie l\'invitation calendrier avec le lien visio.'),
-  ])
+  return delay([])
 }
 
-let SEQUENCES: Sequence[] = [
-  {
-    id: 's1', name: 'Founders tech · signal recrutement', status: 'active', enrolled: 34, responseRate: 18,
-    steps: [
-      { id: 'st1', channel: 'linkedin', type: 'visit', condition: 'always', delayDays: 0 },
-      { id: 'st2', channel: 'linkedin', type: 'invitation', condition: 'always', delayDays: 1 },
-      { id: 'st3', channel: 'linkedin', type: 'message', condition: 'if_connected', delayDays: 2 },
-      { id: 'st4', channel: 'linkedin', type: 'relance', condition: 'if_no_response', delayDays: 4 },
-      { id: 'st5', channel: 'email', type: 'relance', condition: 'if_no_response', delayDays: 7 },
-    ],
-  },
-  {
-    id: 's2', name: 'VP Sales · scale-up SaaS', status: 'active', enrolled: 21, responseRate: 24,
-    steps: [
-      { id: 'st1', channel: 'linkedin', type: 'invitation', condition: 'always', delayDays: 0 },
-      { id: 'st2', channel: 'linkedin', type: 'message', condition: 'if_connected', delayDays: 3 },
-      { id: 'st3', channel: 'email', type: 'relance', condition: 'if_no_response', delayDays: 5 },
-    ],
-  },
-  {
-    id: 's3', name: 'Visiteurs profil · réchauffage', status: 'paused', enrolled: 8, responseRate: 31,
-    steps: [
-      { id: 'st1', channel: 'linkedin', type: 'visit', condition: 'always', delayDays: 0 },
-      { id: 'st2', channel: 'linkedin', type: 'invitation', condition: 'always', delayDays: 2 },
-      { id: 'st3', channel: 'whatsapp', type: 'message', condition: 'if_connected', delayDays: 3 },
-    ],
-  },
-]
+let SEQUENCES: Sequence[] = []
 
 let seqCounter = 100
 
@@ -383,17 +309,7 @@ export interface Channel {
 
 // Fil de conversation unifié (tous canaux) rattaché à un lead.
 export interface ThreadMessage { id: string; from: 'them' | 'us'; text: string; time: string; channel: 'linkedin' | 'email' | 'whatsapp' }
-const THREADS: Record<string, ThreadMessage[]> = {
-  l1: [
-    { id: 'm1', from: 'us', text: 'Camille, on aide des équipes comme Fivory à structurer le suivi post-démo. Curieux d’échanger ?', time: 'Lun 09:12', channel: 'linkedin' },
-    { id: 'm2', from: 'them', text: 'Bonjour, oui pourquoi pas — envoyez-moi deux créneaux.', time: 'Lun 14:03', channel: 'linkedin' },
-  ],
-  l7: [
-    { id: 'm1', from: 'us', text: 'Sarah, félicitations pour la traction de Lago. On outille exactement la phase de scale sales.', time: 'Mar 10:20', channel: 'linkedin' },
-    { id: 'm2', from: 'them', text: 'Merci ! Intéressée, mais plutôt par mail : sarah@lago.com', time: 'Mar 16:41', channel: 'linkedin' },
-    { id: 'm3', from: 'us', text: 'Parfait, je vous écris juste ici avec un one-pager.', time: 'Mar 16:55', channel: 'email' },
-  ],
-}
+const THREADS: Record<string, ThreadMessage[]> = {}
 let threadSeq = 100
 
 export function getLeadThread(leadId: string): Promise<ThreadMessage[]> {
@@ -455,6 +371,17 @@ export function generateMessage(leadId: string, variant: 'principal' | 'directe'
     return delay(`Bonjour ${prenom}, je suis votre parcours chez ${lead.company} avec intérêt. Sans agenda commercial : ${d.questionAPoser}`)
   }
   return delay(`${prenom}, ${accroche}\n\n${d.questionAPoser}`)
+}
+
+// Rédige un message à partir de notes en vrac fournies par l'utilisateur.
+// MOCK → au câblage, Claude structure les notes en respectant le Référentiel.
+export function generateFromNotes(leadId: string, notes: string): Promise<string> {
+  const lead = LEADS[leadId]
+  const prenom = lead ? lead.firstName : ''
+  const n = notes.trim()
+  if (!n) return delay('')
+  // Ébauche : on repart des notes comme accroche, on garde un ton d'ouverture.
+  return delay(`${prenom ? prenom + ', ' : ''}${n.charAt(0).toLowerCase() + n.slice(1)}\n\nSeriez-vous ouvert·e à en échanger quelques minutes cette semaine ?`)
 }
 
 export interface Referentiel {
@@ -551,38 +478,11 @@ export function getDiagnostics(): Promise<Diagnostic[]> {
   ])
 }
 
-export function getSourcing(period: Period = 'month'): Promise<SourcingData> {
-  const f = period === 'week' ? 0.25 : period === 'month' ? 1 : period === 'quarter' ? 3 : 12
-  return delay({
-    totalSourced: Math.round(214 * f),
-    qualificationRate: 32,
-    bySector: [
-      { sector: 'SaaS B2B', count: 88 },
-      { sector: 'Fintech', count: 52 },
-      { sector: 'IA / ML', count: 41 },
-      { sector: 'MarTech', count: 20 },
-      { sector: 'Cybersécurité', count: 13 },
-    ],
-    runs: [
-      { id: 'r1', label: 'SaaS · Paris · série A', found: 62, qualified: 21, when: 'il y a 2 j' },
-      { id: 'r2', label: 'Fintech · France · recrute sales', found: 44, qualified: 12, when: 'il y a 5 j' },
-      { id: 'r3', label: 'IA/ML · Europe · < 50', found: 38, qualified: 9, when: 'la semaine dernière' },
-    ],
-    incoming: [
-      { id: 'sl1', name: 'Marie Dupuis', title: 'Head of Sales', company: 'Cardo', sector: 'SaaS B2B', score: 84, signals: ['Levée série A', 'Recrute 3 sales'] },
-      { id: 'sl2', name: 'Paul Girard', title: 'CEO', company: 'Flowly', sector: 'MarTech', score: 78, signals: ['Croissance effectif +40%'] },
-      { id: 'sl3', name: 'Sofia Navarro', title: 'VP Marketing', company: 'Beacon', sector: 'Fintech', score: 71, signals: ['Nouveau VP Marketing', 'Stack HubSpot'] },
-      { id: 'sl4', name: 'Yanis Cohen', title: 'Founder', company: 'Vecto', sector: 'IA / ML', score: 88, signals: ['Levée seed', 'Recrute growth'] },
-      { id: 'sl5', name: 'Claire Meunier', title: 'Chief Revenue Officer', company: 'Nomia', sector: 'SaaS B2B', score: 66, signals: ['Ouverture bureau Paris'] },
-    ],
-  })
+export function getSourcing(_period: Period = 'month'): Promise<SourcingData> {
+  return delay({ totalSourced: 0, qualificationRate: 0, bySector: [], runs: [], incoming: [] })
 }
 
-const WORKSPACES: Workspace[] = [
-  { id: 'ws_acme', name: 'Acme', leads: 388, users: 2, plan: 'Growth' },
-  { id: 'ws_fabel', name: 'Fabel', leads: 156, users: 1, plan: 'Starter' },
-  { id: 'ws_redsen', name: 'Redsen', leads: 92, users: 3, plan: 'Growth' },
-]
+const WORKSPACES: Workspace[] = []
 
 export function getWorkspaces(): Promise<Workspace[]> {
   return delay([...WORKSPACES])
@@ -590,23 +490,13 @@ export function getWorkspaces(): Promise<Workspace[]> {
 
 // ── Notifications ──
 export interface Notification { id: string; type: 'reply' | 'meeting' | 'task' | 'system'; text: string; when: string; unread: boolean; href?: string }
-const NOTIFS: Notification[] = [
-  { id: 'n1', type: 'reply', text: 'Camille Roux a répondu sur LinkedIn', when: 'il y a 12 min', unread: true, href: '/inbox' },
-  { id: 'n2', type: 'meeting', text: 'RDV avec Emma Rousseau demain 14:00', when: 'il y a 1 h', unread: true, href: '/leads/l13' },
-  { id: 'n3', type: 'task', text: 'Relancer Thomas Lefèvre (échéance aujourd\'hui)', when: 'il y a 2 h', unread: true, href: '/planning' },
-  { id: 'n4', type: 'system', text: 'Sourcing terminé — 25 nouvelles entreprises', when: 'il y a 3 h', unread: false, href: '/sourcing' },
-]
+const NOTIFS: Notification[] = []
 export function getNotifications(): Promise<Notification[]> { return delay([...NOTIFS]) }
 export function markNotificationsRead(): Promise<Notification[]> { NOTIFS.forEach((n) => (n.unread = false)); return delay([...NOTIFS]) }
 
 // ── Planificateur de tâches / rappels ──
 export interface Task { id: string; title: string; due: string; done: boolean; leadId?: string; leadName?: string; channel?: 'linkedin' | 'email' | 'whatsapp' | null }
-const TASKS: Task[] = [
-  { id: 't1', title: 'Relancer après démo', due: "Aujourd'hui 16:00", done: false, leadId: 'l1', leadName: 'Camille Roux', channel: 'linkedin' },
-  { id: 't2', title: 'Envoyer one-pager', due: "Aujourd'hui 17:30", done: false, leadId: 'l7', leadName: 'Sarah Moreau', channel: 'email' },
-  { id: 't3', title: 'Préparer le RDV', due: 'Demain 09:00', done: false, leadId: 'l13', leadName: 'Emma Rousseau', channel: null },
-  { id: 't4', title: 'Vérifier signal levée de fonds', due: 'Jeu. 11:00', done: true, channel: null },
-]
+const TASKS: Task[] = []
 let taskSeq = 100
 export function getTasks(): Promise<Task[]> { return delay([...TASKS]) }
 export function addTask(input: { title: string; due: string; leadId?: string; leadName?: string; channel?: Task['channel'] }): Promise<Task> {
@@ -630,36 +520,13 @@ export interface AiLog {
 }
 export const AI_AGENTS = ['Prospection M1', 'Prospection M2', 'Scoring', 'Enrichissement', 'Rédaction', 'Cockpit IA']
 export function getAiLogs(): Promise<AiLog[]> {
-  return delay([
-    {
-      id: 'ai1', when: '20 jul 14:30', agent: 'Prospection M1', provider: 'Claude', model: 'Claude Haiku 4.5',
-      tokensIn: 2265, tokensOut: 23, cost: 0.01,
-      systemPrompt: "Tu es un parseur de requêtes de sourcing d'entreprises françaises.\nTa SEULE tâche : à partir d'une phrase en langage naturel, sélectionner les codes d'activité NAF (rév. 2) les plus pertinents PARMI le catalogue fourni.\nRÈGLES STRICTES :\n- Tu ne PEUX choisir QUE des codes présents dans le catalogue fourni.\n- N'invente JAMAIS un code absent du catalogue.",
-      input: 'Trouve-moi des cabinets de conseil en santé à Lyon', output: '```json\n{"naf_codes": ["86"], "section": "Q"}\n```',
-    },
-    {
-      id: 'ai2', when: '20 jul 14:31', agent: 'Rédaction', provider: 'Claude', model: 'Claude Opus 4.8',
-      tokensIn: 1840, tokensOut: 96, cost: 0.04,
-      systemPrompt: "Tu es le rédacteur d'accroches de Smart.AI. Respecte le Référentiel : pas de ROI chiffré, pas de superlatifs, ton = ouverture pas pitch. Deal-killers interdits.",
-      input: "Lead: Sarah Moreau, Founder @ Lago. Signal: recrute des SDR. Icebreaker souhaité, ton direct.",
-      output: "Sarah, félicitations pour la traction de Lago sur le metered billing. Vos équipes sales scalent vite — souvent le moment où l'ops déraille. On outille exactement cette phase, ça vous parle ?",
-    },
-  ])
+  return delay([])
 }
 
-// Journal d'activité (admin) — mock ; au câblage : events Supabase/cron/connecteurs.
+// Journal d'activité (admin) — au câblage : events Supabase/cron/connecteurs.
 export interface LogEntry { id: string; level: 'info' | 'warn' | 'error'; source: string; message: string; when: string }
 export function getLogs(): Promise<LogEntry[]> {
-  return delay([
-    { id: 'lg1', level: 'info', source: 'Cron', message: 'Génération des actions du jour — 8 actions créées', when: "Aujourd'hui 06:00" },
-    { id: 'lg2', level: 'info', source: 'Sourcing', message: 'Recherche data.gouv « Technology · Paris » — 25 entreprises', when: "Aujourd'hui 09:12" },
-    { id: 'lg3', level: 'info', source: 'Pappers', message: 'Dirigeants résolus pour SIREN 552100554 (cache miss)', when: "Aujourd'hui 09:14" },
-    { id: 'lg4', level: 'warn', source: 'Unipile', message: 'Canal WhatsApp non connecté — envoi ignoré', when: "Aujourd'hui 10:03" },
-    { id: 'lg5', level: 'info', source: 'IA', message: 'Icebreaker généré (Claude) pour Kairos AI', when: "Aujourd'hui 10:20" },
-    { id: 'lg6', level: 'error', source: 'Exa', message: 'Clé EXA_API_KEY absente — repli sur Claude web', when: "Aujourd'hui 10:21" },
-    { id: 'lg7', level: 'info', source: 'Auth', message: 'Connexion réussie · MFA validée', when: "Aujourd'hui 11:47" },
-    { id: 'lg8', level: 'info', source: 'Supabase', message: 'Persistance OK — écriture réglages', when: "Aujourd'hui 11:48" },
-  ])
+  return delay([])
 }
 
 // Crée un espace client avec un ID slugifié stable (ex: "ws_smart_ai").
@@ -688,13 +555,7 @@ export function regenerateReply(leadId: string, instruction: string): Promise<st
 }
 
 export function getVisitors(): Promise<Visitor[]> {
-  const v = (leadId: string, viewedAt: string, times: number): Visitor => ({ lead: LEADS[leadId], viewedAt, times })
-  return delay([
-    v('l4', 'il y a 1 h', 2),
-    v('l5', 'il y a 4 h', 1),
-    v('l9', 'hier', 1),
-    v('l8', 'hier', 3),
-  ])
+  return delay([])
 }
 
 export function getDashboard(period: Period = 'week'): Promise<DashboardData> {
@@ -703,53 +564,13 @@ export function getDashboard(period: Period = 'week'): Promise<DashboardData> {
   return delay({
     period,
     pendingActions,
-    kpis: {
-      invitationsSent: 34 * f,
-      acceptanceRate: period === 'week' ? 41 : period === 'month' ? 38 : period === 'quarter' ? 40 : 39,
-      replies: 12 * f,
-      meetings: 4 * f,
-      iaCostWeek: Math.round(2.1 * f * 100) / 100,
-    },
-    details: {
-      invitations: [
-        { id: 'l4', name: 'Hugo Martin', company: 'Kairos AI', meta: 'envoyée hier', href: '/leads/l4' },
-        { id: 'l5', name: 'Léa Dubois', company: 'Swan', meta: 'envoyée hier', href: '/leads/l5' },
-        { id: 'l9', name: 'Julie Fontaine', company: 'Pennylane', meta: 'il y a 2 j', href: '/leads/l9' },
-        { id: 'l10', name: 'Nicolas Laurent', company: 'Alan', meta: 'il y a 2 j', href: '/leads/l10' },
-      ],
-      acceptance: [
-        { id: 'l1', name: 'Camille Roux', company: 'Fivory', meta: 'acceptée', href: '/leads/l1' },
-        { id: 'l2', name: 'Thomas Lefèvre', company: 'Nudge', meta: 'acceptée', href: '/leads/l2' },
-        { id: 'l7', name: 'Sarah Moreau', company: 'Lago', meta: 'acceptée', href: '/leads/l7' },
-      ],
-      replies: [
-        { id: 'l7', name: 'Sarah Moreau', company: 'Lago', meta: 'il y a 2 h', href: '/inbox' },
-        { id: 'l12', name: 'Romain Faure', company: 'Dust', meta: 'hier', href: '/inbox' },
-        { id: 'l11', name: 'Chloé Garnier', company: 'Ledger', meta: 'hier', href: '/inbox' },
-      ],
-      meetings: [
-        { id: 'l13', name: 'Emma Rousseau', company: 'Photoroom', meta: 'jeu. 14h', href: '/leads/l13' },
-        { id: 'l1', name: 'Camille Roux', company: 'Fivory', meta: 'ven. 10h', href: '/leads/l1' },
-        { id: 'l7', name: 'Sarah Moreau', company: 'Lago', meta: 'lun. 15h', href: '/leads/l7' },
-        { id: 'l12', name: 'Romain Faure', company: 'Dust', meta: 'mar. 11h', href: '/leads/l12' },
-      ],
-    },
+    kpis: { invitationsSent: 0, acceptanceRate: 0, replies: 0, meetings: 0, iaCostWeek: 0 },
+    details: { invitations: [], acceptance: [], replies: [], meetings: [] },
     funnel: [
-      { stage: 'to_invite', count: 42 },
-      { stage: 'invited', count: 28 },
-      { stage: 'connected', count: 63 },
-      { stage: 'in_sequence', count: 31 },
-      { stage: 'responded', count: 12 },
-      { stage: 'meeting', count: 4 },
-      { stage: 'closed', count: 2 },
+      { stage: 'to_invite', count: 0 }, { stage: 'invited', count: 0 }, { stage: 'connected', count: 0 },
+      { stage: 'in_sequence', count: 0 }, { stage: 'responded', count: 0 }, { stage: 'meeting', count: 0 }, { stage: 'closed', count: 0 },
     ],
-    activity: [
-      { id: 'e1', kind: 'reply', text: 'Sarah Moreau (Lago) a répondu à votre message', when: 'il y a 2 h', hot: true },
-      { id: 'e2', kind: 'invitation', text: 'Invitation envoyée à Hugo Martin (Kairos AI)', when: 'il y a 3 h' },
-      { id: 'e3', kind: 'meeting', text: 'RDV planifié avec Camille Roux (Fivory)', when: 'hier' },
-      { id: 'e4', kind: 'accepted', text: 'Thomas Lefèvre (Nudge) a accepté votre invitation', when: 'hier' },
-      { id: 'e5', kind: 'message', text: 'Message envoyé à Inès Bernard (Payflow)', when: 'hier' },
-    ],
+    activity: [],
   })
 }
 

@@ -7,11 +7,7 @@ import { supabase, supabaseConfigured } from './client'
 
 const TABLE = 'prospector_workspaces'
 const g = globalThis as any
-const mem: Workspace[] = g.__prospectorWs || (g.__prospectorWs = [
-  { id: 'ws_acme', name: 'Acme', leads: 388, users: 2, plan: 'Growth', status: 'active', permissions: { ...DEFAULT_PERMISSIONS } },
-  { id: 'ws_fabel', name: 'Fabel', leads: 156, users: 1, plan: 'Starter', status: 'active', permissions: { ...DEFAULT_PERMISSIONS } },
-  { id: 'ws_redsen', name: 'Redsen', leads: 92, users: 3, plan: 'Growth', status: 'active', permissions: { ...DEFAULT_PERMISSIONS } },
-])
+const mem: Workspace[] = g.__prospectorWs || (g.__prospectorWs = [])
 
 function slugId(name: string, taken: (id: string) => boolean): string {
   const base = 'ws_' + name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 24)
@@ -70,6 +66,13 @@ export async function updateWorkspace(id: string, patch: { name?: string; plan?:
   }
   const { data } = await sb.from(TABLE).update(dbPatch).eq('id', id).select('*').single()
   return data ? rowToWs(data) : null
+}
+
+export async function deleteWorkspace(id: string): Promise<boolean> {
+  const sb = supabase()
+  if (!sb) { const i = mem.findIndex((w) => w.id === id); if (i >= 0) mem.splice(i, 1); return true }
+  const { error } = await sb.from(TABLE).delete().eq('id', id)
+  return !error
 }
 
 export { supabaseConfigured }

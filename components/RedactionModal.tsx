@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { LeadDetail } from '../types/prospector'
-import { generateMessage, detectDealKillers, getChannels, sendMessage } from '../lib/prospector/capabilities'
+import { generateMessage, detectDealKillers, getChannels, sendMessage, generateFromNotes } from '../lib/prospector/capabilities'
 import type { Channel } from '../lib/prospector/capabilities'
 
 type Variant = 'principal' | 'directe' | 'douce'
@@ -24,7 +24,17 @@ export default function RedactionModal({ detail, onClose, onSent }: { detail: Le
   const [channels, setChannels] = useState<Channel[]>([])
   const [channel, setChannel] = useState<Ch>('linkedin')
   const [sent, setSent] = useState(false)
+  const [notes, setNotes] = useState('')
+  const [notesOpen, setNotesOpen] = useState(false)
+  const [genBusy, setGenBusy] = useState(false)
   const { lead, dossier } = detail
+
+  const fromNotes = async () => {
+    if (!notes.trim()) return
+    setGenBusy(true)
+    const m = await generateFromNotes(lead.id, notes)
+    setMessage(m); setGenBusy(false)
+  }
 
   useEffect(() => {
     setLoading(true)
@@ -105,6 +115,27 @@ export default function RedactionModal({ detail, onClose, onSent }: { detail: Le
                   {v.label}
                 </button>
               ))}
+            </div>
+
+            {/* Rédiger depuis mes notes */}
+            <div className="mb-3">
+              <button onClick={() => setNotesOpen((v) => !v)} className="text-xs font-medium text-indigo-600 flex items-center gap-1 hover:underline">
+                <span className="gradient-text font-bold">✦</span> Rédiger depuis mes notes {notesOpen ? '▲' : '▼'}
+              </button>
+              {notesOpen && (
+                <div className="mt-2 bg-indigo-50/40 border border-indigo-100 rounded-xl p-2.5">
+                  <textarea
+                    value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
+                    className="w-full text-sm text-gray-700 bg-white border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-400 resize-none"
+                    placeholder="Jette tes idées en vrac : ex. « vu son post sur le scaling, recrute 3 SDR, veut structurer l'outbound, ton direct »"
+                  />
+                  <div className="flex justify-end mt-2">
+                    <button onClick={fromNotes} disabled={genBusy || !notes.trim()} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">
+                      {genBusy ? 'Rédaction…' : 'Rédiger le message'}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <textarea

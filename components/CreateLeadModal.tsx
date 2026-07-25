@@ -7,7 +7,18 @@ const field = 'w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 bord
 
 export default function CreateLeadModal({ mode, onClose }: { mode: Mode; onClose: () => void }) {
   const router = useRouter()
-  const [f, setF] = useState({ firstName: '', lastName: '', title: '', company: '', email: '', linkedinUrl: '' })
+  const [f, setF] = useState({ firstName: '', lastName: '', title: '', company: '', email: '', linkedinUrl: '', dirigeant: '' })
+  const [siren, setSiren] = useState('')
+  const [sirenBusy, setSirenBusy] = useState(false)
+  const [sirenState, setSirenState] = useState<'found' | 'notfound' | null>(null)
+  const verifySiren = async () => {
+    setSirenBusy(true); setSirenState(null)
+    try {
+      const d = await fetch(`/api/company/verify?siren=${siren}`).then((r) => r.json())
+      if (d.found) { setF((p) => ({ ...p, company: d.name || p.company, dirigeant: d.dirigeant || '' })); setSirenState('found') }
+      else setSirenState('notfound')
+    } finally { setSirenBusy(false) }
+  }
   const [csv, setCsv] = useState('')
   const [fileName, setFileName] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
@@ -57,6 +68,15 @@ export default function CreateLeadModal({ mode, onClose }: { mode: Mode; onClose
 
         {mode === 'manual' && (
           <div className="space-y-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">SIREN de l'entreprise <span className="font-normal text-gray-400">— vérifie l'existence (évite les faux leads)</span></label>
+              <div className="flex gap-2">
+                <input value={siren} onChange={(e) => { setSiren(e.target.value.replace(/[^\d]/g, '').slice(0, 9)); setSirenState(null) }} className={`${field} flex-1`} placeholder="9 chiffres" />
+                <button onClick={verifySiren} disabled={siren.length !== 9 || sirenBusy} className="text-xs font-semibold text-gray-600 border border-gray-200 px-3 rounded-xl hover:bg-gray-50 transition-colors disabled:opacity-50">{sirenBusy ? '…' : 'Vérifier'}</button>
+              </div>
+              {sirenState === 'found' && <p className="text-[11px] text-emerald-600 mt-1">✓ Entreprise vérifiée · {f.company}{f.dirigeant ? ` · dir. ${f.dirigeant}` : ''}</p>}
+              {sirenState === 'notfound' && <p className="text-[11px] text-red-600 mt-1">Aucune entreprise trouvée pour ce SIREN.</p>}
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <input value={f.firstName} onChange={(e) => set('firstName', e.target.value)} className={field} placeholder="Prénom" />
               <input value={f.lastName} onChange={(e) => set('lastName', e.target.value)} className={field} placeholder="Nom" />

@@ -34,6 +34,12 @@ export default function AdminPage() {
   const [wsName, setWsName] = useState('')
   const [wsPlan, setWsPlan] = useState('Starter')
   const [managing, setManaging] = useState<Workspace | null>(null)
+  const [deleting, setDeleting] = useState<Workspace | null>(null)
+  const confirmDelete = async () => {
+    if (!deleting) return
+    await fetch('/api/workspaces', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: deleting.id }) })
+    setDeleting(null); loadWs()
+  }
   const loadWs = () => fetch('/api/workspaces').then((r) => r.json()).then((d) => setWorkspaces(d.workspaces || [])).catch(() => {})
   const createWs = async () => {
     if (!wsName.trim()) return
@@ -177,6 +183,20 @@ export default function AdminPage() {
 
       {managing && <WorkspaceManageModal ws={managing} onClose={() => setManaging(null)} onSaved={() => { setManaging(null); loadWs() }} />}
 
+      {deleting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setDeleting(null)} />
+          <div className="relative card w-full max-w-sm p-6">
+            <h2 className="text-base font-bold text-gray-900 mb-2">Supprimer l'espace ?</h2>
+            <p className="text-sm text-gray-500 mb-4"><strong>{deleting.name}</strong> ({deleting.id}) sera définitivement supprimé. Cette action est irréversible.</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setDeleting(null)} className="text-sm font-medium text-gray-500 px-3 py-2 rounded-xl hover:bg-gray-50">Annuler</button>
+              <button onClick={confirmDelete} className="bg-red-500 text-white text-sm font-semibold px-4 py-2 rounded-xl hover:bg-red-600 transition-colors">Supprimer</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {tab === 'workspaces' && (
         <div className="card overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
@@ -217,7 +237,12 @@ export default function AdminPage() {
                   <td className="px-5 py-3 text-sm text-gray-600">{w.leads}</td>
                   <td className="px-5 py-3 text-sm text-gray-600">{w.users}</td>
                   <td className="px-5 py-3"><span className="text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">{w.plan}</span></td>
-                  <td className="px-5 py-3 text-right"><button onClick={() => setManaging(w)} className="text-xs text-gray-400 hover:text-indigo-600">Gérer</button></td>
+                  <td className="px-5 py-3 text-right">
+                    <div className="flex items-center justify-end gap-3">
+                      <button onClick={() => setManaging(w)} className="text-xs text-gray-400 hover:text-indigo-600">Gérer</button>
+                      <button onClick={() => setDeleting(w)} className="text-xs text-gray-400 hover:text-red-500">Supprimer</button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
