@@ -3,9 +3,9 @@ import { supabase, supabaseConfigured } from '../../../lib/supabase/client'
 
 // Diagnostic RÉEL : teste écriture + lecture Supabase et renvoie l'erreur exacte.
 export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
-  const urlPresent = !!process.env.SUPABASE_URL
-  const keyPresent = !!process.env.SUPABASE_SERVICE_ROLE_KEY
-  const out: any = { configured: supabaseConfigured(), urlPresent, keyPresent, writeOk: false, readOk: false, error: null }
+  // Liste les noms de variables Supabase détectés (pour repérer un mauvais nom).
+  const seen = ['SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_PROJECT_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SERVICE_KEY', 'SUPABASE_SECRET_KEY', 'SUPABASE_KEY', 'SERVICE_ROLE_KEY'].filter((n) => !!process.env[n])
+  const out: any = { configured: supabaseConfigured(), varsDetected: seen, writeOk: false, readOk: false, error: null }
 
   const sb = supabase()
   if (!sb) { out.error = 'Client non initialisé (SUPABASE_URL ou SUPABASE_SERVICE_ROLE_KEY manquant côté serveur).'; return res.status(200).json(out) }

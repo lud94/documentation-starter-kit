@@ -6,14 +6,23 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
 let cached: SupabaseClient | null = null
 
+// Tolérant sur les noms de variables (selon comment elles ont été saisies dans Vercel).
+function url(): string | undefined {
+  return process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_PROJECT_URL
+}
+function serviceKey(): string | undefined {
+  return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY
+    || process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_KEY || process.env.SERVICE_ROLE_KEY
+}
+
 export function supabaseConfigured(): boolean {
-  return !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
+  return !!(url() && serviceKey())
 }
 
 export function supabase(): SupabaseClient | null {
   if (!supabaseConfigured()) return null
   if (cached) return cached
-  cached = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
+  cached = createClient(url()!, serviceKey()!, {
     auth: { persistSession: false, autoRefreshToken: false },
   })
   return cached
