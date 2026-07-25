@@ -4,8 +4,8 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, sendMessage, getChannels, generateMessage, addTask } from '../../lib/prospector/capabilities'
-import type { Channel, ThreadMessage } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask } from '../../lib/prospector/capabilities'
+import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
 const CH_META: Record<ThreadMessage['channel'], { label: string; badge: string; dot: string }> = {
@@ -69,34 +69,13 @@ export default function LeadDetailPage() {
   const [copied, setCopied] = useState(false)
   const [iceCopied, setIceCopied] = useState(false)
   const [thread, setThread] = useState<ThreadMessage[]>([])
-  const [channels, setChannels] = useState<Channel[]>([])
-  const [composeCh, setComposeCh] = useState<ThreadMessage['channel']>('linkedin')
-  const [composeText, setComposeText] = useState('')
-  const [sending, setSending] = useState(false)
-  const [genLoading, setGenLoading] = useState(false)
 
   const reload = () => { if (typeof id === 'string') getLeadDetail(id).then(setD) }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
 
   useEffect(() => { getSequences().then(setSequences) }, [])
-  useEffect(() => {
-    if (typeof id === 'string') getLeadThread(id).then(setThread)
-    getChannels().then(setChannels)
-  }, [id])
+  useEffect(() => { if (typeof id === 'string') getLeadThread(id).then(setThread) }, [id])
 
-  const chConnected = (c: ThreadMessage['channel']) => channels.find((x) => x.key === c)?.connected ?? false
-  const send = async () => {
-    if (typeof id !== 'string' || !composeText.trim()) return
-    setSending(true)
-    const t = await sendMessage(id, composeCh, composeText)
-    setThread(t); setComposeText(''); setSending(false)
-  }
-  const genAI = async () => {
-    if (typeof id !== 'string') return
-    setGenLoading(true)
-    const msg = await generateMessage(id, 'principal')
-    setComposeText(msg); setGenLoading(false)
-  }
   const [reminderMsg, setReminderMsg] = useState<string | null>(null)
   const planReminder = async () => {
     if (!d) return
@@ -264,6 +243,37 @@ export default function LeadDetailPage() {
               </div>
             </div>
           )}
+
+          {/* Inbox — aperçu compact (la conversation vit dans l'Inbox) */}
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-gray-700">Inbox</span>
+                {thread.length > 0 && <span className="text-[10px] font-bold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{thread.length}</span>}
+              </div>
+              <Link href="/inbox" className="text-xs font-medium text-indigo-600 hover:underline">Ouvrir →</Link>
+            </div>
+            {thread.length === 0 ? (
+              <p className="text-xs text-gray-400 py-2">Aucun échange. Utilise « Envoyer un message » pour démarrer.</p>
+            ) : (
+              <div className="space-y-1.5 mb-2">
+                {thread.slice(-2).map((m) => (
+                  <div key={m.id} className="flex items-start gap-2">
+                    <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${CH_META[m.channel].dot}`} />
+                    <p className="text-xs text-gray-500 truncate"><span className="font-medium text-gray-600">{m.from === 'us' ? 'Vous' : lead.firstName}:</span> {m.text}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center gap-2 pt-1">
+              <button onClick={() => setRedactionOpen(true)} className="text-xs font-semibold gradient-brand text-white px-2.5 py-1.5 rounded-lg hover:opacity-90 transition-opacity">Rédiger un message</button>
+              <button onClick={planReminder} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-1">
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                Rappel
+              </button>
+              {reminderMsg && <span className="text-[11px] text-emerald-600">{reminderMsg}</span>}
+            </div>
+          </div>
 
           {/* Scoring */}
           <div className="card p-5">
@@ -470,81 +480,6 @@ export default function LeadDetailPage() {
                 ))}
               </div>
             )}
-          </div>
-        </div>
-      </div>
-
-      {/* Conversation multi-canal unifiée */}
-      <div className="card p-5 mt-4">
-        <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
-          <h2 className="text-sm font-bold text-gray-800">Conversation</h2>
-          <div className="flex items-center gap-2">
-            {reminderMsg && <span className="text-xs text-emerald-600">{reminderMsg}</span>}
-            <button onClick={planReminder} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-1">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-              Planifier un rappel
-            </button>
-          </div>
-        </div>
-
-        {thread.length === 0 ? (
-          <p className="text-sm text-gray-400 text-center py-6">Aucun échange pour l'instant. Envoie le premier message ci-dessous.</p>
-        ) : (
-          <div className="space-y-3 mb-4 max-h-96 overflow-y-auto pr-1">
-            {thread.map((m) => {
-              const meta = CH_META[m.channel]
-              const us = m.from === 'us'
-              return (
-                <div key={m.id} className={`flex ${us ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[75%] ${us ? 'items-end' : 'items-start'} flex flex-col`}>
-                    <div className={`rounded-2xl px-3.5 py-2 text-sm ${us ? 'gradient-brand text-white' : 'bg-gray-100 text-gray-800'}`}>{m.text}</div>
-                    <div className="flex items-center gap-1.5 mt-1 px-1">
-                      <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
-                      <span className="text-[10px] text-gray-400">{meta.label} · {m.time}</span>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {/* Composer */}
-        <div className="border-t border-gray-100 pt-3">
-          <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <div className="flex bg-gray-100 rounded-lg p-0.5">
-              {(['linkedin', 'email', 'whatsapp'] as const).map((c) => {
-                const on = composeCh === c
-                const connected = chConnected(c)
-                return (
-                  <button
-                    key={c}
-                    onClick={() => connected && setComposeCh(c)}
-                    disabled={!connected}
-                    title={connected ? CH_META[c].label : `${CH_META[c].label} — à connecter (Unipile)`}
-                    className={`text-xs font-semibold px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 ${on ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500'} ${!connected ? 'opacity-40 cursor-not-allowed' : ''}`}
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full ${CH_META[c].dot}`} />
-                    {CH_META[c].label}
-                  </button>
-                )
-              })}
-            </div>
-            <button onClick={genAI} disabled={genLoading} className="text-xs font-medium text-indigo-600 border border-indigo-200 bg-indigo-50/50 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition-colors disabled:opacity-50 ml-auto flex items-center gap-1">
-              <span className="gradient-text font-bold">✦</span> {genLoading ? 'Génération…' : 'Générer avec l\'IA'}
-            </button>
-          </div>
-          <textarea
-            value={composeText}
-            onChange={(e) => setComposeText(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white h-20 resize-none"
-            placeholder={chConnected(composeCh) ? `Message via ${CH_META[composeCh].label}…` : `${CH_META[composeCh].label} non connecté — connecte-le dans Admin → Connexions`}
-          />
-          <div className="flex items-center justify-between mt-2">
-            <span className="text-[11px] text-gray-400">Envoi via {CH_META[composeCh].label}{!chConnected(composeCh) && ' (canal à connecter)'}</span>
-            <button onClick={send} disabled={sending || !composeText.trim()} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">
-              {sending ? 'Envoi…' : 'Envoyer'}
-            </button>
           </div>
         </div>
       </div>

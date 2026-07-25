@@ -30,6 +30,26 @@ export function checkCredentials(email: string, pw: string): boolean {
   try { return bcrypt.compareSync(pw, ref) } catch { return false }
 }
 
+// ── Réinitialisation du mot de passe ──
+// Jeton à usage unique + expiration, stocké dans le keystore (durable via Supabase).
+export async function createResetToken(): Promise<string> {
+  const token = Array.from(crypto.getRandomValues(new Uint8Array(24))).map((b) => b.toString(16).padStart(2, '0')).join('')
+  const exp = String(Date.now() + 30 * 60 * 1000) // 30 min
+  await setKeys({ APP_RESET_TOKEN: token, APP_RESET_EXP: exp })
+  return token
+}
+export function checkResetToken(token: string): boolean {
+  const ref = getKey('APP_RESET_TOKEN'); const exp = parseInt(getKey('APP_RESET_EXP') || '0', 10)
+  return !!ref && !!token && token === ref && Date.now() < exp
+}
+export async function resetPassword(token: string, pw: string): Promise<boolean> {
+  if (!checkResetToken(token)) return false
+  const email = getEmail() || ''
+  await setCredentials(email, pw)
+  await setKeys({ APP_RESET_TOKEN: '', APP_RESET_EXP: '' }) // usage unique
+  return true
+}
+
 // ── MFA (TOTP) ──
 export function mfaEnabled(): boolean {
   return getKey('APP_MFA_ENABLED') === '1' && !!getKey('APP_TOTP_SECRET')

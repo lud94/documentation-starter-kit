@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Conversation, Visitor, LeadDetail } from '../types/prospector'
 import { STATUS_META } from '../types/prospector'
-import { getConversations, getVisitors, getLeadDetail, detectDealKillers, regenerateReply } from '../lib/prospector/capabilities'
+import { getConversations, getVisitors, getLeadDetail, detectDealKillers, regenerateReply, addTask } from '../lib/prospector/capabilities'
 
 const REGEN_CHIPS = ['Plus court', 'Plus direct', 'Moins commercial', 'Autre angle']
 
@@ -28,6 +28,11 @@ export default function InboxPage() {
   const [convs, setConvs] = useState<Conversation[]>([])
   const [visitors, setVisitors] = useState<Visitor[]>([])
   const [selected, setSelected] = useState<string | null>(null)
+  const [reminderMsg, setReminderMsg] = useState<string | null>(null)
+  const planReminder = async (leadId: string, leadName: string) => {
+    await addTask({ title: `Relancer ${leadName}`, due: 'Demain', leadId, leadName })
+    setReminderMsg(leadId); setTimeout(() => setReminderMsg(null), 2500)
+  }
   const [reply, setReply] = useState('')
   const [unreadOnly, setUnreadOnly] = useState(false)
   const [detail, setDetail] = useState<LeadDetail | null>(null)
@@ -122,6 +127,12 @@ export default function InboxPage() {
                       <span className="inline-flex items-center gap-1 text-[11px] text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded-full"><ChannelIcon channel={active.channel} className="w-3 h-3" />{CHANNEL[active.channel].label}</span>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
+                      {reminderMsg === active.lead.id
+                        ? <span className="text-[11px] text-emerald-600">✓ Rappel planifié</span>
+                        : <button onClick={() => planReminder(active.lead.id, `${active.lead.firstName} ${active.lead.lastName}`)} className="text-xs font-medium text-gray-500 bg-gray-50 px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors flex items-center gap-1">
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                            Rappel
+                          </button>}
                       <Link href={`/leads/${active.lead.id}`} className="text-xs font-medium text-gray-500 bg-gray-50 px-2.5 py-1 rounded-lg hover:bg-gray-100 transition-colors">Fiche</Link>
                       <Link href={`/leads/${active.lead.id}`} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg hover:bg-indigo-100 transition-colors">+ Séquence</Link>
                     </div>
