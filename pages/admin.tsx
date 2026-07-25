@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { UsageSummary, Diagnostic, Workspace } from '../types/prospector'
-import { getUsage, getDiagnostics, getChannels, connectChannel, disconnectChannel } from '../lib/prospector/capabilities'
-import type { Channel, ChannelConfig } from '../lib/prospector/capabilities'
+import { getUsage, getDiagnostics, getChannels, connectChannel, disconnectChannel, getLogs, type Period } from '../lib/prospector/capabilities'
+import type { Channel, ChannelConfig, LogEntry } from '../lib/prospector/capabilities'
 
-type Tab = 'usage' | 'connexions' | 'protocole' | 'diagnostic' | 'workspaces'
+type Tab = 'usage' | 'connexions' | 'protocole' | 'logs' | 'diagnostic' | 'workspaces'
+
+const USAGE_PERIODS: { key: Period; label: string }[] = [
+  { key: 'week', label: 'Semaine' }, { key: 'month', label: 'Mois' }, { key: 'quarter', label: 'Trimestre' }, { key: 'year', label: 'Année' },
+]
+const LOG_STYLE: Record<LogEntry['level'], string> = { info: 'bg-gray-300', warn: 'bg-amber-400', error: 'bg-red-500' }
 
 interface ModelRouteRow { phase: string; provider: string; model: string; requires: string; why: string; fallback?: string; ready: boolean }
 
@@ -19,6 +24,8 @@ const DOT: Record<Diagnostic['status'], string> = { ok: 'bg-emerald-500', warn: 
 export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('usage')
   const [usage, setUsage] = useState<UsageSummary | null>(null)
+  const [usagePeriod, setUsagePeriod] = useState<Period>('month')
+  const [logs, setLogs] = useState<LogEntry[]>([])
   const [diags, setDiags] = useState<Diagnostic[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [channels, setChannels] = useState<Channel[]>([])
@@ -34,16 +41,18 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    getUsage().then(setUsage)
     getDiagnostics().then(setDiags)
+    getLogs().then(setLogs)
     loadWs()
     getChannels().then(setChannels)
   }, [])
+  useEffect(() => { getUsage(usagePeriod).then(setUsage) }, [usagePeriod])
 
   const TABS: { key: Tab; label: string }[] = [
     { key: 'usage', label: 'Usage & coûts' },
     { key: 'connexions', label: 'Connexions' },
     { key: 'protocole', label: 'Protocole LLM' },
+    { key: 'logs', label: 'Logs' },
     { key: 'diagnostic', label: 'Diagnostic' },
     { key: 'workspaces', label: 'Workspaces clients' },
   ]
@@ -67,6 +76,13 @@ export default function AdminPage() {
 
       {tab === 'usage' && usage && (
         <>
+          <div className="flex justify-end mb-4">
+            <div className="flex bg-gray-100 rounded-xl p-1">
+              {USAGE_PERIODS.map((p) => (
+                <button key={p.key} onClick={() => setUsagePeriod(p.key)} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${usagePeriod === p.key ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>{p.label}</button>
+              ))}
+            </div>
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
             {[
               { l: 'Appels IA', v: String(usage.calls) },
@@ -116,6 +132,25 @@ export default function AdminPage() {
       )}
 
       {tab === 'protocole' && <ProtocoleTab />}
+
+      {tab === 'logs' && (
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-gray-700">Journal d'activité</h2>
+            <button onClick={() => getLogs().then(setLogs)} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">Rafraîchir</button>
+          </div>
+          <div className="space-y-1">
+            {logs.map((l) => (
+              <div key={l.id} className="flex items-start gap-3 py-2 border-b border-gray-50 last:border-0">
+                <span className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${LOG_STYLE[l.level]}`} />
+                <span className="text-[10px] font-semibold text-gray-400 uppercase w-16 flex-shrink-0 mt-0.5">{l.source}</span>
+                <span className="text-sm text-gray-700 flex-1">{l.message}</span>
+                <span className="text-xs text-gray-400 flex-shrink-0">{l.when}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {tab === 'diagnostic' && (
         <div className="card p-5">

@@ -492,20 +492,23 @@ export function getKnowledgeBlocks(): Promise<KnowledgeBlock[]> {
   ])
 }
 
-export function getUsage(): Promise<UsageSummary> {
+export function getUsage(period: Period = 'month'): Promise<UsageSummary> {
+  const f = period === 'week' ? 0.25 : period === 'month' ? 1 : period === 'quarter' ? 3 : 12
+  const r = (n: number) => Math.round(n * f)
+  const c = (n: number) => Math.round(n * f * 100) / 100
   return delay({
-    calls: 142, tokensIn: 1_620_000, tokensOut: 22_400, cost: 2.1, cached: 67_000,
+    calls: r(142), tokensIn: r(1_620_000), tokensOut: r(22_400), cost: c(2.1), cached: r(67_000),
     byAgent: [
-      { agent: 'Enrichissement', calls: 62, tokens: 1_146_000, cost: 1.15 },
-      { agent: 'Scoring', calls: 48, tokens: 236_000, cost: 0.32 },
-      { agent: "Dossier d'attaque", calls: 18, tokens: 180_000, cost: 0.44 },
-      { agent: 'Rédaction', calls: 10, tokens: 62_000, cost: 0.15 },
-      { agent: 'Conversationnel', calls: 4, tokens: 18_000, cost: 0.04 },
+      { agent: 'Enrichissement', calls: r(62), tokens: r(1_146_000), cost: c(1.15) },
+      { agent: 'Scoring', calls: r(48), tokens: r(236_000), cost: c(0.32) },
+      { agent: "Dossier d'attaque", calls: r(18), tokens: r(180_000), cost: c(0.44) },
+      { agent: 'Rédaction', calls: r(10), tokens: r(62_000), cost: c(0.15) },
+      { agent: 'Conversationnel', calls: r(4), tokens: r(18_000), cost: c(0.04) },
     ],
     byModel: [
-      { model: 'Claude Haiku 4.5', calls: 96, tokens: 472_000, cost: 0.48 },
-      { model: 'Claude Sonnet 5', calls: 32, tokens: 260_000, cost: 0.62 },
-      { model: 'Perplexity sonar-pro', calls: 14, tokens: 910_000, cost: 1.00 },
+      { model: 'Claude Haiku 4.5', calls: r(96), tokens: r(472_000), cost: c(0.48) },
+      { model: 'Claude Sonnet 5', calls: r(32), tokens: r(260_000), cost: c(0.62) },
+      { model: 'Perplexity sonar-pro', calls: r(14), tokens: r(910_000), cost: c(1.00) },
     ],
   })
 }
@@ -557,6 +560,21 @@ const WORKSPACES: Workspace[] = [
 
 export function getWorkspaces(): Promise<Workspace[]> {
   return delay([...WORKSPACES])
+}
+
+// Journal d'activité (admin) — mock ; au câblage : events Supabase/cron/connecteurs.
+export interface LogEntry { id: string; level: 'info' | 'warn' | 'error'; source: string; message: string; when: string }
+export function getLogs(): Promise<LogEntry[]> {
+  return delay([
+    { id: 'lg1', level: 'info', source: 'Cron', message: 'Génération des actions du jour — 8 actions créées', when: "Aujourd'hui 06:00" },
+    { id: 'lg2', level: 'info', source: 'Sourcing', message: 'Recherche data.gouv « Technology · Paris » — 25 entreprises', when: "Aujourd'hui 09:12" },
+    { id: 'lg3', level: 'info', source: 'Pappers', message: 'Dirigeants résolus pour SIREN 552100554 (cache miss)', when: "Aujourd'hui 09:14" },
+    { id: 'lg4', level: 'warn', source: 'Unipile', message: 'Canal WhatsApp non connecté — envoi ignoré', when: "Aujourd'hui 10:03" },
+    { id: 'lg5', level: 'info', source: 'IA', message: 'Icebreaker généré (Claude) pour Kairos AI', when: "Aujourd'hui 10:20" },
+    { id: 'lg6', level: 'error', source: 'Exa', message: 'Clé EXA_API_KEY absente — repli sur Claude web', when: "Aujourd'hui 10:21" },
+    { id: 'lg7', level: 'info', source: 'Auth', message: 'Connexion réussie · MFA validée', when: "Aujourd'hui 11:47" },
+    { id: 'lg8', level: 'info', source: 'Supabase', message: 'Persistance OK — écriture réglages', when: "Aujourd'hui 11:48" },
+  ])
 }
 
 // Crée un espace client avec un ID slugifié stable (ex: "ws_smart_ai").
@@ -780,6 +798,46 @@ export function importSignalToPipeline(hit: SignalHit) {
     icebreaker: hit.icebreaker,
   }
   return delay({ added: 1, id })
+}
+
+// Ajout manuel d'un lead (saisie ou depuis une URL LinkedIn).
+export interface NewLeadInput { firstName?: string; lastName?: string; title?: string; company?: string; email?: string; phone?: string; linkedinUrl?: string }
+export function addLead(input: NewLeadInput): Promise<Lead> {
+  const id = `src${++sourcedSeq}`
+  const lead: Lead = {
+    id,
+    firstName: (input.firstName || '').trim() || 'Prénom',
+    lastName: (input.lastName || '').trim(),
+    title: (input.title || '').trim() || 'À qualifier',
+    company: (input.company || '').trim() || '—',
+    score: 0,
+    temperature: 'warm',
+    status: 'froid',
+    stage: 'to_invite',
+    email: input.email?.trim() || null,
+    phone: input.phone?.trim() || null,
+  }
+  LEADS[id] = lead
+  return delay(lead)
+}
+
+// Import CSV : lignes "prénom,nom,titre,entreprise,email" (en-tête optionnel).
+export function addLeadsFromCsv(csv: string): Promise<{ added: number }> {
+  const lines = csv.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  let added = 0
+  lines.forEach((line, i) => {
+    const cols = line.split(/[;,\t]/).map((c) => c.trim())
+    if (i === 0 && /pr[ée]nom|first|nom|email|entreprise|company/i.test(line)) return // en-tête
+    if (!cols[0] && !cols[3]) return
+    const id = `src${++sourcedSeq}`
+    LEADS[id] = {
+      id, firstName: cols[0] || 'Prénom', lastName: cols[1] || '', title: cols[2] || 'À qualifier',
+      company: cols[3] || '—', score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
+      email: cols[4] || null, phone: cols[5] || null,
+    }
+    added++
+  })
+  return delay({ added })
 }
 
 // SIREN déjà présents dans le pipe (placeholders) → l'UI peut les exclure du sourcing.
