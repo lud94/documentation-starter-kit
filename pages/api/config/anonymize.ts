@@ -12,7 +12,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
-  if (typeof body?.enabled === 'boolean') setKeys({ PII_MASKING: body.enabled ? '1' : '0' })
+  if (typeof body?.enabled === 'boolean') await setKeys({ PII_MASKING: body.enabled ? '1' : '0' })
 
   let preview = null
   if (typeof body?.text === 'string') {

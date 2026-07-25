@@ -7,9 +7,9 @@ export function isSetup(): boolean {
   return !!getKey('APP_PASSWORD')
 }
 
-export function setPassword(pw: string) {
+export async function setPassword(pw: string) {
   const hash = bcrypt.hashSync(pw, 10)
-  setKeys({ APP_PASSWORD: hash })
+  await setKeys({ APP_PASSWORD: hash })
 }
 
 export function checkPassword(pw: string): boolean {
@@ -27,13 +27,13 @@ export function mfaEnabled(): boolean {
 export function getTotpSecret(): string | undefined {
   return getKey('APP_TOTP_SECRET')
 }
-export function stageTotpSecret(secret: string) {
+export async function stageTotpSecret(secret: string) {
   // secret provisoire tant que l'utilisateur n'a pas confirmé un 1er code
-  setKeys({ APP_TOTP_SECRET: secret, APP_MFA_ENABLED: '0' })
+  await setKeys({ APP_TOTP_SECRET: secret, APP_MFA_ENABLED: '0' })
 }
-export function enableMfa() {
-  setKeys({ APP_MFA_ENABLED: '1' })
+export async function enableMfa() {
+  await setKeys({ APP_MFA_ENABLED: '1' })
 }
-export function disableMfa() {
-  setKeys({ APP_MFA_ENABLED: '0', APP_TOTP_SECRET: '' })
+export async function disableMfa() {
+  await setKeys({ APP_MFA_ENABLED: '0', APP_TOTP_SECRET: '' })
 }

@@ -12,7 +12,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const secret = getTotpSecret()
   if (!secret) return res.status(409).json({ error: 'Aucun secret en attente. Relancez la configuration.' })
   if (!(await verifyTotp(secret, code))) return res.status(400).json({ error: 'Code invalide, réessayez.' })
-  enableMfa()
+  await enableMfa()
   res.status(200).json({ ok: true })
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

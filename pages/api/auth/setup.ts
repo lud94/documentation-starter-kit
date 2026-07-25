@@ -15,7 +15,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const password = String(body?.password || '')
   if (password.length < 8) return res.status(400).json({ error: 'Mot de passe : 8 caractères minimum.' })
 
-  setPassword(password)
+  await setPassword(password)
   const token = await createSessionToken('admin', TTL)
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${TTL};${process.env.NODE_ENV === 'production' ? ' Secure;' : ''}`)
   res.status(200).json({ ok: true })

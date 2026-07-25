@@ -43,15 +43,19 @@ export function keySource(name: string): 'app' | 'env' | null {
   return null
 }
 
-export function setKeys(patch: Record<string, string>) {
+// ⚠️ ASYNC : on ATTEND l'écriture Supabase avant de rendre la main. Sur Vercel
+// (serverless), la fonction est gelée après la réponse → un write non attendu
+// serait tué avant de finir. Les appelants (routes API) doivent `await`.
+export async function setKeys(patch: Record<string, string>): Promise<void> {
+  const writes: Promise<void>[] = []
   for (const [k, v] of Object.entries(patch)) {
     if (!MANAGED_KEYS.includes(k as ManagedKey)) continue
     const val = (v || '').trim()
     if (val) store.set(k, val)
     else store.delete(k) // valeur vide → efface la clé saisie (retombe sur l'env)
-    // write-through vers Supabase (best-effort, non bloquant)
-    void persist(k, val)
+    writes.push(persist(k, val))
   }
+  await Promise.all(writes)
 }
 
 async function persist(key: string, value: string) {

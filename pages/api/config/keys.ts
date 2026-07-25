@@ -13,7 +13,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   for (const k of MANAGED_KEYS) {
     if (typeof body[k] === 'string') patch[k] = body[k]
   }
-  setKeys(patch)
+  await setKeys(patch)
   res.status(200).json({ ok: true, saved: Object.keys(patch) })
 }
 
