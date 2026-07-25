@@ -381,6 +381,32 @@ export interface Channel {
   config: ChannelConfig
 }
 
+// Fil de conversation unifié (tous canaux) rattaché à un lead.
+export interface ThreadMessage { id: string; from: 'them' | 'us'; text: string; time: string; channel: 'linkedin' | 'email' | 'whatsapp' }
+const THREADS: Record<string, ThreadMessage[]> = {
+  l1: [
+    { id: 'm1', from: 'us', text: 'Camille, on aide des équipes comme Fivory à structurer le suivi post-démo. Curieux d’échanger ?', time: 'Lun 09:12', channel: 'linkedin' },
+    { id: 'm2', from: 'them', text: 'Bonjour, oui pourquoi pas — envoyez-moi deux créneaux.', time: 'Lun 14:03', channel: 'linkedin' },
+  ],
+  l7: [
+    { id: 'm1', from: 'us', text: 'Sarah, félicitations pour la traction de Lago. On outille exactement la phase de scale sales.', time: 'Mar 10:20', channel: 'linkedin' },
+    { id: 'm2', from: 'them', text: 'Merci ! Intéressée, mais plutôt par mail : sarah@lago.com', time: 'Mar 16:41', channel: 'linkedin' },
+    { id: 'm3', from: 'us', text: 'Parfait, je vous écris juste ici avec un one-pager.', time: 'Mar 16:55', channel: 'email' },
+  ],
+}
+let threadSeq = 100
+
+export function getLeadThread(leadId: string): Promise<ThreadMessage[]> {
+  return delay(THREADS[leadId] ? [...THREADS[leadId]] : [])
+}
+
+// Envoi d'un message sur un canal (mock → prêt pour Unipile).
+export function sendMessage(leadId: string, channel: ThreadMessage['channel'], text: string): Promise<ThreadMessage[]> {
+  if (!THREADS[leadId]) THREADS[leadId] = []
+  THREADS[leadId].push({ id: `m${++threadSeq}`, from: 'us', text: text.trim(), time: nextSlotLabel(), channel })
+  return delay([...THREADS[leadId]])
+}
+
 const CHANNELS: Channel[] = [
   { key: 'linkedin', label: 'LinkedIn', connected: true, detail: 'Connecté via Unipile', config: { account: 'Ludwig Graham' } },
   { key: 'email', label: 'Email', connected: false, detail: 'À connecter (Unipile Mail)', config: {} },

@@ -4,8 +4,15 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, sendMessage, getChannels, generateMessage } from '../../lib/prospector/capabilities'
+import type { Channel, ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
+
+const CH_META: Record<ThreadMessage['channel'], { label: string; badge: string; dot: string }> = {
+  linkedin: { label: 'LinkedIn', badge: 'in', dot: 'bg-blue-500' },
+  email: { label: 'Email', badge: '@', dot: 'bg-emerald-500' },
+  whatsapp: { label: 'WhatsApp', badge: 'WA', dot: 'bg-green-500' },
+}
 
 const STATUS_ORDER: LeadStatus[] = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
@@ -61,11 +68,35 @@ export default function LeadDetailPage() {
   const [handoffOpen, setHandoffOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [iceCopied, setIceCopied] = useState(false)
+  const [thread, setThread] = useState<ThreadMessage[]>([])
+  const [channels, setChannels] = useState<Channel[]>([])
+  const [composeCh, setComposeCh] = useState<ThreadMessage['channel']>('linkedin')
+  const [composeText, setComposeText] = useState('')
+  const [sending, setSending] = useState(false)
+  const [genLoading, setGenLoading] = useState(false)
 
   const reload = () => { if (typeof id === 'string') getLeadDetail(id).then(setD) }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
 
   useEffect(() => { getSequences().then(setSequences) }, [])
+  useEffect(() => {
+    if (typeof id === 'string') getLeadThread(id).then(setThread)
+    getChannels().then(setChannels)
+  }, [id])
+
+  const chConnected = (c: ThreadMessage['channel']) => channels.find((x) => x.key === c)?.connected ?? false
+  const send = async () => {
+    if (typeof id !== 'string' || !composeText.trim()) return
+    setSending(true)
+    const t = await sendMessage(id, composeCh, composeText)
+    setThread(t); setComposeText(''); setSending(false)
+  }
+  const genAI = async () => {
+    if (typeof id !== 'string') return
+    setGenLoading(true)
+    const msg = await generateMessage(id, 'principal')
+    setComposeText(msg); setGenLoading(false)
+  }
 
   const enrichThis = async () => { if (typeof id === 'string') { await enrichAll([id]); reload() } }
   const changeStatus = async (s: LeadStatus) => { if (typeof id === 'string') { await setLeadStatus(id, s); reload() } }
@@ -433,6 +464,75 @@ export default function LeadDetailPage() {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* Conversation multi-canal unifiée */}
+      <div className="card p-5 mt-4">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-bold text-gray-800">Conversation</h2>
+          <span className="text-xs text-gray-400">Fil unifié · LinkedIn · Email · WhatsApp</span>
+        </div>
+
+        {thread.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-6">Aucun échange pour l'instant. Envoie le premier message ci-dessous.</p>
+        ) : (
+          <div className="space-y-3 mb-4 max-h-96 overflow-y-auto pr-1">
+            {thread.map((m) => {
+              const meta = CH_META[m.channel]
+              const us = m.from === 'us'
+              return (
+                <div key={m.id} className={`flex ${us ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[75%] ${us ? 'items-end' : 'items-start'} flex flex-col`}>
+                    <div className={`rounded-2xl px-3.5 py-2 text-sm ${us ? 'gradient-brand text-white' : 'bg-gray-100 text-gray-800'}`}>{m.text}</div>
+                    <div className="flex items-center gap-1.5 mt-1 px-1">
+                      <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
+                      <span className="text-[10px] text-gray-400">{meta.label} · {m.time}</span>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Composer */}
+        <div className="border-t border-gray-100 pt-3">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <div className="flex bg-gray-100 rounded-lg p-0.5">
+              {(['linkedin', 'email', 'whatsapp'] as const).map((c) => {
+                const on = composeCh === c
+                const connected = chConnected(c)
+                return (
+                  <button
+                    key={c}
+                    onClick={() => connected && setComposeCh(c)}
+                    disabled={!connected}
+                    title={connected ? CH_META[c].label : `${CH_META[c].label} — à connecter (Unipile)`}
+                    className={`text-xs font-semibold px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 ${on ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500'} ${!connected ? 'opacity-40 cursor-not-allowed' : ''}`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${CH_META[c].dot}`} />
+                    {CH_META[c].label}
+                  </button>
+                )
+              })}
+            </div>
+            <button onClick={genAI} disabled={genLoading} className="text-xs font-medium text-indigo-600 border border-indigo-200 bg-indigo-50/50 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition-colors disabled:opacity-50 ml-auto flex items-center gap-1">
+              <span className="gradient-text font-bold">✦</span> {genLoading ? 'Génération…' : 'Générer avec l\'IA'}
+            </button>
+          </div>
+          <textarea
+            value={composeText}
+            onChange={(e) => setComposeText(e.target.value)}
+            className="w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white h-20 resize-none"
+            placeholder={chConnected(composeCh) ? `Message via ${CH_META[composeCh].label}…` : `${CH_META[composeCh].label} non connecté — connecte-le dans Admin → Connexions`}
+          />
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-[11px] text-gray-400">Envoi via {CH_META[composeCh].label}{!chConnected(composeCh) && ' (canal à connecter)'}</span>
+            <button onClick={send} disabled={sending || !composeText.trim()} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">
+              {sending ? 'Envoi…' : 'Envoyer'}
+            </button>
           </div>
         </div>
       </div>
