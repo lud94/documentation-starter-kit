@@ -249,13 +249,24 @@ export interface Diagnostic {
   detail: string
 }
 
+export interface WorkspacePermissions {
+  messaging: boolean   // répondre / envoyer des messages
+  leads: boolean       // gérer ses leads (statut, tags, import, sourcing)
+  sequences: boolean   // créer / éditer ses séquences
+  validate: boolean    // valider les actions du jour (mode revue)
+}
 export interface Workspace {
   id: string
   name: string
   leads: number
   users: number
   plan: string
+  clientEmail?: string
+  status?: 'active' | 'suspended'
+  permissions?: WorkspacePermissions
 }
+
+export const DEFAULT_PERMISSIONS: WorkspacePermissions = { messaging: true, leads: true, sequences: true, validate: true }
 
 export type StepCondition = 'always' | 'if_connected' | 'if_no_response' | 'if_responded'
 

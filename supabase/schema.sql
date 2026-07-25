@@ -18,6 +18,10 @@ create table if not exists prospector_workspaces (
   plan        text not null default 'Starter',
   created_at  timestamptz not null default now()
 );
+-- Colonnes ajoutées (espaces clients : email d'accès, statut, permissions)
+alter table prospector_workspaces add column if not exists client_email text;
+alter table prospector_workspaces add column if not exists status text default 'active';
+alter table prospector_workspaces add column if not exists permissions jsonb;
 
 -- 3) Cache Pappers par SIREN (évite de repayer un dirigeant déjà résolu)
 create table if not exists prospector_pappers_cache (

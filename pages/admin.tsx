@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
-import type { UsageSummary, Diagnostic, Workspace } from '../types/prospector'
+import type { UsageSummary, Diagnostic, Workspace, WorkspacePermissions } from '../types/prospector'
+import { DEFAULT_PERMISSIONS } from '../types/prospector'
 import { getUsage, getDiagnostics, getChannels, connectChannel, disconnectChannel, getLogs, getAiLogs, AI_AGENTS, type Period } from '../lib/prospector/capabilities'
 import type { Channel, ChannelConfig, LogEntry, AiLog } from '../lib/prospector/capabilities'
 
@@ -32,6 +33,7 @@ export default function AdminPage() {
   const [wsOpen, setWsOpen] = useState(false)
   const [wsName, setWsName] = useState('')
   const [wsPlan, setWsPlan] = useState('Starter')
+  const [managing, setManaging] = useState<Workspace | null>(null)
   const loadWs = () => fetch('/api/workspaces').then((r) => r.json()).then((d) => setWorkspaces(d.workspaces || [])).catch(() => {})
   const createWs = async () => {
     if (!wsName.trim()) return
@@ -173,6 +175,8 @@ export default function AdminPage() {
         </div>
       )}
 
+      {managing && <WorkspaceManageModal ws={managing} onClose={() => setManaging(null)} onSaved={() => { setManaging(null); loadWs() }} />}
+
       {tab === 'workspaces' && (
         <div className="card overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
@@ -213,7 +217,7 @@ export default function AdminPage() {
                   <td className="px-5 py-3 text-sm text-gray-600">{w.leads}</td>
                   <td className="px-5 py-3 text-sm text-gray-600">{w.users}</td>
                   <td className="px-5 py-3"><span className="text-xs font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600">{w.plan}</span></td>
-                  <td className="px-5 py-3 text-right"><button className="text-xs text-gray-400 hover:text-indigo-600">Gérer</button></td>
+                  <td className="px-5 py-3 text-right"><button onClick={() => setManaging(w)} className="text-xs text-gray-400 hover:text-indigo-600">Gérer</button></td>
                 </tr>
               ))}
             </tbody>
@@ -622,6 +626,81 @@ function AiLogsTab() {
             </div>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+const PERM_META: { key: keyof WorkspacePermissions; label: string; desc: string }[] = [
+  { key: 'messaging', label: 'Messagerie', desc: 'Répondre / envoyer via LinkedIn, Mail, WhatsApp + rappels' },
+  { key: 'leads', label: 'Gestion des leads', desc: 'Statut, tags, import, sourcing' },
+  { key: 'sequences', label: 'Séquences', desc: 'Créer / éditer et enrôler des leads' },
+  { key: 'validate', label: 'Valider les actions du jour', desc: 'Mode revue des messages IA' },
+]
+
+function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose: () => void; onSaved: () => void }) {
+  const [name, setName] = useState(ws.name)
+  const [plan, setPlan] = useState(ws.plan)
+  const [email, setEmail] = useState(ws.clientEmail || '')
+  const [status, setStatus] = useState<'active' | 'suspended'>(ws.status === 'suspended' ? 'suspended' : 'active')
+  const [perms, setPerms] = useState<WorkspacePermissions>(ws.permissions || { ...DEFAULT_PERMISSIONS })
+  const [busy, setBusy] = useState(false)
+
+  const save = async () => {
+    setBusy(true)
+    await fetch('/api/workspaces', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: ws.id, patch: { name, plan, clientEmail: email, status, permissions: perms } }) })
+    setBusy(false); onSaved()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative card w-full max-w-lg p-6 max-h-[88vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-base font-bold text-gray-900">Espace client · {ws.name}</h2>
+            <code className="text-[11px] text-gray-400">{ws.id}</code>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Nom du client</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} className={fieldCls} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Plan</label>
+            <select value={plan} onChange={(e) => setPlan(e.target.value)} className={fieldCls}><option>Starter</option><option>Growth</option><option>Scale</option></select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Email d'accès client</label>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} className={fieldCls} placeholder="client@entreprise.com" />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Statut</label>
+            <select value={status} onChange={(e) => setStatus(e.target.value as any)} className={fieldCls}><option value="active">Actif</option><option value="suspended">Suspendu</option></select>
+          </div>
+        </div>
+
+        <p className="text-xs font-semibold text-gray-500 mb-2">Permissions du client <span className="font-normal text-gray-400">— ce qu'il peut faire dans son espace</span></p>
+        <div className="space-y-2 mb-4">
+          {PERM_META.map((p) => (
+            <label key={p.key} className="flex items-start gap-3 p-2.5 rounded-xl border border-gray-100 cursor-pointer hover:bg-gray-50/50">
+              <input type="checkbox" checked={perms[p.key]} onChange={(e) => setPerms((v) => ({ ...v, [p.key]: e.target.checked }))} className="accent-indigo-500 mt-0.5" />
+              <span>
+                <span className="block text-sm font-medium text-gray-700">{p.label}</span>
+                <span className="block text-xs text-gray-400">{p.desc}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <p className="text-[11px] text-gray-400 mb-4">🔒 Toujours réservé à l'admin : Connexions & clés, Usage & coûts, Logs IA, Protocole LLM, Cerveau IA, création de workspaces.</p>
+
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="text-sm font-medium text-gray-500 px-3 py-2 rounded-xl hover:bg-gray-50">Annuler</button>
+          <button onClick={save} disabled={busy} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">{busy ? '…' : 'Enregistrer'}</button>
+        </div>
       </div>
     </div>
   )
