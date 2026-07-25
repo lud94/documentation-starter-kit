@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server'
 import { verifySessionToken, SESSION_COOKIE } from './lib/auth/session'
 
 // Routes publiques (pas de session requise).
-const PUBLIC = ['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/setup', '/api/auth/status', '/api/config/persistence-test']
+const PUBLIC = ['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/setup', '/api/auth/status']
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
