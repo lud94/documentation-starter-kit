@@ -204,6 +204,15 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
   const [keySaved, setKeySaved] = useState(false)
 
   const [persistence, setPersistence] = useState('')
+  const [diag, setDiag] = useState<string>('')
+  const testPersistence = async () => {
+    setDiag('Test en cours…')
+    try {
+      const d = await fetch('/api/config/persistence-test').then((r) => r.json())
+      if (d.writeOk && d.readOk) setDiag('✓ Écriture + lecture Supabase OK — la persistance fonctionne.')
+      else setDiag(`URL: ${d.urlPresent ? 'ok' : 'MANQUANTE'} · Clé: ${d.keyPresent ? 'ok' : 'MANQUANTE'} · ${d.error || 'échec inconnu'}`)
+    } catch (e: any) { setDiag('Erreur réseau : ' + (e.message || '')) }
+  }
   const loadStatus = () => fetch('/api/config/status').then((r) => r.json()).then((d) => { setKeys(d.keys || []); setSigMode(d.signalsMode || ''); setPersistence(d.persistence || '') }).catch(() => {})
   useEffect(() => { loadStatus() }, [])
 
@@ -306,6 +315,7 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
                 {persistence === 'supabase' ? 'Persistance : Supabase' : 'Persistance : mémoire'}
               </span>
             )}
+            <button onClick={testPersistence} className="text-[10px] font-semibold text-gray-500 border border-gray-200 px-2 py-0.5 rounded-full hover:bg-gray-50 transition-colors">Tester Supabase</button>
             {sigMode && (
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${sigMode === 'exa+claude' ? 'bg-emerald-50 text-emerald-600' : sigMode === 'claude-web' ? 'bg-amber-50 text-amber-600' : 'bg-gray-100 text-gray-400'}`}>
                 Signaux : {sigMode === 'exa+claude' ? 'Exa → Claude' : sigMode === 'claude-web' ? 'Claude web seul' : 'mode simulé'}
@@ -341,6 +351,7 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
           </button>
           {keySaved && <span className="text-xs text-emerald-600">✓ Clés enregistrées</span>}
         </div>
+        {diag && <p className="text-[11px] text-gray-600 mt-3 font-mono bg-gray-50 rounded-lg p-2 break-words">{diag}</p>}
         <p className="text-[11px] text-amber-600 mt-3">⚠️ Les clés saisies ici sont stockées <strong>en mémoire serveur</strong> : pratique pour tester, mais elles peuvent être réinitialisées après une mise en veille / un redéploiement. Pour du <strong>durable</strong>, pose-les aussi dans Vercel → Environment Variables (ou on branchera Supabase). Ne partage jamais cet écran.</p>
       </div>
 
