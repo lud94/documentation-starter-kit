@@ -38,6 +38,14 @@ create table if not exists prospector_usage (
   updated_at  timestamptz not null default now()
 );
 
+-- 5) Leads persistés (créés via sourcing / ajout manuel / import / extension)
+create table if not exists prospector_leads (
+  id          text primary key,
+  data        jsonb,
+  created_at  timestamptz not null default now()
+);
+alter table prospector_leads enable row level security;
+
 -- Sécurité : RLS activé, aucune policy publique.
 -- La service_role key (côté serveur) bypasse la RLS ; le navigateur n'accède jamais à ces tables.
 alter table prospector_settings       enable row level security;

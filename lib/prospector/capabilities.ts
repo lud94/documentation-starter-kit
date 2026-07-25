@@ -92,14 +92,32 @@ export function personaFromTitle(title: string): string {
   return 'Autre'
 }
 
-export function getLeads(): Promise<Lead[]> {
-  return delay(Object.values(LEADS).map((l) => ({ ...l, persona: personaFromTitle(l.title) })))
+// Persistance (Supabase via API). Le store mémoire reste la source de travail,
+// hydraté depuis le serveur et écrit en write-through à chaque création/màj.
+async function persistLead(lead: Lead) {
+  try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead }) }) } catch { /* offline → mémoire */ }
+}
+let leadsHydrated: Promise<void> | null = null
+async function hydrateLeads(): Promise<void> {
+  if (leadsHydrated) return leadsHydrated
+  leadsHydrated = (async () => {
+    try {
+      const d = await fetch('/api/leads').then((r) => r.json())
+      for (const l of (d.leads || [])) if (l?.id) LEADS[l.id] = l
+    } catch { /* garde la mémoire */ }
+  })()
+  return leadsHydrated
+}
+
+export async function getLeads(): Promise<Lead[]> {
+  await hydrateLeads()
+  return Object.values(LEADS).map((l) => ({ ...l, persona: personaFromTitle(l.title) }))
 }
 
 // Enrichissement (mock — au câblage : Kaspr pour email/tél).
 export function enrichEmails(ids?: string[]) {
   const targets = ids ? ids.map((i) => LEADS[i]).filter(Boolean) : Object.values(LEADS)
-  targets.forEach((l) => { if (!l.email) l.email = email(l.firstName.toLowerCase(), l.lastName.toLowerCase(), l.company) })
+  targets.forEach((l) => { if (!l.email) { l.email = email(l.firstName.toLowerCase(), l.lastName.toLowerCase(), l.company); void persistLead(l) } })
   return delay(Object.values(LEADS))
 }
 
@@ -108,19 +126,20 @@ export function enrichAll(ids?: string[]) {
   targets.forEach((l) => {
     if (!l.email) l.email = email(l.firstName.toLowerCase(), l.lastName.toLowerCase(), l.company)
     if (!l.phone) l.phone = '+33 6 00 00 00 00'
+    void persistLead(l)
   })
   return delay(Object.values(LEADS))
 }
 
 export function setLeadStatus(id: string, status: Lead['status']) {
   const l = LEADS[id]
-  if (l) l.status = status
+  if (l) { l.status = status; void persistLead(l) }
   return delay(l)
 }
 
 export function setLeadStage(id: string, stage: Stage) {
   const l = LEADS[id]
-  if (l) l.stage = stage
+  if (l) { l.stage = stage; void persistLead(l) }
   return delay(l)
 }
 
@@ -149,7 +168,41 @@ const NEXT_ACTION: Record<Stage, { label: string; when: string } | null> = {
 const SECTORS = ['SaaS B2B', 'Fintech', 'IA / ML', 'Cybersécurité', 'MarTech']
 const BAND: Record<Lead['temperature'], 'HOT' | 'WARM' | 'COLD'> = { hot: 'HOT', warm: 'WARM', cold: 'COLD' }
 
+// Fiche neutre pour un lead non enrichi : on n'invente RIEN.
+function emptyDetail(lead: Lead): LeadDetail {
+  return {
+    tags: LEAD_TAGS[lead.id] ?? [],
+    nextAction: NEXT_ACTION[lead.stage],
+    lead,
+    headline: `${lead.title} · ${lead.company}`,
+    connectionDegree: '—',
+    premium: false,
+    openProfile: false,
+    linkedinUrl: `linkedin.com/in/${lead.firstName.toLowerCase()}-${lead.lastName.toLowerCase()}`,
+    scoring: { fit: 0, intent: 0, timing: 0, segment: '—', band: 'COLD', confidence: 'low', edgeCase: false,
+      rationale: 'Lead non encore scoré. Lance l\'enrichissement pour analyser le signal et générer le dossier.', aiAdjustment: 0 },
+    company: { name: lead.company, size: '—', location: '—', website: '', sector: '—', funding: '—',
+      description: 'Informations entreprise à enrichir (Pappers / Unipile / data.gouv).' },
+    dossier: {
+      status: 'faible', ageLabel: 'à enrichir', ageDays: 0, stale: false,
+      mecanisme: 'À enrichir',
+      accrochePivot: 'À définir après enrichissement.',
+      pourquoiMaintenant: 'Aucun signal vérifié pour l\'instant.',
+      preuves: [], aIntegrer: [],
+      aEviter: ['Promettre un ROI chiffré', 'Flatter une réalisation non mentionnée', 'Citer des outils concurrents non évoqués'],
+      questionAPoser: 'À définir selon le contexte du lead.',
+      objectifReponse: 'Ouvrir une conversation, pas vendre.',
+      canalRecommande: 'linkedin_message',
+      canalRationale: 'Canal par défaut. À affiner selon les canaux connectés.',
+      reserves: ['Lead saisi manuellement / non enrichi — données à recouper.'],
+    },
+    notes: '',
+    interactions: [],
+  }
+}
+
 function buildDetail(lead: Lead): LeadDetail {
+  if (!lead.score) return emptyDetail(lead)
   const seed = lead.id.charCodeAt(1) || 0
   const sector = SECTORS[seed % SECTORS.length]
   const fit = Math.min(40, Math.round(lead.score * 0.45))
@@ -229,9 +282,10 @@ function buildDetail(lead: Lead): LeadDetail {
   }
 }
 
-export function getLeadDetail(id: string): Promise<LeadDetail | undefined> {
+export async function getLeadDetail(id: string): Promise<LeadDetail | undefined> {
+  if (!LEADS[id]) await hydrateLeads() // fiche ouverte après reload → recharge
   const lead = LEADS[id]
-  return delay(lead ? buildDetail(lead) : undefined)
+  return lead ? buildDetail(lead) : undefined
 }
 
 export function addLeadTag(id: string, tag: string) {
@@ -656,62 +710,49 @@ const importedPlaceholders: Record<string, string> = {}
 
 // Importe des entreprises sourcées dans le pipeline comme cartes « à enrichir »
 // (aucun contact encore : la résolution se déclenche ensuite, à la demande).
-export function importCompaniesToPipeline(companies: SourcedCompany[]) {
-  let added = 0
+export async function importCompaniesToPipeline(companies: SourcedCompany[]) {
+  const created: Lead[] = []
   companies.forEach((c) => {
     if (importedPlaceholders[c.id]) return
-    added++
     const [firstName, ...rest] = (c.dirigeant || '').split(' ')
-    const id = `src${++sourcedSeq}`
+    const id = newLeadId()
     importedPlaceholders[c.id] = id
-    LEADS[id] = {
-      id,
-      firstName: firstName || c.name,
-      lastName: rest.join(' '),
-      title: c.dirigeant ? 'Dirigeant (SIRENE)' : 'Contact à trouver',
-      company: c.name,
-      score: 0,
-      temperature: 'warm',
-      status: 'froid',
-      stage: 'to_invite',
-      email: null,
-      phone: null,
+    const lead: Lead = {
+      id, firstName: firstName || c.name, lastName: rest.join(' '),
+      title: c.dirigeant ? 'Dirigeant (SIRENE)' : 'Contact à trouver', company: c.name,
+      score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
     }
+    LEADS[id] = lead; created.push(lead)
   })
-  return delay({ added, skipped: companies.length - added })
+  if (created.length) { try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ } }
+  return { added: created.length, skipped: companies.length - created.length }
 }
 
 // Importe une entreprise détectée par SIGNAL, en attachant le signal + l'icebreaker
 // au lead → l'accroche devient actionnable (fiche + pré-remplissage 1er message).
-export function importSignalToPipeline(hit: SignalHit) {
+export async function importSignalToPipeline(hit: SignalHit) {
   const siren = hit.siren || `sig-${hit.company}`
-  if (importedPlaceholders[siren]) return delay({ added: 0, id: importedPlaceholders[siren] })
-  const id = `src${++sourcedSeq}`
+  if (importedPlaceholders[siren]) return { added: 0, id: importedPlaceholders[siren] }
+  const id = newLeadId()
   importedPlaceholders[siren] = id
-  LEADS[id] = {
-    id,
-    firstName: hit.company,
-    lastName: '',
-    title: 'Contact à trouver',
-    company: hit.company,
-    score: 0,
-    temperature: 'warm',
-    status: 'froid',
-    stage: 'to_invite',
-    email: null,
-    phone: null,
-    signal: hit.detail,
-    icebreaker: hit.icebreaker,
+  const lead: Lead = {
+    id, firstName: hit.company, lastName: '', title: 'Contact à trouver', company: hit.company,
+    score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
+    signal: hit.detail, icebreaker: hit.icebreaker,
   }
-  return delay({ added: 1, id })
+  LEADS[id] = lead
+  await persistLead(lead)
+  return { added: 1, id }
 }
 
 // Ajout manuel d'un lead (saisie ou depuis une URL LinkedIn).
 export interface NewLeadInput { firstName?: string; lastName?: string; title?: string; company?: string; email?: string; phone?: string; linkedinUrl?: string }
-export function addLead(input: NewLeadInput): Promise<Lead> {
-  const id = `src${++sourcedSeq}`
+// Id unique et stable (survit aux rechargements — pas de collision de compteur).
+function newLeadId(): string { return `ld_${Math.random().toString(36).slice(2, 10)}` }
+
+export async function addLead(input: NewLeadInput): Promise<Lead> {
   const lead: Lead = {
-    id,
+    id: newLeadId(),
     firstName: (input.firstName || '').trim() || 'Prénom',
     lastName: (input.lastName || '').trim(),
     title: (input.title || '').trim() || 'À qualifier',
@@ -723,27 +764,30 @@ export function addLead(input: NewLeadInput): Promise<Lead> {
     email: input.email?.trim() || null,
     phone: input.phone?.trim() || null,
   }
-  LEADS[id] = lead
-  return delay(lead)
+  LEADS[lead.id] = lead
+  await persistLead(lead)
+  return lead
 }
 
 // Import CSV : lignes "prénom,nom,titre,entreprise,email" (en-tête optionnel).
-export function addLeadsFromCsv(csv: string): Promise<{ added: number }> {
+export async function addLeadsFromCsv(csv: string): Promise<{ added: number }> {
   const lines = csv.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-  let added = 0
+  const created: Lead[] = []
   lines.forEach((line, i) => {
     const cols = line.split(/[;,\t]/).map((c) => c.trim())
     if (i === 0 && /pr[ée]nom|first|nom|email|entreprise|company/i.test(line)) return // en-tête
     if (!cols[0] && !cols[3]) return
-    const id = `src${++sourcedSeq}`
-    LEADS[id] = {
-      id, firstName: cols[0] || 'Prénom', lastName: cols[1] || '', title: cols[2] || 'À qualifier',
+    const lead: Lead = {
+      id: newLeadId(), firstName: cols[0] || 'Prénom', lastName: cols[1] || '', title: cols[2] || 'À qualifier',
       company: cols[3] || '—', score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
       email: cols[4] || null, phone: cols[5] || null,
     }
-    added++
+    LEADS[lead.id] = lead; created.push(lead)
   })
-  return delay({ added })
+  if (created.length) {
+    try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ }
+  }
+  return { added: created.length }
 }
 
 // SIREN déjà présents dans le pipe (placeholders) → l'UI peut les exclure du sourcing.
@@ -753,36 +797,25 @@ export function getImportedSirens(): Promise<string[]> {
 
 // Transforme des contacts résolus en vraies cartes contact dans le pipe.
 // Remplace la carte placeholder « à enrichir » de l'entreprise si elle existe.
-export function addContactsToPipeline(company: SourcedCompany, contacts: ResolvedContact[]) {
-  // retire le placeholder de l'entreprise (on a mieux : de vrais contacts),
-  // mais récupère d'abord le signal/icebreaker pour le transmettre aux contacts.
+export async function addContactsToPipeline(company: SourcedCompany, contacts: ResolvedContact[]) {
   const placeholder = importedPlaceholders[company.id]
   const inheritedSignal = placeholder ? LEADS[placeholder]?.signal : undefined
   const inheritedIce = placeholder ? LEADS[placeholder]?.icebreaker : undefined
-  if (placeholder) { delete LEADS[placeholder]; delete importedPlaceholders[company.id] }
+  if (placeholder) { const pid = placeholder; delete LEADS[pid]; delete importedPlaceholders[company.id]; try { await fetch('/api/leads', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: pid }) }) } catch { /* mémoire */ } }
 
-  let added = 0
+  const created: Lead[] = []
   contacts.forEach((ct) => {
     const [firstName, ...rest] = ct.name.split(' ')
-    const id = `src${++sourcedSeq}`
-    added++
-    LEADS[id] = {
-      id,
-      firstName: firstName || ct.name,
-      lastName: rest.join(' '),
-      title: ct.title || ct.persona,
-      company: company.name,
-      score: 0,
-      temperature: 'warm',
-      status: 'froid',
-      stage: 'to_invite',
-      email: ct.email || null,
-      phone: null,
-      signal: inheritedSignal,
-      icebreaker: inheritedIce,
+    const lead: Lead = {
+      id: newLeadId(), firstName: firstName || ct.name, lastName: rest.join(' '),
+      title: ct.title || ct.persona, company: company.name,
+      score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
+      email: ct.email || null, phone: null, signal: inheritedSignal, icebreaker: inheritedIce,
     }
+    LEADS[lead.id] = lead; created.push(lead)
   })
-  return delay({ added })
+  if (created.length) { try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ } }
+  return { added: created.length }
 }
 
 // Plafond du lot de résolution (garde-fou coût, comme l'enrichissement Kaspr).
