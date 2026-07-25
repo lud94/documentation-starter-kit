@@ -7,15 +7,25 @@ export function isSetup(): boolean {
   return !!getKey('APP_PASSWORD')
 }
 
-export async function setPassword(pw: string) {
-  const hash = bcrypt.hashSync(pw, 10)
-  await setKeys({ APP_PASSWORD: hash })
+export function getEmail(): string | undefined {
+  return getKey('APP_EMAIL')
 }
 
-export function checkPassword(pw: string): boolean {
+const normEmail = (e: string) => (e || '').trim().toLowerCase()
+
+// Crée le compte : email (identifiant) + mot de passe hashé.
+export async function setCredentials(email: string, pw: string) {
+  const hash = bcrypt.hashSync(pw, 10)
+  await setKeys({ APP_EMAIL: normEmail(email), APP_PASSWORD: hash })
+}
+
+// Vérifie email + mot de passe. Si aucun email n'est enregistré (ancien compte),
+// on ne vérifie que le mot de passe (rétro-compat).
+export function checkCredentials(email: string, pw: string): boolean {
+  const refEmail = getKey('APP_EMAIL')
+  if (refEmail && normEmail(email) !== normEmail(refEmail)) return false
   const ref = getKey('APP_PASSWORD')
   if (!ref || typeof pw !== 'string' || !pw) return false
-  // rétro-compat : si un ancien mot de passe en clair traîne, on l'accepte une fois.
   if (!ref.startsWith('$2')) return pw === ref
   try { return bcrypt.compareSync(pw, ref) } catch { return false }
 }

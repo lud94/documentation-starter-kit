@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { useRouter } from 'next/router'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 type NavItem = {
   href: string
@@ -37,6 +37,8 @@ const CREATE_MENU = [
 export default function Shell({ children }: { children: React.ReactNode }) {
   const { pathname } = useRouter()
   const [createOpen, setCreateOpen] = useState(false)
+  const [email, setEmail] = useState<string | null>(null)
+  useEffect(() => { fetch('/api/auth/me').then((r) => r.json()).then((d) => setEmail(d.email)).catch(() => {}) }, [])
 
   return (
     <div className="min-h-screen flex">
@@ -103,10 +105,10 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
         {/* User */}
         <div className="px-4 py-3 border-t border-gray-50 flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-full gradient-brand flex items-center justify-center text-white text-xs font-bold">N</div>
-          <div className="text-xs">
-            <div className="font-semibold text-gray-700">Ludwig</div>
-            <div className="text-gray-400">Admin · Smart.AI</div>
+          <div className="w-8 h-8 rounded-full gradient-brand flex items-center justify-center text-white text-xs font-bold">{email ? email[0].toUpperCase() : 'N'}</div>
+          <div className="text-xs min-w-0">
+            <div className="font-semibold text-gray-700 truncate">{email ? email.split('@')[0] : 'Admin'}</div>
+            <div className="text-gray-400 truncate">{email || 'Smart.AI'}</div>
           </div>
           <button
             onClick={async () => { await fetch('/api/auth/logout', { method: 'POST' }); window.location.href = '/login' }}

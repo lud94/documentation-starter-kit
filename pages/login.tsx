@@ -5,6 +5,7 @@ import { useRouter } from 'next/router'
 export default function LoginPage() {
   const router = useRouter()
   const [setup, setSetup] = useState<boolean | null>(null)
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [code, setCode] = useState('')
@@ -18,6 +19,7 @@ export default function LoginPage() {
 
   const submit = async () => {
     setError(null)
+    if (!mfaStep && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) return setError('Renseigne un email valide.')
     if (setup === false) {
       if (password.length < 8) return setError('8 caractères minimum.')
       if (password !== confirm) return setError('Les mots de passe ne correspondent pas.')
@@ -25,7 +27,7 @@ export default function LoginPage() {
     setBusy(true)
     try {
       const url = setup === false ? '/api/auth/setup' : '/api/auth/login'
-      const payload: any = { password }
+      const payload: any = { email: email.trim(), password }
       if (mfaStep) payload.code = code
       const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
       const d = await res.json()
@@ -69,9 +71,16 @@ export default function LoginPage() {
             </div>
           ) : (
           <div className="card p-6">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Email</label>
+            <input
+              type="email" value={email} autoFocus autoComplete="email"
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white mb-3"
+              placeholder="vous@smart-ai.com"
+            />
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Mot de passe</label>
             <input
-              type="password" value={password} autoFocus autoComplete={isSetup ? 'new-password' : 'current-password'}
+              type="password" value={password} autoComplete={isSetup ? 'new-password' : 'current-password'}
               onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isSetup && submit()}
               className="w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white mb-3"
               placeholder="••••••••"

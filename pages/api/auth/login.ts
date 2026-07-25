@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { checkPassword, isSetup, mfaEnabled, getTotpSecret } from '../../../lib/prospector/auth'
+import { checkCredentials, isSetup, mfaEnabled, getTotpSecret } from '../../../lib/prospector/auth'
 import { verifyTotp } from '../../../lib/auth/totp'
 import { createSessionToken, SESSION_COOKIE } from '../../../lib/auth/session'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
@@ -12,8 +12,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!isSetup()) return res.status(409).json({ error: 'not_setup' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
+  const email = String(body?.email || '')
   const password = body?.password
-  if (!checkPassword(password)) return res.status(401).json({ error: 'Identifiants invalides.' })
+  if (!checkCredentials(email, password)) return res.status(401).json({ error: 'Identifiants invalides.' })
 
   // 2e facteur si la MFA est activée
   if (mfaEnabled()) {
@@ -22,7 +23,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!(await verifyTotp(getTotpSecret() || '', code))) return res.status(401).json({ error: 'Code MFA invalide.' })
   }
 
-  const token = await createSessionToken('admin', TTL)
+  const token = await createSessionToken(email || 'admin', TTL)
   res.setHeader('Set-Cookie', cookie(SESSION_COOKIE, token, TTL))
   res.status(200).json({ ok: true })
 }
