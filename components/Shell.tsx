@@ -2,6 +2,21 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { useEffect, useState } from 'react'
 import CreateLeadModal from './CreateLeadModal'
+import { getNotifications, markNotificationsRead } from '../lib/prospector/capabilities'
+import type { Notification } from '../lib/prospector/capabilities'
+
+const NOTIF_ICON: Record<Notification['type'], string> = {
+  reply: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.9 9.9 0 01-4-.8L3 20l.8-3.2A7.9 7.9 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z',
+  meeting: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z',
+  task: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7l2 2 4-4',
+  system: 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
+}
+
+function useClock() {
+  const [now, setNow] = useState<Date | null>(null)
+  useEffect(() => { setNow(new Date()); const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t) }, [])
+  return now
+}
 
 type NavItem = {
   href: string
@@ -24,6 +39,7 @@ const NAV: NavItem[] = [
   { href: '/pipeline', label: 'Pipeline & Leads', ready: true, icon: icon('M3 7h18M3 12h18M3 17h18') },
   { href: '/sequences', label: 'Séquences', ready: true, icon: icon('M4 6h16M4 12h10M4 18h7') },
   { href: '/inbox', label: 'Inbox', ready: true, badge: 2, icon: icon('M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z') },
+  { href: '/planning', label: 'Planning', ready: true, icon: icon('M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z') },
   { href: '/brain', label: 'Cerveau IA', ready: true, icon: icon('M9.5 3a3 3 0 013 3v12a3 3 0 01-6 0V6a3 3 0 013-3zM14.5 6a3 3 0 016 0v9a3 3 0 01-6 0') },
   { href: '/admin', label: 'Admin', ready: true, icon: icon('M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z') },
 ]
@@ -42,7 +58,13 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [modal, setModal] = useState<CreateAction | null>(null)
   const [email, setEmail] = useState<string | null>(null)
+  const [notifs, setNotifs] = useState<Notification[]>([])
+  const [notifOpen, setNotifOpen] = useState(false)
+  const now = useClock()
   useEffect(() => { fetch('/api/auth/me').then((r) => r.json()).then((d) => setEmail(d.email)).catch(() => {}) }, [])
+  useEffect(() => { getNotifications().then(setNotifs) }, [])
+  const unreadCount = notifs.filter((n) => n.unread).length
+  const openNotifs = () => { setNotifOpen((v) => !v); if (!notifOpen && unreadCount) markNotificationsRead().then(setNotifs) }
 
   const onCreate = (key: CreateAction) => {
     setCreateOpen(false)
@@ -140,8 +162,51 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             <span className="ml-auto text-[10px] font-semibold text-gray-400 bg-white border border-gray-200 px-1.5 py-0.5 rounded">⌘K · bientôt</span>
           </button>
 
+          {/* Horloge date + heure (planification) */}
+          <div className="ml-auto hidden md:flex flex-col items-end leading-tight mr-1">
+            <span className="text-xs font-semibold text-gray-700 capitalize">
+              {now ? now.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) : '—'}
+            </span>
+            <span className="text-[11px] text-gray-400 tabular-nums">
+              {now ? now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+            </span>
+          </div>
+
+          {/* Cloche de notifications */}
+          <div className="relative">
+            <button onClick={openNotifs} className="relative w-9 h-9 rounded-xl border border-gray-200 bg-white flex items-center justify-center text-gray-500 hover:bg-gray-50 transition-colors">
+              <svg className="w-4.5 h-4.5 w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+              {unreadCount > 0 && <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">{unreadCount}</span>}
+            </button>
+            {notifOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setNotifOpen(false)} />
+                <div className="absolute right-0 mt-2 w-80 card p-0 z-40 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                    <span className="text-sm font-bold text-gray-800">Notifications</span>
+                    <Link href="/planning" onClick={() => setNotifOpen(false)} className="text-xs text-indigo-600 hover:underline">Planning</Link>
+                  </div>
+                  <div className="max-h-96 overflow-y-auto">
+                    {notifs.length === 0 ? <p className="text-sm text-gray-400 text-center py-6">Rien de neuf.</p> : notifs.map((n) => (
+                      <Link key={n.id} href={n.href || '#'} onClick={() => setNotifOpen(false)} className="flex items-start gap-3 px-4 py-3 hover:bg-gray-50 transition-colors border-b border-gray-50 last:border-0">
+                        <span className="w-7 h-7 rounded-lg icon-bg-blue flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={NOTIF_ICON[n.type]} /></svg>
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm text-gray-700 leading-snug">{n.text}</span>
+                          <span className="block text-[11px] text-gray-400 mt-0.5">{n.when}</span>
+                        </span>
+                        {n.unread && <span className="w-2 h-2 rounded-full bg-indigo-500 flex-shrink-0 mt-1.5" />}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
           {/* Bouton + global (raccourci disponible partout) */}
-          <div className="relative ml-auto">
+          <div className="relative">
             <button
               onClick={() => setCreateOpen((v) => !v)}
               className="gradient-brand text-white text-sm font-semibold px-3.5 py-2 rounded-xl hover:opacity-90 transition-opacity flex items-center gap-1.5"

@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, sendMessage, getChannels, generateMessage } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, sendMessage, getChannels, generateMessage, addTask } from '../../lib/prospector/capabilities'
 import type { Channel, ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
@@ -96,6 +96,12 @@ export default function LeadDetailPage() {
     setGenLoading(true)
     const msg = await generateMessage(id, 'principal')
     setComposeText(msg); setGenLoading(false)
+  }
+  const [reminderMsg, setReminderMsg] = useState<string | null>(null)
+  const planReminder = async () => {
+    if (!d) return
+    await addTask({ title: `Relancer ${d.lead.firstName} ${d.lead.lastName}`, due: 'Demain', leadId: d.lead.id, leadName: `${d.lead.firstName} ${d.lead.lastName}` })
+    setReminderMsg('Rappel planifié pour demain'); setTimeout(() => setReminderMsg(null), 2500)
   }
 
   const enrichThis = async () => { if (typeof id === 'string') { await enrichAll([id]); reload() } }
@@ -470,9 +476,15 @@ export default function LeadDetailPage() {
 
       {/* Conversation multi-canal unifiée */}
       <div className="card p-5 mt-4">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
           <h2 className="text-sm font-bold text-gray-800">Conversation</h2>
-          <span className="text-xs text-gray-400">Fil unifié · LinkedIn · Email · WhatsApp</span>
+          <div className="flex items-center gap-2">
+            {reminderMsg && <span className="text-xs text-emerald-600">{reminderMsg}</span>}
+            <button onClick={planReminder} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-1">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+              Planifier un rappel
+            </button>
+          </div>
         </div>
 
         {thread.length === 0 ? (

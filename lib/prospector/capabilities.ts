@@ -588,6 +588,41 @@ export function getWorkspaces(): Promise<Workspace[]> {
   return delay([...WORKSPACES])
 }
 
+// ── Notifications ──
+export interface Notification { id: string; type: 'reply' | 'meeting' | 'task' | 'system'; text: string; when: string; unread: boolean; href?: string }
+const NOTIFS: Notification[] = [
+  { id: 'n1', type: 'reply', text: 'Camille Roux a répondu sur LinkedIn', when: 'il y a 12 min', unread: true, href: '/inbox' },
+  { id: 'n2', type: 'meeting', text: 'RDV avec Emma Rousseau demain 14:00', when: 'il y a 1 h', unread: true, href: '/leads/l13' },
+  { id: 'n3', type: 'task', text: 'Relancer Thomas Lefèvre (échéance aujourd\'hui)', when: 'il y a 2 h', unread: true, href: '/planning' },
+  { id: 'n4', type: 'system', text: 'Sourcing terminé — 25 nouvelles entreprises', when: 'il y a 3 h', unread: false, href: '/sourcing' },
+]
+export function getNotifications(): Promise<Notification[]> { return delay([...NOTIFS]) }
+export function markNotificationsRead(): Promise<Notification[]> { NOTIFS.forEach((n) => (n.unread = false)); return delay([...NOTIFS]) }
+
+// ── Planificateur de tâches / rappels ──
+export interface Task { id: string; title: string; due: string; done: boolean; leadId?: string; leadName?: string; channel?: 'linkedin' | 'email' | 'whatsapp' | null }
+const TASKS: Task[] = [
+  { id: 't1', title: 'Relancer après démo', due: "Aujourd'hui 16:00", done: false, leadId: 'l1', leadName: 'Camille Roux', channel: 'linkedin' },
+  { id: 't2', title: 'Envoyer one-pager', due: "Aujourd'hui 17:30", done: false, leadId: 'l7', leadName: 'Sarah Moreau', channel: 'email' },
+  { id: 't3', title: 'Préparer le RDV', due: 'Demain 09:00', done: false, leadId: 'l13', leadName: 'Emma Rousseau', channel: null },
+  { id: 't4', title: 'Vérifier signal levée de fonds', due: 'Jeu. 11:00', done: true, channel: null },
+]
+let taskSeq = 100
+export function getTasks(): Promise<Task[]> { return delay([...TASKS]) }
+export function addTask(input: { title: string; due: string; leadId?: string; leadName?: string; channel?: Task['channel'] }): Promise<Task> {
+  const t: Task = { id: `t${++taskSeq}`, title: input.title.trim() || 'Tâche', due: input.due || "Aujourd'hui", done: false, leadId: input.leadId, leadName: input.leadName, channel: input.channel ?? null }
+  TASKS.unshift(t)
+  return delay(t)
+}
+export function toggleTask(id: string): Promise<Task[]> {
+  const t = TASKS.find((x) => x.id === id); if (t) t.done = !t.done
+  return delay([...TASKS])
+}
+export function deleteTask(id: string): Promise<Task[]> {
+  const i = TASKS.findIndex((x) => x.id === id); if (i >= 0) TASKS.splice(i, 1)
+  return delay([...TASKS])
+}
+
 // Journal d'activité (admin) — mock ; au câblage : events Supabase/cron/connecteurs.
 export interface LogEntry { id: string; level: 'info' | 'warn' | 'error'; source: string; message: string; when: string }
 export function getLogs(): Promise<LogEntry[]> {
