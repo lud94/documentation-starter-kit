@@ -19,7 +19,23 @@ create table if not exists prospector_workspaces (
   created_at  timestamptz not null default now()
 );
 
+-- 3) Cache Pappers par SIREN (évite de repayer un dirigeant déjà résolu)
+create table if not exists prospector_pappers_cache (
+  siren       text primary key,
+  data        jsonb,
+  created_at  timestamptz not null default now()
+);
+
+-- 4) Compteurs d'usage (ex. appels Pappers réels facturés)
+create table if not exists prospector_usage (
+  key         text primary key,
+  count       integer not null default 0,
+  updated_at  timestamptz not null default now()
+);
+
 -- Sécurité : RLS activé, aucune policy publique.
 -- La service_role key (côté serveur) bypasse la RLS ; le navigateur n'accède jamais à ces tables.
-alter table prospector_settings   enable row level security;
-alter table prospector_workspaces enable row level security;
+alter table prospector_settings       enable row level security;
+alter table prospector_workspaces     enable row level security;
+alter table prospector_pappers_cache  enable row level security;
+alter table prospector_usage          enable row level security;

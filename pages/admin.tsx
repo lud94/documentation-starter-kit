@@ -213,8 +213,9 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
       else setDiag(`URL: ${d.urlPresent ? 'ok' : 'MANQUANTE'} · Clé: ${d.keyPresent ? 'ok' : 'MANQUANTE'} · ${d.error || 'échec inconnu'}`)
     } catch (e: any) { setDiag('Erreur réseau : ' + (e.message || '')) }
   }
+  const [pappersCalls, setPappersCalls] = useState<number | null>(null)
   const loadStatus = () => fetch('/api/config/status').then((r) => r.json()).then((d) => { setKeys(d.keys || []); setSigMode(d.signalsMode || ''); setPersistence(d.persistence || '') }).catch(() => {})
-  useEffect(() => { loadStatus() }, [])
+  useEffect(() => { loadStatus(); fetch('/api/config/usage').then((r) => r.json()).then((d) => setPappersCalls(d.pappersCalls ?? null)).catch(() => {}) }, [])
 
   // ── MFA ──
   const [mfaOn, setMfaOn] = useState(false)
@@ -351,6 +352,13 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
           </button>
           {keySaved && <span className="text-xs text-emerald-600">✓ Clés enregistrées</span>}
         </div>
+        {pappersCalls !== null && (
+          <div className="mt-3 flex items-center gap-2 text-xs bg-gray-50 rounded-lg px-3 py-2">
+            <span className="w-2 h-2 rounded-full bg-blue-500" />
+            <span className="text-gray-600">Conso Pappers (appels réels facturés, hors cache)</span>
+            <span className="ml-auto font-bold text-gray-800">{pappersCalls}</span>
+          </div>
+        )}
         {diag && <p className="text-[11px] text-gray-600 mt-3 font-mono bg-gray-50 rounded-lg p-2 break-words">{diag}</p>}
         <p className="text-[11px] text-amber-600 mt-3">⚠️ Les clés saisies ici sont stockées <strong>en mémoire serveur</strong> : pratique pour tester, mais elles peuvent être réinitialisées après une mise en veille / un redéploiement. Pour du <strong>durable</strong>, pose-les aussi dans Vercel → Environment Variables (ou on branchera Supabase). Ne partage jamais cet écran.</p>
       </div>

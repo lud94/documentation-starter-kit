@@ -3,6 +3,7 @@ import type { ResolvedContact } from '../../../types/prospector'
 import { fetchDirigeants, pappersConfigured } from '../../../lib/prospector/pappers'
 import { findPersonas, unipileConfigured } from '../../../lib/prospector/unipile'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
+import { getCachedDirigeants, setCachedDirigeants, bumpUsage } from '../../../lib/supabase/pappersCache'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
@@ -37,8 +38,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     if (usingReal) {
+      // Pappers : cache par SIREN → on ne repaie pas un dirigeant déjà résolu.
+      const pappers = async (): Promise<ResolvedContact[]> => {
+        if (!pappersConfigured() || !siren) return []
+        const cached = await getCachedDirigeants(siren)
+        if (cached) return cached // hit → 0 appel facturé
+        const fresh = await fetchDirigeants(siren)
+        await bumpUsage('pappers_calls') // 1 appel réel facturé
+        if (fresh.length) await setCachedDirigeants(siren, fresh)
+        return fresh
+      }
       const [dirs, personaContacts] = await Promise.all([
-        pappersConfigured() ? fetchDirigeants(siren) : Promise.resolve([]),
+        pappers(),
         unipileConfigured() ? findPersonas(company, personas) : Promise.resolve([]),
       ])
       // fusion : dirigeants Pappers + personas Unipile ; complète les manquants par mock.
