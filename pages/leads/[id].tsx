@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead } from '../../lib/prospector/capabilities'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
@@ -65,6 +65,16 @@ export default function LeadDetailPage() {
   const [enrolledMsg, setEnrolledMsg] = useState<string | null>(null)
   const [newTag, setNewTag] = useState('')
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [edit, setEdit] = useState({ firstName: '', lastName: '', title: '', company: '', email: '' })
+  const [deleting2, setDeleting2] = useState(false)
+  const doDelete = async () => { if (typeof id === 'string') { setDeleting2(true); await deleteLead(id); router.push('/pipeline') } }
+  const openEdit = () => { if (d) { setEdit({ firstName: d.lead.firstName, lastName: d.lead.lastName, title: d.lead.title, company: d.lead.company, email: d.lead.email || '' }); setEditOpen(true) } }
+  const saveEdit = async () => {
+    if (typeof id !== 'string') return
+    await updateLead(id, { firstName: edit.firstName.trim() || 'Prénom', lastName: edit.lastName.trim(), title: edit.title.trim() || 'À qualifier', company: edit.company.trim() || '—', email: edit.email.trim() || null })
+    setEditOpen(false); reload()
+  }
   const [handoffOpen, setHandoffOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [iceCopied, setIceCopied] = useState(false)
@@ -194,7 +204,11 @@ export default function LeadDetailPage() {
           <select value={lead.status} onChange={(e) => changeStatus(e.target.value as LeadStatus)} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl focus:outline-none focus:border-indigo-400 border border-transparent cursor-pointer">
             {STATUS_ORDER.map((s) => <option key={s} value={s}>Statut : {STATUS_META[s].label}</option>)}
           </select>
-          <button onClick={() => setDeleteOpen(true)} className="text-sm font-medium text-red-400 px-3 py-2 rounded-xl hover:bg-red-50 transition-colors ml-auto">Supprimer</button>
+          <button onClick={openEdit} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors ml-auto flex items-center gap-1.5">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+            Modifier
+          </button>
+          <button onClick={() => setDeleteOpen(true)} className="text-sm font-medium text-red-400 px-3 py-2 rounded-xl hover:bg-red-50 transition-colors">Supprimer</button>
         </div>
         {enrolledMsg && (
           <div className="mt-3 flex items-center gap-2 text-sm text-emerald-600 bg-emerald-50 px-3 py-2 rounded-xl">
@@ -533,6 +547,41 @@ ${dossier.aEviter.map((p) => `- ${p}`).join('\n')}
         )
       })()}
 
+      {editOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setEditOpen(false)} />
+          <div className="relative card p-6 max-w-md w-full">
+            <h2 className="text-base font-bold text-gray-900 mb-4">Modifier le lead</h2>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Prénom</label>
+                <input value={edit.firstName} onChange={(e) => setEdit((p) => ({ ...p, firstName: e.target.value }))} className="w-full px-3 py-2 rounded-xl text-sm bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Nom</label>
+                <input value={edit.lastName} onChange={(e) => setEdit((p) => ({ ...p, lastName: e.target.value }))} className="w-full px-3 py-2 rounded-xl text-sm bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white" />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Titre</label>
+                <input value={edit.title} onChange={(e) => setEdit((p) => ({ ...p, title: e.target.value }))} className="w-full px-3 py-2 rounded-xl text-sm bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white" />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Entreprise</label>
+                <input value={edit.company} onChange={(e) => setEdit((p) => ({ ...p, company: e.target.value }))} className="w-full px-3 py-2 rounded-xl text-sm bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white" />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Email</label>
+                <input value={edit.email} onChange={(e) => setEdit((p) => ({ ...p, email: e.target.value }))} className="w-full px-3 py-2 rounded-xl text-sm bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white" placeholder="(optionnel)" />
+              </div>
+            </div>
+            <div className="flex items-center gap-2 justify-end mt-5">
+              <button onClick={() => setEditOpen(false)} className="text-sm font-medium text-gray-600 bg-gray-50 px-4 py-2 rounded-xl hover:bg-gray-100 transition-colors">Annuler</button>
+              <button onClick={saveEdit} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity">Enregistrer</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {deleteOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setDeleteOpen(false)} />
@@ -544,7 +593,7 @@ ${dossier.aEviter.map((p) => `- ${p}`).join('\n')}
             <p className="text-sm text-gray-500 mb-4">{lead.firstName} {lead.lastName} ({lead.company}) sera retiré de votre base. Cette action est irréversible.</p>
             <div className="flex items-center gap-2 justify-end">
               <button onClick={() => setDeleteOpen(false)} className="text-sm font-medium text-gray-600 bg-gray-50 px-4 py-2 rounded-xl hover:bg-gray-100 transition-colors">Annuler</button>
-              <Link href="/pipeline" className="text-sm font-semibold text-white bg-red-500 px-4 py-2 rounded-xl hover:bg-red-600 transition-colors">Supprimer</Link>
+              <button onClick={doDelete} disabled={deleting2} className="text-sm font-semibold text-white bg-red-500 px-4 py-2 rounded-xl hover:bg-red-600 transition-colors disabled:opacity-50">{deleting2 ? 'Suppression…' : 'Supprimer'}</button>
             </div>
           </div>
         </div>

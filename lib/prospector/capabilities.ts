@@ -282,6 +282,21 @@ function buildDetail(lead: Lead): LeadDetail {
   }
 }
 
+// Supprime un lead (mémoire + Supabase).
+export async function deleteLead(id: string): Promise<void> {
+  delete LEADS[id]
+  try { await fetch('/api/leads', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) }) } catch { /* mémoire */ }
+}
+
+// Met à jour les champs éditables d'un lead (nom, titre, entreprise, email…).
+export async function updateLead(id: string, patch: Partial<Lead>): Promise<Lead | undefined> {
+  const l = LEADS[id]
+  if (!l) return undefined
+  Object.assign(l, patch)
+  await persistLead(l)
+  return l
+}
+
 export async function getLeadDetail(id: string): Promise<LeadDetail | undefined> {
   if (!LEADS[id]) await hydrateLeads() // fiche ouverte après reload → recharge
   const lead = LEADS[id]
