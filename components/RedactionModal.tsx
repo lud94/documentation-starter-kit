@@ -1,25 +1,43 @@
 import { useEffect, useState } from 'react'
 import type { LeadDetail } from '../types/prospector'
-import { generateMessage, detectDealKillers } from '../lib/prospector/capabilities'
+import { generateMessage, detectDealKillers, getChannels, sendMessage } from '../lib/prospector/capabilities'
+import type { Channel } from '../lib/prospector/capabilities'
 
 type Variant = 'principal' | 'directe' | 'douce'
+type Ch = 'linkedin' | 'email' | 'whatsapp'
 
 const VARIANTS: { key: Variant; label: string }[] = [
   { key: 'principal', label: 'Principal' },
   { key: 'directe', label: 'Directe' },
   { key: 'douce', label: 'Douce' },
 ]
+const CHANNELS: { key: Ch; label: string; dot: string }[] = [
+  { key: 'linkedin', label: 'LinkedIn', dot: 'bg-blue-500' },
+  { key: 'email', label: 'Email', dot: 'bg-emerald-500' },
+  { key: 'whatsapp', label: 'WhatsApp', dot: 'bg-green-500' },
+]
 
-export default function RedactionModal({ detail, onClose }: { detail: LeadDetail; onClose: () => void }) {
+export default function RedactionModal({ detail, onClose, onSent }: { detail: LeadDetail; onClose: () => void; onSent?: () => void }) {
   const [variant, setVariant] = useState<Variant>('principal')
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
+  const [channels, setChannels] = useState<Channel[]>([])
+  const [channel, setChannel] = useState<Ch>('linkedin')
+  const [sent, setSent] = useState(false)
   const { lead, dossier } = detail
 
   useEffect(() => {
     setLoading(true)
     generateMessage(lead.id, variant).then((m) => { setMessage(m); setLoading(false) })
   }, [lead.id, variant])
+  useEffect(() => { getChannels().then(setChannels) }, [])
+
+  const chConnected = (c: Ch) => channels.find((x) => x.key === c)?.connected ?? false
+  const send = async () => {
+    await sendMessage(lead.id, channel, message)
+    setSent(true); onSent?.()
+    setTimeout(onClose, 700)
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -53,6 +71,29 @@ export default function RedactionModal({ detail, onClose }: { detail: LeadDetail
 
           {/* Éditeur */}
           <div className="md:col-span-2 p-5">
+            {/* Canal d'envoi */}
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              <span className="text-xs font-semibold text-gray-400">Canal :</span>
+              <div className="flex bg-gray-100 rounded-xl p-1">
+                {CHANNELS.map((c) => {
+                  const connected = chConnected(c.key)
+                  const on = channel === c.key
+                  return (
+                    <button
+                      key={c.key}
+                      onClick={() => connected && setChannel(c.key)}
+                      disabled={!connected}
+                      title={connected ? c.label : `${c.label} — à connecter (Admin → Connexions)`}
+                      className={`text-xs font-semibold px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1.5 ${on ? 'bg-white shadow-sm text-gray-800' : 'text-gray-500'} ${!connected ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />{c.label}
+                    </button>
+                  )
+                })}
+              </div>
+              {!chConnected(channel) && <span className="text-[11px] text-amber-600">canal à connecter via Unipile</span>}
+            </div>
+
             {/* Variantes */}
             <div className="flex bg-gray-100 rounded-xl p-1 w-fit mb-3">
               {VARIANTS.map((v) => (
@@ -104,7 +145,9 @@ export default function RedactionModal({ detail, onClose }: { detail: LeadDetail
               </button>
               <div className="flex items-center gap-2">
                 <button onClick={() => navigator.clipboard?.writeText(message)} className="text-xs font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">Copier</button>
-                <button className="gradient-brand text-white text-xs font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity">Envoyer</button>
+                <button onClick={send} disabled={sent || !message.trim()} className="gradient-brand text-white text-xs font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">
+                  {sent ? '✓ Envoyé' : `Envoyer via ${CHANNELS.find((c) => c.key === channel)?.label}`}
+                </button>
               </div>
             </div>
           </div>

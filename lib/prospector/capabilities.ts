@@ -623,6 +623,30 @@ export function deleteTask(id: string): Promise<Task[]> {
   return delay([...TASKS])
 }
 
+// Logs IA — observabilité par appel LLM (provider, modèle, tokens, coût, prompt).
+export interface AiLog {
+  id: string; when: string; agent: string; provider: string; model: string
+  tokensIn: number; tokensOut: number; cost: number; systemPrompt: string; input: string; output: string
+}
+export const AI_AGENTS = ['Prospection M1', 'Prospection M2', 'Scoring', 'Enrichissement', 'Rédaction', 'Cockpit IA']
+export function getAiLogs(): Promise<AiLog[]> {
+  return delay([
+    {
+      id: 'ai1', when: '20 jul 14:30', agent: 'Prospection M1', provider: 'Claude', model: 'Claude Haiku 4.5',
+      tokensIn: 2265, tokensOut: 23, cost: 0.01,
+      systemPrompt: "Tu es un parseur de requêtes de sourcing d'entreprises françaises.\nTa SEULE tâche : à partir d'une phrase en langage naturel, sélectionner les codes d'activité NAF (rév. 2) les plus pertinents PARMI le catalogue fourni.\nRÈGLES STRICTES :\n- Tu ne PEUX choisir QUE des codes présents dans le catalogue fourni.\n- N'invente JAMAIS un code absent du catalogue.",
+      input: 'Trouve-moi des cabinets de conseil en santé à Lyon', output: '```json\n{"naf_codes": ["86"], "section": "Q"}\n```',
+    },
+    {
+      id: 'ai2', when: '20 jul 14:31', agent: 'Rédaction', provider: 'Claude', model: 'Claude Opus 4.8',
+      tokensIn: 1840, tokensOut: 96, cost: 0.04,
+      systemPrompt: "Tu es le rédacteur d'accroches de Smart.AI. Respecte le Référentiel : pas de ROI chiffré, pas de superlatifs, ton = ouverture pas pitch. Deal-killers interdits.",
+      input: "Lead: Sarah Moreau, Founder @ Lago. Signal: recrute des SDR. Icebreaker souhaité, ton direct.",
+      output: "Sarah, félicitations pour la traction de Lago sur le metered billing. Vos équipes sales scalent vite — souvent le moment où l'ops déraille. On outille exactement cette phase, ça vous parle ?",
+    },
+  ])
+}
+
 // Journal d'activité (admin) — mock ; au câblage : events Supabase/cron/connecteurs.
 export interface LogEntry { id: string; level: 'info' | 'warn' | 'error'; source: string; message: string; when: string }
 export function getLogs(): Promise<LogEntry[]> {

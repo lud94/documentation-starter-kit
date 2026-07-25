@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { UsageSummary, Diagnostic, Workspace } from '../types/prospector'
-import { getUsage, getDiagnostics, getChannels, connectChannel, disconnectChannel, getLogs, type Period } from '../lib/prospector/capabilities'
-import type { Channel, ChannelConfig, LogEntry } from '../lib/prospector/capabilities'
+import { getUsage, getDiagnostics, getChannels, connectChannel, disconnectChannel, getLogs, getAiLogs, AI_AGENTS, type Period } from '../lib/prospector/capabilities'
+import type { Channel, ChannelConfig, LogEntry, AiLog } from '../lib/prospector/capabilities'
 
-type Tab = 'usage' | 'connexions' | 'protocole' | 'logs' | 'diagnostic' | 'workspaces'
+type Tab = 'usage' | 'connexions' | 'protocole' | 'ailogs' | 'logs' | 'diagnostic' | 'workspaces'
 
 const USAGE_PERIODS: { key: Period; label: string }[] = [
   { key: 'week', label: 'Semaine' }, { key: 'month', label: 'Mois' }, { key: 'quarter', label: 'Trimestre' }, { key: 'year', label: 'Année' },
@@ -52,7 +52,8 @@ export default function AdminPage() {
     { key: 'usage', label: 'Usage & coûts' },
     { key: 'connexions', label: 'Connexions' },
     { key: 'protocole', label: 'Protocole LLM' },
-    { key: 'logs', label: 'Logs' },
+    { key: 'ailogs', label: 'Logs IA' },
+    { key: 'logs', label: 'Activité' },
     { key: 'diagnostic', label: 'Diagnostic' },
     { key: 'workspaces', label: 'Workspaces clients' },
   ]
@@ -132,6 +133,8 @@ export default function AdminPage() {
       )}
 
       {tab === 'protocole' && <ProtocoleTab />}
+
+      {tab === 'ailogs' && <AiLogsTab />}
 
       {tab === 'logs' && (
         <div className="card p-5">
@@ -557,6 +560,69 @@ function AnonymizationCard() {
           <p className="text-[11px] text-gray-400 mt-2">{preview.total} PII masquées{Object.keys(preview.counts).length ? ' · ' + Object.entries(preview.counts).map(([k, v]) => `${v} ${k}`).join(', ') : ''}</p>
         </div>
       )}
+    </div>
+  )
+}
+
+function fmtCost(c: number) { return c < 0.01 ? '< $0.01' : `$${c.toFixed(2)}` }
+function fmtTok(n: number) { return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n) }
+
+function AiLogsTab() {
+  const [logs, setLogs] = useState<AiLog[]>([])
+  const [filter, setFilter] = useState<string>('Tous')
+  const [open, setOpen] = useState<string | null>(null)
+  useEffect(() => { getAiLogs().then(setLogs) }, [])
+
+  const filtered = filter === 'Tous' ? logs : logs.filter((l) => l.agent === filter)
+
+  return (
+    <div>
+      <p className="text-sm text-gray-400 mb-4">{filtered.length} appel(s) IA enregistré(s) · input/output et coût par appel.</p>
+      <div className="flex flex-wrap gap-1.5 mb-4">
+        {['Tous', ...AI_AGENTS].map((a) => (
+          <button key={a} onClick={() => setFilter(a)} className={`text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${filter === a ? 'gradient-brand text-white' : 'text-gray-500 bg-gray-100 hover:bg-gray-200'}`}>{a}</button>
+        ))}
+      </div>
+      <div className="space-y-2">
+        {filtered.map((l) => {
+          const isOpen = open === l.id
+          return (
+            <div key={l.id} className="card overflow-hidden">
+              <button onClick={() => setOpen(isOpen ? null : l.id)} className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-50/50 transition-colors">
+                <span className="text-xs text-gray-400 w-24 flex-shrink-0">{l.when}</span>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 flex-shrink-0">{l.agent}</span>
+                <span className="text-sm text-gray-700 truncate flex-1">{l.model}</span>
+                <span className="text-xs text-gray-400 flex-shrink-0">{fmtTok(l.tokensIn + l.tokensOut)} tok</span>
+                <span className="text-xs font-semibold text-gray-600 w-16 text-right flex-shrink-0">{fmtCost(l.cost)}</span>
+                <svg className={`w-4 h-4 text-gray-300 flex-shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+              </button>
+              {isOpen && (
+                <div className="px-4 pb-4 border-t border-gray-100 pt-3 space-y-3">
+                  <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-gray-500">
+                    <span>Provider : <span className="font-semibold text-gray-700">{l.provider}</span></span>
+                    <span>Modèle : <span className="font-semibold text-gray-700">{l.model}</span></span>
+                    <span>Tokens in : <span className="font-semibold text-gray-700">{l.tokensIn}</span></span>
+                    <span>Tokens out : <span className="font-semibold text-gray-700">{l.tokensOut}</span></span>
+                    <span>Coût : <span className="font-semibold text-gray-700">{fmtCost(l.cost)}</span></span>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold text-gray-400 uppercase mb-1">System prompt</p>
+                    <pre className="text-xs text-gray-600 bg-gray-50 rounded-lg p-3 whitespace-pre-wrap max-h-40 overflow-y-auto">{l.systemPrompt}</pre>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Input</p>
+                    <pre className="text-xs text-gray-600 bg-gray-50 rounded-lg p-3 whitespace-pre-wrap">{l.input}</pre>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Output</p>
+                    <pre className="text-xs text-gray-700 bg-emerald-50/40 border border-emerald-100 rounded-lg p-3 whitespace-pre-wrap">{l.output}</pre>
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

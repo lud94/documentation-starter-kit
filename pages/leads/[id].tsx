@@ -549,7 +549,7 @@ export default function LeadDetailPage() {
         </div>
       </div>
 
-      {redactionOpen && <RedactionModal detail={d} onClose={() => setRedactionOpen(false)} />}
+      {redactionOpen && <RedactionModal detail={d} onClose={() => setRedactionOpen(false)} onSent={() => { if (typeof id === 'string') getLeadThread(id).then(setThread) }} />}
 
       {handoffOpen && (() => {
         const dispositif = `# DISPOSITIF DE RÉDACTION — ${lead.company} / ${lead.firstName} ${lead.lastName}
