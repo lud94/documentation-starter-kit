@@ -23,23 +23,30 @@ async function hmac(data: string): Promise<string> {
   return b64url(sig)
 }
 
-// Jeton = payloadB64.signature ; payload = { sub, exp }
-export async function createSessionToken(sub: string, ttlSeconds: number): Promise<string> {
-  const payload = { sub, exp: Math.floor(Date.now() / 1000) + ttlSeconds }
+export interface SessionClaims { sub: string; role?: 'admin' | 'client'; ws?: string; exp: number }
+
+// Jeton = payloadB64.signature ; payload = { sub, role, ws, exp }
+export async function createSessionToken(sub: string, ttlSeconds: number, extra?: { role?: 'admin' | 'client'; ws?: string }): Promise<string> {
+  const payload: SessionClaims = { sub, exp: Math.floor(Date.now() / 1000) + ttlSeconds, ...extra }
   const body = b64url(new TextEncoder().encode(JSON.stringify(payload)))
   const sig = await hmac(body)
   return `${body}.${sig}`
 }
 
-export async function verifySessionToken(token: string | undefined): Promise<boolean> {
-  if (!token || !token.includes('.')) return false
+// Renvoie les claims si la signature ET l'expiration sont valides, sinon null.
+export async function readSession(token: string | undefined): Promise<SessionClaims | null> {
+  if (!token || !token.includes('.')) return null
   const [body, sig] = token.split('.')
-  if (!body || !sig) return false
-  if ((await hmac(body)) !== sig) return false
+  if (!body || !sig) return null
+  if ((await hmac(body)) !== sig) return null
   try {
-    const payload = JSON.parse(atob(body.replace(/-/g, '+').replace(/_/g, '/')))
-    return typeof payload.exp === 'number' && payload.exp > Math.floor(Date.now() / 1000)
+    const payload = JSON.parse(atob(body.replace(/-/g, '+').replace(/_/g, '/'))) as SessionClaims
+    return typeof payload.exp === 'number' && payload.exp > Math.floor(Date.now() / 1000) ? payload : null
   } catch {
-    return false
+    return null
   }
+}
+
+export async function verifySessionToken(token: string | undefined): Promise<boolean> {
+  return (await readSession(token)) !== null
 }

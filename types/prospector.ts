@@ -264,6 +264,7 @@ export interface Workspace {
   clientEmail?: string
   status?: 'active' | 'suspended'
   permissions?: WorkspacePermissions
+  hasClientAccess?: boolean
 }
 
 export const DEFAULT_PERMISSIONS: WorkspacePermissions = { messaging: true, leads: true, sequences: true, validate: true }

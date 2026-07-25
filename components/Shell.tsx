@@ -58,10 +58,15 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [modal, setModal] = useState<CreateAction | null>(null)
   const [email, setEmail] = useState<string | null>(null)
+  const [role, setRole] = useState<'admin' | 'client'>('admin')
+  const [perms, setPerms] = useState<any>(null)
+  const [wsName, setWsName] = useState<string | null>(null)
   const [notifs, setNotifs] = useState<Notification[]>([])
   const [notifOpen, setNotifOpen] = useState(false)
   const now = useClock()
-  useEffect(() => { fetch('/api/auth/me').then((r) => r.json()).then((d) => setEmail(d.email)).catch(() => {}) }, [])
+  useEffect(() => {
+    fetch('/api/auth/me').then((r) => r.json()).then((d) => { setEmail(d.email); setRole(d.role || 'admin'); setPerms(d.permissions || null); setWsName(d.workspaceName || null) }).catch(() => {})
+  }, [])
   useEffect(() => { getNotifications().then(setNotifs) }, [])
   const unreadCount = notifs.filter((n) => n.unread).length
   const openNotifs = () => { setNotifOpen((v) => !v); if (!notifOpen && unreadCount) markNotificationsRead().then(setNotifs) }
@@ -101,7 +106,19 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-0.5">
-          {NAV.map((item) => {
+          {NAV.filter((item) => {
+            if (role === 'admin') return true
+            // Vue client : filtrée par permissions, zones admin masquées.
+            const p = perms || {}
+            switch (item.href) {
+              case '/admin': case '/brain': return false
+              case '/actions': return !!p.validate
+              case '/sourcing': case '/pipeline': return !!p.leads
+              case '/sequences': return !!p.sequences
+              case '/inbox': return !!p.messaging
+              default: return true // /, /planning
+            }
+          }).map((item) => {
             const active = pathname === item.href
             const base = 'w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-colors'
             if (!item.ready) {
@@ -129,18 +146,18 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        {/* Aperçu client */}
-        <Link href="/client" className="mx-3 mb-1 flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-indigo-600 hover:bg-gray-50 transition-colors">
+        {/* Aperçu client — admin uniquement */}
+        {role === 'admin' && <Link href="/client" className="mx-3 mb-1 flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-indigo-600 hover:bg-gray-50 transition-colors">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
           Aperçu espace client
-        </Link>
+        </Link>}
 
         {/* User */}
         <div className="px-4 py-3 border-t border-gray-50 flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-full gradient-brand flex items-center justify-center text-white text-xs font-bold">{email ? email[0].toUpperCase() : 'N'}</div>
           <div className="text-xs min-w-0">
             <div className="font-semibold text-gray-700 truncate">{email ? email.split('@')[0] : 'Admin'}</div>
-            <div className="text-gray-400 truncate">{email || 'Smart.AI'}</div>
+            <div className="text-gray-400 truncate">{role === 'client' ? (wsName || 'Espace client') : (email || 'Smart.AI')}</div>
           </div>
           <button
             onClick={async () => { await fetch('/api/auth/logout', { method: 'POST' }); window.location.href = '/login' }}
@@ -205,8 +222,8 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             )}
           </div>
 
-          {/* Bouton + global (raccourci disponible partout) */}
-          <div className="relative">
+          {/* Bouton + global — masqué pour un client sans droit "leads" */}
+          {(role === 'admin' || perms?.leads) && <div className="relative">
             <button
               onClick={() => setCreateOpen((v) => !v)}
               className="gradient-brand text-white text-sm font-semibold px-3.5 py-2 rounded-xl hover:opacity-90 transition-opacity flex items-center gap-1.5"
@@ -236,7 +253,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
                 </div>
               </>
             )}
-          </div>
+          </div>}
         </header>
 
         <main className="flex-1 px-6 py-8">

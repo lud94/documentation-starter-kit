@@ -1,6 +1,7 @@
 // Persistance des espaces clients. Table `prospector_workspaces`
 // (id text primary key, name text, leads int, users int, plan text, created_at timestamptz).
 // Repli mémoire (globalThis) si Supabase non configuré.
+import bcrypt from 'bcryptjs'
 import type { Workspace, WorkspacePermissions } from '../../types/prospector'
 import { DEFAULT_PERMISSIONS } from '../../types/prospector'
 import { supabase, supabaseConfigured } from './client'
@@ -21,7 +22,43 @@ function rowToWs(r: any): Workspace {
     id: r.id, name: r.name, leads: r.leads ?? 0, users: r.users ?? 1, plan: r.plan ?? 'Starter',
     clientEmail: r.client_email || undefined, status: r.status || 'active',
     permissions: r.permissions || { ...DEFAULT_PERMISSIONS },
+    hasClientAccess: !!(r.client_email && r.client_password_hash),
   }
+}
+
+const g2 = globalThis as any
+const memHash: Record<string, string> = g2.__wsClientHash || (g2.__wsClientHash = {})
+
+// Définit/réinitialise le mot de passe d'accès du client au workspace.
+export async function setClientPassword(id: string, pw: string): Promise<boolean> {
+  const hash = bcrypt.hashSync(pw, 10)
+  const sb = supabase()
+  if (!sb) { memHash[id] = hash; return true }
+  const { error } = await sb.from(TABLE).update({ client_password_hash: hash }).eq('id', id)
+  return !error
+}
+
+// Authentifie un client par email → renvoie le workspace + permissions si OK.
+export async function authClient(email: string, pw: string): Promise<Workspace | null> {
+  const e = (email || '').trim().toLowerCase()
+  const sb = supabase()
+  if (!sb) {
+    const w = mem.find((x) => (x.clientEmail || '').toLowerCase() === e)
+    if (!w || w.status === 'suspended') return null
+    const hash = memHash[w.id]
+    return hash && bcrypt.compareSync(pw, hash) ? w : null
+  }
+  const { data } = await sb.from(TABLE).select('*').ilike('client_email', e).limit(1)
+  const r = (data || [])[0]
+  if (!r || !r.client_password_hash || r.status === 'suspended') return null
+  return bcrypt.compareSync(pw, r.client_password_hash) ? rowToWs(r) : null
+}
+
+export async function getWorkspaceById(id: string): Promise<Workspace | null> {
+  const sb = supabase()
+  if (!sb) return mem.find((w) => w.id === id) || null
+  const { data } = await sb.from(TABLE).select('*').eq('id', id).single()
+  return data ? rowToWs(data) : null
 }
 
 export async function listWorkspaces(): Promise<Workspace[]> {

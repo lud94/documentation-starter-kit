@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/router'
 import Head from 'next/head'
 import type { AgentConfig, KnowledgeBlock } from '../types/prospector'
 import { getAgents, getKnowledgeBlocks, getReferentiel, addForbiddenTerm, removeForbiddenTerm, type Referentiel } from '../lib/prospector/capabilities'
@@ -8,6 +9,8 @@ type Tab = 'prompts' | 'connaissances' | 'referentiel' | 'modeles'
 const MODELS = ['claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5', 'perplexity-sonar-pro', 'gpt-4.1-mini']
 
 export default function BrainPage() {
+  const router = useRouter()
+  useEffect(() => { fetch('/api/auth/me').then((r) => r.json()).then((d) => { if (d.role === 'client') router.replace('/') }).catch(() => {}) }, [router])
   const [tab, setTab] = useState<Tab>('prompts')
   const [agents, setAgents] = useState<AgentConfig[]>([])
   const [blocks, setBlocks] = useState<KnowledgeBlock[]>([])

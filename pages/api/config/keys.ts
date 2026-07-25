@@ -1,10 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { setKeys, MANAGED_KEYS, hydrateKeystore } from '../../../lib/prospector/keystore'
+import { isAdminRequest } from '../../../lib/auth/guard'
 
 // Enregistre des clés API saisies depuis l'Admin (POST). Écrit en mémoire +
-// Supabase (write-through). N'expose jamais les valeurs en GET.
+// Supabase (write-through). N'expose jamais les valeurs en GET. Admin uniquement.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
+  if (!(await isAdminRequest(req))) return res.status(403).json({ error: 'forbidden' })
   await hydrateKeystore()
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   if (!body || typeof body !== 'object') return res.status(400).json({ error: 'Corps invalide' })

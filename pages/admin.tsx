@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/router'
 import Head from 'next/head'
 import type { UsageSummary, Diagnostic, Workspace, WorkspacePermissions } from '../types/prospector'
 import { DEFAULT_PERMISSIONS } from '../types/prospector'
@@ -23,6 +24,8 @@ function fmt(n: number) {
 const DOT: Record<Diagnostic['status'], string> = { ok: 'bg-emerald-500', warn: 'bg-amber-400', error: 'bg-red-500' }
 
 export default function AdminPage() {
+  const router = useRouter()
+  useEffect(() => { fetch('/api/auth/me').then((r) => r.json()).then((d) => { if (d.role === 'client') router.replace('/') }).catch(() => {}) }, [router])
   const [tab, setTab] = useState<Tab>('usage')
   const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [usagePeriod, setUsagePeriod] = useState<Period>('month')
@@ -669,11 +672,14 @@ function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose
   const [email, setEmail] = useState(ws.clientEmail || '')
   const [status, setStatus] = useState<'active' | 'suspended'>(ws.status === 'suspended' ? 'suspended' : 'active')
   const [perms, setPerms] = useState<WorkspacePermissions>(ws.permissions || { ...DEFAULT_PERMISSIONS })
+  const [clientPw, setClientPw] = useState('')
   const [busy, setBusy] = useState(false)
 
   const save = async () => {
     setBusy(true)
-    await fetch('/api/workspaces', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: ws.id, patch: { name, plan, clientEmail: email, status, permissions: perms } }) })
+    const body: any = { id: ws.id, patch: { name, plan, clientEmail: email, status, permissions: perms } }
+    if (clientPw.trim().length >= 8) body.clientPassword = clientPw.trim()
+    await fetch('/api/workspaces', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     setBusy(false); onSaved()
   }
 
@@ -705,6 +711,11 @@ function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose
           <div>
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Statut</label>
             <select value={status} onChange={(e) => setStatus(e.target.value as any)} className={fieldCls}><option value="active">Actif</option><option value="suspended">Suspendu</option></select>
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Mot de passe d'accès client {ws.hasClientAccess && <span className="text-emerald-600 font-normal">· défini</span>}</label>
+            <input type="password" value={clientPw} onChange={(e) => setClientPw(e.target.value)} className={fieldCls} placeholder={ws.hasClientAccess ? '•••••••• (laisser vide pour garder)' : 'Min. 8 caractères'} />
+            <p className="text-[11px] text-gray-400 mt-1">Le client se connecte sur la même page que toi, avec cet email + ce mot de passe. Il obtient une vue limitée à ses permissions ci-dessous.</p>
           </div>
         </div>
 
