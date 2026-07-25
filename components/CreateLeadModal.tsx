@@ -9,6 +9,7 @@ export default function CreateLeadModal({ mode, onClose }: { mode: Mode; onClose
   const router = useRouter()
   const [f, setF] = useState({ firstName: '', lastName: '', title: '', company: '', email: '', linkedinUrl: '' })
   const [csv, setCsv] = useState('')
+  const [fileName, setFileName] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const set = (k: string, v: string) => setF((p) => ({ ...p, [k]: v }))
@@ -68,8 +69,21 @@ export default function CreateLeadModal({ mode, onClose }: { mode: Mode; onClose
 
         {mode === 'csv' && (
           <div className="space-y-2">
-            <label className="block text-xs font-semibold text-gray-500">Colle tes lignes CSV <span className="font-normal text-gray-400">— prénom,nom,titre,entreprise,email</span></label>
-            <textarea value={csv} onChange={(e) => setCsv(e.target.value)} className={`${field} h-36 resize-none font-mono text-xs`} placeholder={"Camille,Roux,VP Sales,Fivory,camille@fivory.com\nHugo,Martin,CEO,Kairos AI,"} />
+            <label className="block text-xs font-semibold text-gray-500">Fichier CSV <span className="font-normal text-gray-400">— colonnes : prénom, nom, titre, entreprise, email</span></label>
+            <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-gray-200 rounded-xl py-6 cursor-pointer hover:border-indigo-300 hover:bg-gray-50/50 transition-colors">
+              <svg className="w-7 h-7 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>
+              <span className="text-sm text-gray-600">{fileName || 'Choisir un fichier .csv'}</span>
+              <span className="text-[11px] text-gray-400">ou glisser-déposer</span>
+              <input
+                type="file" accept=".csv,text/csv" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (!f) return; setFileName(f.name); const r = new FileReader(); r.onload = () => setCsv(String(r.result || '')); r.readAsText(f) }}
+              />
+            </label>
+            <details className="text-xs">
+              <summary className="text-gray-400 cursor-pointer hover:text-gray-600">…ou coller le texte manuellement</summary>
+              <textarea value={csv} onChange={(e) => { setCsv(e.target.value); setFileName('') }} className={`${field} h-24 resize-none font-mono text-xs w-full mt-2`} placeholder={"Camille,Roux,VP Sales,Fivory,camille@fivory.com"} />
+            </details>
+            {csv && <p className="text-[11px] text-emerald-600">{csv.split(/\r?\n/).filter((l) => l.trim()).length} ligne(s) détectée(s).</p>}
           </div>
         )}
 
