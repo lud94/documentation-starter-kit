@@ -47,7 +47,16 @@ export function resolveDepartement(loc: string): string | null {
   if (/^\d{5}$/.test(s)) return s.slice(0, 2)   // code postal → département
   if (/^\d{2,3}$/.test(s)) return s             // département déjà saisi
   if (/^\d{2}[ab]$/i.test(s)) return s.toUpperCase() // Corse 2A/2B
-  return CITY_TO_DEP[s] || null
+  if (CITY_TO_DEP[s]) return CITY_TO_DEP[s]
+  // Saisie mixte, ex. « Paris 75 », « 75 Paris », « Lyon 69 » → on extrait
+  // d'abord un token département, sinon une ville connue.
+  const tokens = s.split(/[\s,]+/).filter(Boolean)
+  const depTok = tokens.find((t) => /^\d{2,3}$/.test(t) || /^\d{5}$/.test(t))
+  if (depTok) return depTok.length === 5 ? depTok.slice(0, 2) : depTok
+  for (const t of tokens) { if (CITY_TO_DEP[t]) return CITY_TO_DEP[t] }
+  // dernier essai : la chaîne entière moins les chiffres (« paris 75 » → « paris »)
+  const cityOnly = s.replace(/[\d]+/g, '').trim()
+  return CITY_TO_DEP[cityOnly] || null
 }
 
 // Extrait un site web SEULEMENT s'il est réellement fourni par l'API (jamais deviné).
