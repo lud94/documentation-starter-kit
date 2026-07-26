@@ -31,7 +31,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     company: String(body?.company || '').trim() || '—',
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
     email: body?.email || null, phone: null,
-    linkedinUrl: String(body?.url || '').trim() || undefined,
+    // On ne renseigne linkedinUrl que si l'URL est vraiment un profil LinkedIn.
+    linkedinUrl: /linkedin\.com\/in\//i.test(String(body?.url || '')) ? String(body.url).trim() : undefined,
   }
   const ok = await upsertLead(lead, 'admin')
   res.status(ok ? 200 : 502).json({ ok, id: lead.id })

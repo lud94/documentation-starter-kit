@@ -189,7 +189,7 @@ function emptyDetail(lead: Lead): LeadDetail {
     connectionDegree: '—',
     premium: false,
     openProfile: false,
-    linkedinUrl: `linkedin.com/in/${lead.firstName.toLowerCase()}-${lead.lastName.toLowerCase()}`,
+    linkedinUrl: lead.linkedinUrl || '',
     scoring: { fit: 0, intent: 0, timing: 0, segment: '—', band: 'COLD', confidence: 'low', edgeCase: false,
       rationale: 'Lead non encore scoré. Lance l\'enrichissement pour analyser le signal et générer le dossier.', aiAdjustment: 0 },
     company: { name: lead.company, size: '—', location: '—', website: '', sector: '—', funding: '—',
@@ -230,7 +230,7 @@ function buildDetail(lead: Lead): LeadDetail {
     connectionDegree: seed % 2 === 0 ? '2e degré' : '1er degré',
     premium: lead.score > 75,
     openProfile: seed % 3 === 0,
-    linkedinUrl: `linkedin.com/in/${lead.firstName.toLowerCase()}-${lead.lastName.toLowerCase()}`,
+    linkedinUrl: lead.linkedinUrl || '',
     scoring: {
       fit,
       intent,

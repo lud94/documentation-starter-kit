@@ -337,10 +337,12 @@ export default function LeadDetailPage() {
                 <svg className="w-4 h-4 text-gray-300 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
                 {lead.phone ? <a href={`tel:${lead.phone}`} className="text-indigo-500 hover:underline">{lead.phone}</a> : <span className="text-gray-300 italic">Téléphone à enrichir</span>}
               </div>
-              {/* LinkedIn */}
+              {/* LinkedIn — uniquement si une vraie URL existe */}
               <div className="flex items-center gap-2 text-sm">
                 <svg className="w-4 h-4 text-gray-300 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M19 3a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h14zM8 17v-7H6v7h2zM7 8a1 1 0 100-2 1 1 0 000 2zm11 9v-4c0-2-1-3-2.5-3S13 11 13 12v5h2v-4c0-.5.5-1 1-1s1 .5 1 1v4h1z" /></svg>
-                <a href={`https://${d.linkedinUrl}`} target="_blank" rel="noreferrer" className="text-indigo-500 hover:underline break-all">{d.linkedinUrl}</a>
+                {d.linkedinUrl
+                  ? <a href={d.linkedinUrl.startsWith('http') ? d.linkedinUrl : `https://${d.linkedinUrl}`} target="_blank" rel="noreferrer" className="text-indigo-500 hover:underline break-all">{d.linkedinUrl.replace(/^https?:\/\//, '')}</a>
+                  : <span className="text-gray-300 italic">LinkedIn à renseigner</span>}
               </div>
             </div>
           </div>
@@ -505,7 +507,7 @@ export default function LeadDetailPage() {
 
 ## Destinataire
 - Nom + titre : ${lead.firstName} ${lead.lastName}, ${lead.title} ${lead.company}
-- LinkedIn URL : https://${d.linkedinUrl}
+- LinkedIn URL : ${d.linkedinUrl ? (d.linkedinUrl.startsWith('http') ? d.linkedinUrl : 'https://' + d.linkedinUrl) : 'non renseignée'}
 - Profil de lecture : ${dossier.canalRationale}
 
 ## Angle du message
