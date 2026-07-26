@@ -67,6 +67,35 @@ export function buildSearchUrl(q: SourcingQuery): string {
   return `https://recherche-entreprises.api.gouv.fr/search?${params.toString()}`
 }
 
+// Vérifie une entreprise par son NOM → SIREN + statut actif + DIRIGEANT.
+// Source officielle gratuite (data.gouv) : ni token Pappers, ni scraping.
+export async function lookupByName(
+  name: string,
+): Promise<{ found: boolean; siren?: string; name?: string; dirigeant?: string; active?: boolean; city?: string; naf?: string }> {
+  const n = (name || '').trim()
+  if (n.length < 2) return { found: false }
+  const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(n)}&page=1&per_page=1`
+  try {
+    const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
+    if (!res.ok) return { found: false }
+    const data = await res.json()
+    const r = (data.results || [])[0]
+    if (!r) return { found: false }
+    const dir = (r.dirigeants || []).find((d: any) => d && d.nom)
+    return {
+      found: true,
+      siren: String(r.siren),
+      name: r.nom_complet || r.nom_raison_sociale || n,
+      dirigeant: dir ? `${String(dir.prenoms || '').split(' ')[0]} ${dir.nom}`.trim() : undefined,
+      active: r.etat_administratif ? r.etat_administratif === 'A' : undefined,
+      city: r.siege?.libelle_commune || '',
+      naf: r.activite_principale || '',
+    }
+  } catch {
+    return { found: false }
+  }
+}
+
 // Réconcilie un nom d'entreprise (issu d'un signal) sur un SIREN réel.
 // Sert à vérifier qu'une entreprise citée par l'agent existe vraiment.
 export async function reconcileByName(

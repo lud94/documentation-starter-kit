@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { getKey, hydrateKeystore } from '../../../lib/prospector/keystore'
 import { upsertLead } from '../../../lib/supabase/leads'
+import { lookupByName } from '../../../lib/prospector/datagouv'
 import type { Lead } from '../../../types/prospector'
 
 // Point d'entrée pour l'extension navigateur (Jarvis web).
@@ -34,6 +35,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // On ne renseigne linkedinUrl que si l'URL est vraiment un profil LinkedIn.
     linkedinUrl: /linkedin\.com\/in\//i.test(String(body?.url || '')) ? String(body.url).trim() : undefined,
   }
+
+  // Vérification entreprise via data.gouv (gratuit, officiel) AVANT enregistrement.
+  const companyName = lead.company && lead.company !== '—' ? lead.company : ''
+  if (companyName) {
+    try {
+      const v = await lookupByName(companyName)
+      if (v.found) {
+        lead.company = v.name || lead.company
+        lead.siren = v.siren
+        lead.active = v.active
+        // Si aucun contact nommé, on rattache le dirigeant officiel comme point de contact.
+        const noPerson = !lead.firstName || lead.firstName === 'Prénom' || lead.firstName === lead.company
+        if (noPerson && v.dirigeant) {
+          const [fn, ...rest] = v.dirigeant.split(' ')
+          lead.firstName = fn; lead.lastName = rest.join(' '); if (lead.title === 'À qualifier') lead.title = 'Dirigeant'
+        }
+      }
+    } catch { /* vérif best-effort */ }
+  }
+
   const ok = await upsertLead(lead, 'admin')
   res.status(ok ? 200 : 502).json({ ok, id: lead.id })
 }

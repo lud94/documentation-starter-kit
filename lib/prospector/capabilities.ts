@@ -299,6 +299,22 @@ export async function deleteLead(id: string): Promise<void> {
   try { await fetch('/api/leads', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) }) } catch { /* mémoire */ }
 }
 
+// Vérifie l'entreprise du lead via data.gouv → SIREN + actif + dirigeant (gratuit, sans token).
+export async function verifyLeadCompany(id: string): Promise<{ found: boolean; active?: boolean; dirigeant?: string } | undefined> {
+  const l = LEADS[id]
+  if (!l || !l.company || l.company === '—') return { found: false }
+  try {
+    const v = await fetch(`/api/company/verify?name=${encodeURIComponent(l.company)}`).then((r) => r.json())
+    if (v.found) {
+      l.company = v.name || l.company; l.siren = v.siren; l.active = v.active
+      const noPerson = !l.firstName || l.firstName === 'Prénom' || l.firstName === l.company
+      if (noPerson && v.dirigeant) { const [fn, ...rest] = v.dirigeant.split(' '); l.firstName = fn; l.lastName = rest.join(' '); if (l.title === 'À qualifier') l.title = 'Dirigeant' }
+      await persistLead(l)
+    }
+    return { found: !!v.found, active: v.active, dirigeant: v.dirigeant }
+  } catch { return { found: false } }
+}
+
 // Met à jour les champs éditables d'un lead (nom, titre, entreprise, email…).
 export async function updateLead(id: string, patch: Partial<Lead>): Promise<Lead | undefined> {
   const l = LEADS[id]

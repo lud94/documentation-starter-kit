@@ -53,6 +53,8 @@ export interface Lead {
   signal?: string       // signal détecté (ex: "recrute un Head of Sales")
   icebreaker?: string   // accroche prête, issue de la recherche par signal
   linkedinUrl?: string  // profil LinkedIn (ex: ajouté via l'extension)
+  siren?: string        // vérifié via data.gouv
+  active?: boolean      // entreprise active (etat_administratif)
 }
 
 export interface Action {

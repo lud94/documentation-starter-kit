@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, verifyLeadCompany } from '../../lib/prospector/capabilities'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
@@ -86,6 +86,16 @@ export default function LeadDetailPage() {
   useEffect(() => { getSequences().then(setSequences) }, [])
   useEffect(() => { if (typeof id === 'string') getLeadThread(id).then(setThread) }, [id])
 
+  const [verifying, setVerifying] = useState(false)
+  const [verifyMsg, setVerifyMsg] = useState<string | null>(null)
+  const verifyCompany = async () => {
+    if (typeof id !== 'string') return
+    setVerifying(true); setVerifyMsg(null)
+    const r = await verifyLeadCompany(id)
+    if (r?.found) { setVerifyMsg(r.dirigeant ? `Dirigeant : ${r.dirigeant}` : 'Vérifiée'); reload() }
+    else setVerifyMsg('Entreprise introuvable sur data.gouv')
+    setVerifying(false)
+  }
   const [reminderMsg, setReminderMsg] = useState<string | null>(null)
   const planReminder = async () => {
     if (!d) return
@@ -137,7 +147,13 @@ export default function LeadDetailPage() {
               <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${BAND_STYLE[scoring.band]}`}>{scoring.band === 'HOT' ? 'Chaud 🔥' : scoring.band === 'WARM' ? 'Tiède' : 'Froid'}</span>
               <span className="text-xs font-medium px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: stageMeta.color }}>{stageMeta.label}</span>
             </div>
-            <p className="text-sm text-gray-500 mt-1">{d.headline}</p>
+            <p className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
+              {d.headline}
+              {lead.siren
+                ? <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${lead.active === false ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}`}>{lead.active === false ? '⚠ radiée' : '✓ vérifiée'} · SIREN {lead.siren}</span>
+                : <button onClick={verifyCompany} disabled={verifying} className="text-[10px] font-semibold px-2 py-0.5 rounded-full border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors">{verifying ? 'Vérif…' : 'Vérifier l\'entreprise'}</button>}
+              {verifyMsg && <span className="text-[10px] text-emerald-600">{verifyMsg}</span>}
+            </p>
             <div className="flex items-center gap-1.5 mt-2 flex-wrap">
               <span className="text-xs text-gray-400 bg-gray-50 border border-gray-100 px-2 py-0.5 rounded-full">{d.connectionDegree}</span>
               {d.tags.map((t) => (
