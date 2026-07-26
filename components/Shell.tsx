@@ -64,6 +64,21 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [notifs, setNotifs] = useState<Notification[]>([])
   const [notifOpen, setNotifOpen] = useState(false)
   const now = useClock()
+
+  // Sélecteur d'espace
+  const [wsOpen, setWsOpen] = useState(false)
+  const [wsCurrent, setWsCurrent] = useState('admin')
+  const [wsCanSwitch, setWsCanSwitch] = useState(false)
+  const [wsOptions, setWsOptions] = useState<{ id: string; name: string }[]>([])
+  const wsCurrentName = wsOptions.find((o) => o.id === wsCurrent)?.name || null
+  useEffect(() => {
+    fetch('/api/workspaces/active').then((r) => r.json()).then((d) => { setWsCurrent(d.current || 'admin'); setWsCanSwitch(!!d.canSwitch); setWsOptions(d.options || []) }).catch(() => {})
+  }, [])
+  const switchWs = async (id: string) => {
+    setWsOpen(false)
+    await fetch('/api/workspaces/active', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ws: id }) })
+    window.location.href = '/pipeline' // recharge dans le nouvel espace
+  }
   useEffect(() => {
     fetch('/api/auth/me').then((r) => r.json()).then((d) => { setEmail(d.email); setRole(d.role || 'admin'); setPerms(d.permissions || null); setWsName(d.workspaceName || null) }).catch(() => {})
   }, [])
@@ -92,16 +107,31 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             <span className="font-bold text-gray-900 text-base">Prospector</span>
           </Link>
 
-          {/* Workspace switcher (inerte) */}
-          <button className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-gray-50 border border-gray-100 text-sm text-gray-700 hover:bg-gray-100 transition-colors">
-            <span className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-md gradient-brand text-white text-[10px] font-bold flex items-center justify-center">A</span>
-              Client : Acme
-            </span>
-            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l4-4 4 4M8 15l4 4 4-4" />
-            </svg>
-          </button>
+          {/* Sélecteur d'espace */}
+          <div className="relative">
+            <button onClick={() => wsCanSwitch && setWsOpen((v) => !v)} className={`w-full flex items-center justify-between px-3 py-2 rounded-xl bg-gray-50 border border-gray-100 text-sm text-gray-700 transition-colors ${wsCanSwitch ? 'hover:bg-gray-100' : 'cursor-default'}`}>
+              <span className="flex items-center gap-2 min-w-0">
+                <span className="w-5 h-5 rounded-md gradient-brand text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0">{(wsCurrentName || 'M')[0].toUpperCase()}</span>
+                <span className="truncate">{wsCurrentName || 'Mon espace'}</span>
+              </span>
+              {wsCanSwitch && <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l4-4 4 4M8 15l4 4 4-4" /></svg>}
+            </button>
+            {wsOpen && wsCanSwitch && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setWsOpen(false)} />
+                <div className="absolute left-0 right-0 mt-1 card p-1.5 z-40 max-h-72 overflow-y-auto">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase px-2 py-1">Basculer d'espace</p>
+                  {wsOptions.map((o) => (
+                    <button key={o.id} onClick={() => switchWs(o.id)} className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-left transition-colors ${o.id === wsCurrent ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-gray-700 hover:bg-gray-50'}`}>
+                      <span className="w-5 h-5 rounded-md gradient-brand text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0">{o.name[0].toUpperCase()}</span>
+                      <span className="truncate">{o.name}</span>
+                      {o.id === wsCurrent && <svg className="w-3.5 h-3.5 ml-auto flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         {/* Nav */}

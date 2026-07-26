@@ -1,34 +1,25 @@
-// Persistance des leads, cloisonnée par workspace.
+// Persistance des leads, cloisonnée par espace (workspace).
 // Table `prospector_leads (id text pk, data jsonb, workspace_id text, created_at timestamptz)`.
-// Le workspace est injecté par le serveur depuis la session (jamais par le client).
+// Règle : chacun opère dans UN espace. 'admin' = l'espace propre de l'admin.
+// Le workspace est déterminé par le serveur (session + espace actif), jamais par le client.
 import type { Lead } from '../../types/prospector'
 import { supabase } from './client'
 
 const TABLE = 'prospector_leads'
 const g = globalThis as any
-// mémoire : id → { lead, ws }
-const mem: Map<string, { lead: Lead; ws: string }> = g.__prospectorLeads2 || (g.__prospectorLeads2 = new Map())
+const mem: Map<string, { lead: Lead; ws: string }> = g.__prospectorLeads3 || (g.__prospectorLeads3 = new Map())
 
-export interface Scope { isAdmin: boolean; ws: string } // ws = workspace du client, ou 'admin'
-
-// L'admin voit tout ; un client ne voit que son workspace.
-export async function listLeads(scope: Scope): Promise<Lead[]> {
+export async function listLeads(ws: string): Promise<Lead[]> {
   const sb = supabase()
-  if (!sb) {
-    const rows = Array.from(mem.values())
-    return (scope.isAdmin ? rows : rows.filter((r) => r.ws === scope.ws)).map((r) => r.lead)
-  }
+  if (!sb) return Array.from(mem.values()).filter((r) => r.ws === ws).map((r) => r.lead)
   try {
-    let q = sb.from(TABLE).select('data, workspace_id').order('created_at', { ascending: false })
-    if (!scope.isAdmin) q = q.eq('workspace_id', scope.ws)
-    const { data, error } = await q
+    const { data, error } = await sb.from(TABLE).select('data').eq('workspace_id', ws).order('created_at', { ascending: false })
     if (error || !data) return []
     return data.map((r: any) => r.data as Lead)
   } catch { return [] }
 }
 
-export async function upsertLead(lead: Lead, scope: Scope): Promise<boolean> {
-  const ws = scope.isAdmin ? 'admin' : scope.ws
+export async function upsertLead(lead: Lead, ws: string): Promise<boolean> {
   const sb = supabase()
   if (!sb) { mem.set(lead.id, { lead, ws }); return true }
   try {
@@ -37,18 +28,12 @@ export async function upsertLead(lead: Lead, scope: Scope): Promise<boolean> {
   } catch { return false }
 }
 
-// Suppression scoped : un client ne peut supprimer qu'un lead de son workspace.
-export async function deleteLead(id: string, scope: Scope): Promise<boolean> {
+// Suppression cloisonnée : on ne supprime que dans l'espace courant.
+export async function deleteLead(id: string, ws: string): Promise<boolean> {
   const sb = supabase()
-  if (!sb) {
-    const row = mem.get(id)
-    if (row && !scope.isAdmin && row.ws !== scope.ws) return false
-    mem.delete(id); return true
-  }
+  if (!sb) { const r = mem.get(id); if (r && r.ws !== ws) return false; mem.delete(id); return true }
   try {
-    let q = sb.from(TABLE).delete().eq('id', id)
-    if (!scope.isAdmin) q = q.eq('workspace_id', scope.ws)
-    const { error } = await q
+    const { error } = await sb.from(TABLE).delete().eq('id', id).eq('workspace_id', ws)
     return !error
   } catch { return false }
 }
