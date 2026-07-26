@@ -8,6 +8,7 @@ const CHECKS: { table: string; cols: string }[] = [
   { table: 'prospector_workspaces', cols: 'id,client_email,status,permissions,client_password_hash' },
   { table: 'prospector_pappers_cache', cols: 'siren' },
   { table: 'prospector_usage', cols: 'key' },
+  { table: 'prospector_store', cols: 'kind,id,workspace_id' },
 ]
 
 export default async function handler(_req: NextApiRequest, res: NextApiResponse) {

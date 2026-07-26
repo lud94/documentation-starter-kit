@@ -23,7 +23,9 @@ alter table prospector_workspaces add column if not exists permissions jsonb;
 alter table prospector_workspaces add column if not exists client_password_hash text;
 create table if not exists prospector_pappers_cache (siren text primary key, data jsonb, created_at timestamptz default now());
 create table if not exists prospector_usage (key text primary key, count int default 0, updated_at timestamptz default now());
+create table if not exists prospector_store (kind text not null, id text not null, workspace_id text not null, data jsonb, updated_at timestamptz default now(), primary key (kind, id, workspace_id));
 alter table prospector_settings enable row level security;
+alter table prospector_store enable row level security;
 alter table prospector_leads enable row level security;
 alter table prospector_workspaces enable row level security;
 alter table prospector_pappers_cache enable row level security;
@@ -45,6 +47,7 @@ export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('usage')
   const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [usagePeriod, setUsagePeriod] = useState<Period>('month')
+  const [pappersCalls, setPappersCalls] = useState<number | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [diags, setDiags] = useState<Diagnostic[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
@@ -74,6 +77,7 @@ export default function AdminPage() {
     getChannels().then(setChannels)
   }, [])
   useEffect(() => { getUsage(usagePeriod).then(setUsage) }, [usagePeriod])
+  useEffect(() => { fetch('/api/config/usage').then((r) => r.json()).then((d) => setPappersCalls(d.pappersCalls ?? null)).catch(() => {}) }, [])
 
   const TABS: { key: Tab; label: string }[] = [
     { key: 'usage', label: 'Usage & coûts' },
@@ -124,7 +128,14 @@ export default function AdminPage() {
               </div>
             ))}
           </div>
-          <p className="text-xs text-gray-400 mb-4">{fmt(usage.cached)} tokens lus depuis le cache (prompt caching).</p>
+          <p className="text-xs text-gray-400 mb-3">{fmt(usage.cached)} tokens lus depuis le cache (prompt caching).</p>
+          {pappersCalls !== null && (
+            <div className="card p-4 mb-4 flex items-center gap-2 text-sm">
+              <span className="w-2 h-2 rounded-full bg-blue-500" />
+              <span className="text-gray-600">Conso Pappers <span className="text-gray-400">— appels réels facturés, hors cache</span></span>
+              <span className="ml-auto font-bold text-gray-800">{pappersCalls}</span>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="card p-5">
@@ -306,9 +317,8 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
       else setDiag(`URL: ${d.urlPresent ? 'ok' : 'MANQUANTE'} · Clé: ${d.keyPresent ? 'ok' : 'MANQUANTE'} · ${d.error || 'échec inconnu'}`)
     } catch (e: any) { setDiag('Erreur réseau : ' + (e.message || '')) }
   }
-  const [pappersCalls, setPappersCalls] = useState<number | null>(null)
   const loadStatus = () => fetch('/api/config/status').then((r) => r.json()).then((d) => { setKeys(d.keys || []); setSigMode(d.signalsMode || ''); setPersistence(d.persistence || '') }).catch(() => {})
-  useEffect(() => { loadStatus(); fetch('/api/config/usage').then((r) => r.json()).then((d) => setPappersCalls(d.pappersCalls ?? null)).catch(() => {}) }, [])
+  useEffect(() => { loadStatus() }, [])
 
   // ── MFA ──
   const [mfaOn, setMfaOn] = useState(false)
@@ -446,13 +456,6 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
           </button>
           {keySaved && <span className="text-xs text-emerald-600">✓ Clés enregistrées</span>}
         </div>
-        {pappersCalls !== null && (
-          <div className="mt-3 flex items-center gap-2 text-xs bg-gray-50 rounded-lg px-3 py-2">
-            <span className="w-2 h-2 rounded-full bg-blue-500" />
-            <span className="text-gray-600">Conso Pappers (appels réels facturés, hors cache)</span>
-            <span className="ml-auto font-bold text-gray-800">{pappersCalls}</span>
-          </div>
-        )}
         {diag && <p className="text-[11px] text-gray-600 mt-3 font-mono bg-gray-50 rounded-lg p-2 break-words">{diag}</p>}
         {dbRows && (
           <div className="mt-3 bg-gray-50 rounded-lg p-3">

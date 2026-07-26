@@ -114,6 +114,17 @@ export async function getLeads(): Promise<Lead[]> {
   return Object.values(LEADS).map((l) => ({ ...l, persona: personaFromTitle(l.title) }))
 }
 
+// Magasin générique cloisonné (séquences, tâches, conversations) via /api/store.
+async function storeList<T = any>(kind: string): Promise<T[]> {
+  try { const d = await fetch(`/api/store?kind=${kind}`).then((r) => r.json()); return d.items || [] } catch { return [] }
+}
+async function storeSave(kind: string, item: any) {
+  try { await fetch('/api/store', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind, item }) }) } catch { /* mémoire */ }
+}
+async function storeDelete(kind: string, id: string) {
+  try { await fetch('/api/store', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind, id }) }) } catch { /* mémoire */ }
+}
+
 // Enrichissement (mock — au câblage : Kaspr pour email/tél).
 export function enrichEmails(ids?: string[]) {
   const targets = ids ? ids.map((i) => LEADS[i]).filter(Boolean) : Object.values(LEADS)
@@ -329,30 +340,33 @@ let SEQUENCES: Sequence[] = []
 
 let seqCounter = 100
 
-export function getSequences(): Promise<Sequence[]> {
-  return delay(SEQUENCES)
+export async function getSequences(): Promise<Sequence[]> {
+  SEQUENCES = await storeList<Sequence>('sequence')
+  return SEQUENCES
 }
 
 export function nextSequenceId(): string {
-  return 's' + (++seqCounter)
+  return 's_' + Math.random().toString(36).slice(2, 9)
 }
 
-export function saveSequence(seq: Sequence) {
+export async function saveSequence(seq: Sequence) {
   const i = SEQUENCES.findIndex((s) => s.id === seq.id)
   if (i >= 0) SEQUENCES[i] = seq
   else SEQUENCES = [...SEQUENCES, seq]
-  return delay(seq)
+  await storeSave('sequence', seq)
+  return seq
 }
 
-export function deleteSequence(id: string) {
+export async function deleteSequence(id: string) {
   SEQUENCES = SEQUENCES.filter((s) => s.id !== id)
-  return delay(true)
+  await storeDelete('sequence', id)
+  return true
 }
 
-export function enrollLeadsInSequence(id: string, count: number) {
+export async function enrollLeadsInSequence(id: string, count: number) {
   const s = SEQUENCES.find((x) => x.id === id)
-  if (s) s.enrolled += count
-  return delay(s)
+  if (s) { s.enrolled += count; await storeSave('sequence', s) }
+  return s
 }
 
 export interface ChannelConfig {
@@ -378,18 +392,23 @@ export interface Channel {
 
 // Fil de conversation unifié (tous canaux) rattaché à un lead.
 export interface ThreadMessage { id: string; from: 'them' | 'us'; text: string; time: string; channel: 'linkedin' | 'email' | 'whatsapp' }
+// Conversation persistée par lead : un item store kind=thread, id=leadId, data={ id, messages }.
+interface ThreadDoc { id: string; messages: ThreadMessage[] }
 const THREADS: Record<string, ThreadMessage[]> = {}
 let threadSeq = 100
 
-export function getLeadThread(leadId: string): Promise<ThreadMessage[]> {
-  return delay(THREADS[leadId] ? [...THREADS[leadId]] : [])
+export async function getLeadThread(leadId: string): Promise<ThreadMessage[]> {
+  const docs = await storeList<ThreadDoc>('thread')
+  docs.forEach((d) => { THREADS[d.id] = d.messages || [] })
+  return THREADS[leadId] ? [...THREADS[leadId]] : []
 }
 
-// Envoi d'un message sur un canal (mock → prêt pour Unipile).
-export function sendMessage(leadId: string, channel: ThreadMessage['channel'], text: string): Promise<ThreadMessage[]> {
+// Envoi d'un message sur un canal (mock → prêt pour Unipile). Persiste le fil.
+export async function sendMessage(leadId: string, channel: ThreadMessage['channel'], text: string): Promise<ThreadMessage[]> {
   if (!THREADS[leadId]) THREADS[leadId] = []
   THREADS[leadId].push({ id: `m${++threadSeq}`, from: 'us', text: text.trim(), time: nextSlotLabel(), channel })
-  return delay([...THREADS[leadId]])
+  await storeSave('thread', { id: leadId, messages: THREADS[leadId] })
+  return [...THREADS[leadId]]
 }
 
 const CHANNELS: Channel[] = [
@@ -565,21 +584,25 @@ export function markNotificationsRead(): Promise<Notification[]> { NOTIFS.forEac
 
 // ── Planificateur de tâches / rappels ──
 export interface Task { id: string; title: string; due: string; done: boolean; leadId?: string; leadName?: string; channel?: 'linkedin' | 'email' | 'whatsapp' | null }
-const TASKS: Task[] = []
-let taskSeq = 100
-export function getTasks(): Promise<Task[]> { return delay([...TASKS]) }
-export function addTask(input: { title: string; due: string; leadId?: string; leadName?: string; channel?: Task['channel'] }): Promise<Task> {
-  const t: Task = { id: `t${++taskSeq}`, title: input.title.trim() || 'Tâche', due: input.due || "Aujourd'hui", done: false, leadId: input.leadId, leadName: input.leadName, channel: input.channel ?? null }
+let TASKS: Task[] = []
+export async function getTasks(): Promise<Task[]> {
+  TASKS = await storeList<Task>('task')
+  return [...TASKS]
+}
+export async function addTask(input: { title: string; due: string; leadId?: string; leadName?: string; channel?: Task['channel'] }): Promise<Task> {
+  const t: Task = { id: `tk_${Math.random().toString(36).slice(2, 9)}`, title: input.title.trim() || 'Tâche', due: input.due || "Aujourd'hui", done: false, leadId: input.leadId, leadName: input.leadName, channel: input.channel ?? null }
   TASKS.unshift(t)
-  return delay(t)
+  await storeSave('task', t)
+  return t
 }
-export function toggleTask(id: string): Promise<Task[]> {
-  const t = TASKS.find((x) => x.id === id); if (t) t.done = !t.done
-  return delay([...TASKS])
+export async function toggleTask(id: string): Promise<Task[]> {
+  const t = TASKS.find((x) => x.id === id); if (t) { t.done = !t.done; await storeSave('task', t) }
+  return [...TASKS]
 }
-export function deleteTask(id: string): Promise<Task[]> {
+export async function deleteTask(id: string): Promise<Task[]> {
   const i = TASKS.findIndex((x) => x.id === id); if (i >= 0) TASKS.splice(i, 1)
-  return delay([...TASKS])
+  await storeDelete('task', id)
+  return [...TASKS]
 }
 
 // Logs IA — observabilité par appel LLM (provider, modèle, tokens, coût, prompt).

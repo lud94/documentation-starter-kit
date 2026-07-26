@@ -48,6 +48,17 @@ create table if not exists prospector_leads (
 alter table prospector_leads add column if not exists workspace_id text;
 alter table prospector_leads enable row level security;
 
+-- 6) Magasin générique cloisonné (séquences, tâches, conversations)
+create table if not exists prospector_store (
+  kind         text not null,
+  id           text not null,
+  workspace_id text not null,
+  data         jsonb,
+  updated_at   timestamptz not null default now(),
+  primary key (kind, id, workspace_id)
+);
+alter table prospector_store enable row level security;
+
 -- Sécurité : RLS activé, aucune policy publique.
 -- La service_role key (côté serveur) bypasse la RLS ; le navigateur n'accède jamais à ces tables.
 alter table prospector_settings       enable row level security;
