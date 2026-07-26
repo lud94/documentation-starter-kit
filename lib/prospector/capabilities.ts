@@ -185,6 +185,20 @@ export async function promoteDirigeant(accountId: string): Promise<Lead | undefi
   return lead
 }
 
+// Retrouve le site web d'un compte via l'agent web (Exa→Claude) et le persiste.
+// Renvoie { website, mode }. website undefined si aucune preuve (jamais deviné).
+export async function enrichCompanyWebsite(accountId: string): Promise<{ website?: string; mode: string }> {
+  const acc = LEADS[accountId]
+  if (!acc) return { mode: 'none' }
+  const params = new URLSearchParams({ company: acc.company })
+  if (acc.city) params.set('city', acc.city)
+  try {
+    const r = await fetch(`/api/enrich/company-web?${params.toString()}`).then((x) => x.json())
+    if (r.website) { acc.website = r.website; await persistLead(acc) }
+    return { website: r.website, mode: r.mode }
+  } catch { return { mode: 'error' } }
+}
+
 // Charge la fiche compte détaillée (dirigeants, CA, effectif) depuis data.gouv.
 export interface AccountDetail { found: boolean; dirigeants: { name: string; role?: string; type: string }[]; finances?: { year: string; ca?: number; resultat?: number }; effectif?: string; city?: string; address?: string; website?: string; naf?: string; active?: boolean }
 export async function getAccountDetail(siren?: string): Promise<AccountDetail | null> {

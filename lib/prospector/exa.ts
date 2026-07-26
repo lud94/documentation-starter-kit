@@ -43,6 +43,21 @@ export async function searchExa(thesis: string, numResults = 12): Promise<ExaDoc
   }))
 }
 
+// Recherche web GÉNÉRIQUE (pas restreinte aux domaines signaux) — sert à
+// identifier une entité (personne vs entreprise) et à retrouver un site officiel.
+export async function searchExaWeb(query: string, numResults = 6): Promise<ExaDoc[]> {
+  const key = getKey('EXA_API_KEY')
+  if (!key || !query) return []
+  const res = await fetch('https://api.exa.ai/search', {
+    method: 'POST',
+    headers: { 'x-api-key': key, accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({ query, type: 'auto', numResults, contents: { text: { maxCharacters: 1000 } } }),
+  })
+  if (!res.ok) throw new Error(`Exa ${res.status} — ${(await res.text()).slice(0, 150)}`)
+  const data = await res.json()
+  return (data.results || []).map((r: any): ExaDoc => ({ title: r.title || '', url: r.url || '', text: r.text || '', publishedDate: r.publishedDate }))
+}
+
 // Date ISO à J-`days` (l'app tourne côté serveur Next : Date est disponible).
 function recentIso(days: number): string {
   return new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10)

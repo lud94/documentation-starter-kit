@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, verifyLeadCompany, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, verifyLeadCompany, enrichCompanyWebsite, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 
@@ -111,6 +111,11 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
     setBusy(true); const r = await verifyLeadCompany(account.id); setBusy(false); setDetail(null); await loadDetail()
     flash(r?.found ? 'Entreprise vérifiée (data.gouv).' : 'Entreprise introuvable sur data.gouv — précise le nom.')
   }
+  const getWebsite = async () => {
+    if (!account) return
+    setBusy(true); const r = await enrichCompanyWebsite(account.id); setBusy(false)
+    flash(r.website ? `Site trouvé : ${r.website}` : (r.mode === 'heuristic' ? 'Agent web non configuré — pose ANTHROPIC_API_KEY (+ EXA_API_KEY).' : 'Aucun site web prouvé — rien n\'a été inventé.'))
+  }
   const addContact = async () => {
     if (!account || (!cf.firstName.trim() && !cf.lastName.trim())) return
     setBusy(true); await addAccountContact(account.id, cf); setBusy(false)
@@ -171,6 +176,7 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                 {meta?.siren ? 'Revérifier l\'entreprise' : 'Vérifier l\'entreprise'}
               </button>
+              {!meta?.website && <button onClick={getWebsite} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">🌐 Trouver le site (agent web)</button>}
               {meta?.dirigeant && !hasDirigeantContact && <button onClick={promote} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">+ Dirigeant en contact</button>}
               <button onClick={() => setAddOpen((v) => !v)} className="text-xs font-semibold gradient-brand text-white px-2.5 py-1.5 rounded-lg">+ Renseigner un contact / persona</button>
             </div>

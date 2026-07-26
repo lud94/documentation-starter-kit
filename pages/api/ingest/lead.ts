@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { getKey, hydrateKeystore } from '../../../lib/prospector/keystore'
 import { upsertLead } from '../../../lib/supabase/leads'
 import { lookupByName } from '../../../lib/prospector/datagouv'
+import { identifyLead } from '../../../lib/prospector/identify'
 import type { Lead } from '../../../types/prospector'
 
 // Point d'entrée pour l'extension navigateur (Jarvis web).
@@ -24,21 +25,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const name = String(body?.name || '').trim()
-  const isProfile = /linkedin\.com\/in\//i.test(String(body?.url || ''))
-  // Une personne n'est retenue QUE si un vrai nom est fourni (profil LinkedIn / saisie).
-  // Sinon (page société, Google…) → COMPTE : aucun nom fabriqué.
-  const hasPerson = name.length > 1
-  const [firstName, ...rest] = name.split(' ')
+  const url = String(body?.url || '')
+  const isProfile = /linkedin\.com\/in\//i.test(url)
+
+  // Classification personne (contact) vs entreprise (compte) : URL → agent web
+  // (Exa→Claude si clés) → heuristique + data.gouv. Aucune donnée devinée.
+  const id = await identifyLead({ name, title: String(body?.title || ''), company: String(body?.company || ''), url })
+  const isPerson = id.kind === 'person'
+
   const lead: Lead = {
     id: `ld_${Math.random().toString(36).slice(2, 10)}`,
-    kind: hasPerson ? 'contact' : 'account',
-    firstName: hasPerson ? firstName : '', lastName: hasPerson ? rest.join(' ') : '',
-    title: hasPerson ? (String(body?.title || '').trim() || 'À qualifier') : '',
-    company: String(body?.company || '').trim() || (hasPerson ? '—' : name) || '—',
+    kind: isPerson ? 'contact' : 'account',
+    firstName: isPerson ? (id.firstName || name.split(' ')[0] || '') : '',
+    lastName: isPerson ? (id.lastName || name.split(' ').slice(1).join(' ')) : '',
+    title: isPerson ? (id.title || String(body?.title || '').trim() || 'À qualifier') : '',
+    company: (id.company || String(body?.company || '').trim() || (isPerson ? '—' : name) || '—'),
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
     email: body?.email || null, phone: null,
+    website: id.website || undefined,
     // On ne renseigne linkedinUrl que si l'URL est vraiment un profil LinkedIn.
-    linkedinUrl: isProfile ? String(body.url).trim() : undefined,
+    linkedinUrl: isProfile ? url.trim() : undefined,
   }
 
   // Vérification entreprise via data.gouv (gratuit, officiel) AVANT enregistrement.
@@ -54,7 +60,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lead.city = v.city
         lead.dirigeant = v.dirigeant
         lead.effectif = v.effectif
-        lead.website = v.website
+        if (!lead.website && v.website) lead.website = v.website
         // On NE fabrique PAS de personne : le dirigeant reste une métadonnée du compte.
       }
     } catch { /* vérif best-effort */ }
