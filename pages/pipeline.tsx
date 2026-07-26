@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, enrollAccount, PERSONAS } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
@@ -85,10 +85,113 @@ function LeadCard({ lead }: { lead: Lead }) {
   )
 }
 
+// ── Vue COMPTES : une ligne = une entreprise, dépliable vers ses contacts ──────
+// « Sélectionner tout le compte » puis « Enrôler » = N actions INDIVIDUELLES
+// (une invitation par personne), jamais un envoi groupé.
+function AccountCard({ company, contacts, onEnrolled }: { company: string; contacts: Lead[]; onEnrolled: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [sel, setSel] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  // Métadonnées entreprise : on prend le contact qui porte les infos data.gouv.
+  const meta = contacts.find((c) => c.siren) || contacts[0]
+  const enrollable = contacts.filter((c) => c.stage === 'to_invite' || c.stage === 'invited' || c.stage === 'connected')
+  const allSel = enrollable.length > 0 && enrollable.every((c) => sel.has(c.id))
+  const toggleAll = () => setSel(allSel ? new Set() : new Set(enrollable.map((c) => c.id)))
+  const toggleOne = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const enroll = async () => {
+    const ids = Array.from(sel)
+    if (!ids.length) return
+    setBusy(true)
+    const r = await enrollAccount(ids)
+    setBusy(false); setSel(new Set())
+    setMsg(`${r.enrolled} contact(s) enrôlé(s) individuellement.`)
+    onEnrolled()
+    setTimeout(() => setMsg(null), 3000)
+  }
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex items-center gap-3 p-4">
+        <button onClick={() => setOpen((v) => !v)} className="w-9 h-9 rounded-xl gradient-brand flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
+          {company.slice(0, 2).toUpperCase()}
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-semibold text-gray-900 truncate">{company}</p>
+            {meta?.siren && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${meta.active === false ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}`}>{meta.active === false ? 'Radiée' : 'Active'}</span>}
+            {meta?.siren && <span className="text-[10px] text-gray-400 font-mono">SIREN {meta.siren}</span>}
+          </div>
+          <p className="text-xs text-gray-400 truncate mt-0.5">
+            {[meta?.dirigeant && `Dirigeant : ${meta.dirigeant}`, meta?.city, meta?.effectif && `${meta.effectif} sal.`, meta?.website].filter(Boolean).join(' · ') || 'Infos entreprise à enrichir'}
+          </p>
+        </div>
+        <span className="text-xs font-semibold text-gray-500 bg-gray-100 rounded-full px-2.5 py-1 flex-shrink-0">{contacts.length} contact{contacts.length > 1 ? 's' : ''}</span>
+        <button onClick={() => setOpen((v) => !v)} className="text-gray-400 flex-shrink-0">
+          <svg className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+        </button>
+      </div>
+      {open && (
+        <div className="border-t border-gray-100 bg-gray-50/50 px-4 py-3">
+          {contacts.length === 0 || (contacts.length === 1 && !meta?.firstName) ? (
+            <p className="text-xs text-gray-400 py-2">Aucun contact résolu. Ouvre la fiche → « Personas + séquence (compte) » pour résoudre les personas (Unipile). Rien n'est inventé.</p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-2">
+                <label className="flex items-center gap-2 text-xs font-medium text-gray-600 cursor-pointer">
+                  <span className={`w-4 h-4 rounded border flex items-center justify-center ${allSel ? 'gradient-brand border-transparent' : 'border-gray-300 bg-white'}`}>
+                    {allSel && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                  </span>
+                  <input type="checkbox" checked={allSel} onChange={toggleAll} className="hidden" />
+                  Sélectionner tout le compte {enrollable.length > 0 && `(${enrollable.length} enrôlable${enrollable.length > 1 ? 's' : ''})`}
+                </label>
+                <button onClick={enroll} disabled={busy || sel.size === 0} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-40 transition-opacity">
+                  {busy ? 'Enrôlement…' : `Enrôler la sélection (${sel.size})`}
+                </button>
+              </div>
+              {msg && <p className="text-[11px] text-emerald-600 mb-2">{msg}</p>}
+              <div className="space-y-1.5">
+                {contacts.map((c) => {
+                  const canEnroll = c.stage === 'to_invite' || c.stage === 'invited' || c.stage === 'connected'
+                  const sm = STAGE_META[c.stage]
+                  return (
+                    <div key={c.id} className="flex items-center gap-2.5 bg-white rounded-lg border border-gray-100 px-3 py-2">
+                      <button onClick={() => canEnroll && toggleOne(c.id)} disabled={!canEnroll} className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${sel.has(c.id) ? 'gradient-brand border-transparent' : 'border-gray-300'} ${!canEnroll ? 'opacity-30 cursor-not-allowed' : ''}`}>
+                        {sel.has(c.id) && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                      </button>
+                      <Link href={`/leads/${c.id}`} className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-gray-800 truncate">{c.firstName} {c.lastName}</span>
+                        <span className="block text-xs text-gray-400 truncate">{c.title}{c.persona ? ` · ${c.persona}` : ''}</span>
+                      </Link>
+                      <span className="text-[10px] font-medium px-2 py-0.5 rounded-full text-white flex-shrink-0" style={{ backgroundColor: sm.color }}>{sm.label}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AccountsView({ leads, onEnrolled }: { leads: Lead[]; onEnrolled: () => void }) {
+  const map = new Map<string, Lead[]>()
+  for (const l of leads) { const k = l.company || '—'; if (!map.has(k)) map.set(k, []); map.get(k)!.push(l) }
+  const accounts = Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+  if (accounts.length === 0) return <p className="text-sm text-gray-400 text-center py-12">Aucun compte. Importe des entreprises depuis Sourcing.</p>
+  return (
+    <div className="space-y-3">
+      {accounts.map(([company, contacts]) => <AccountCard key={company} company={company} contacts={contacts} onEnrolled={onEnrolled} />)}
+    </div>
+  )
+}
+
 export default function PipelinePage() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState<'kanban' | 'table'>('kanban')
+  const [mainView, setMainView] = useState<'contacts' | 'comptes'>('contacts')
   const [query, setQuery] = useState('')
   const [statusF, setStatusF] = useState<Set<string>>(new Set())
   const [stageF, setStageF] = useState<Set<string>>(new Set())
@@ -142,10 +245,17 @@ export default function PipelinePage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Pipeline &amp; Leads</h1>
           <p className="text-gray-400 text-sm mt-0.5">
-            {loading ? 'Chargement…' : hasFilter ? `${filtered.length} leads sur ${leads.length}` : `${leads.length} prospects dans votre base`}
+            {loading ? 'Chargement…'
+              : mainView === 'comptes' ? `${new Set(filtered.map((l) => l.company)).size} comptes · ${filtered.length} contacts`
+              : hasFilter ? `${filtered.length} leads sur ${leads.length}` : `${leads.length} prospects dans votre base`}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex bg-gray-100 rounded-xl p-1">
+            {([['contacts', 'Contacts'], ['comptes', 'Comptes']] as const).map(([v, label]) => (
+              <button key={v} onClick={() => setMainView(v)} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${mainView === v ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>{label}</button>
+            ))}
+          </div>
           <button onClick={() => setEnrichOpen(true)} className={btn}>
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
             Enrichir un lot
@@ -176,16 +286,21 @@ export default function PipelinePage() {
           <option value="no_email">Email manquant</option>
           <option value="no_phone">Téléphone manquant</option>
         </select>
-        <div className="flex bg-gray-100 rounded-xl p-1">
-          {(['kanban', 'table'] as const).map((v) => (
-            <button key={v} onClick={() => setView(v)} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${view === v ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>{v === 'kanban' ? 'Kanban' : 'Table'}</button>
-          ))}
-        </div>
+        {mainView === 'contacts' && (
+          <div className="flex bg-gray-100 rounded-xl p-1">
+            {(['kanban', 'table'] as const).map((v) => (
+              <button key={v} onClick={() => setView(v)} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors ${view === v ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>{v === 'kanban' ? 'Kanban' : 'Table'}</button>
+            ))}
+          </div>
+        )}
         {hasFilter && <button onClick={() => { setQuery(''); setStatusF(new Set()); setStageF(new Set()); setPersonaF(new Set()); setEnrichF('all') }} className="text-sm text-gray-400 hover:text-gray-600 flex items-center gap-1"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>Effacer</button>}
       </div>
 
+      {/* Comptes (entreprises) */}
+      {mainView === 'comptes' && <AccountsView leads={filtered} onEnrolled={refresh} />}
+
       {/* Table */}
-      {view === 'table' && (
+      {mainView === 'contacts' && view === 'table' && (
         <div className="card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -223,7 +338,7 @@ export default function PipelinePage() {
       )}
 
       {/* Kanban */}
-      {view === 'kanban' && (
+      {mainView === 'contacts' && view === 'kanban' && (
         <div className="overflow-x-auto pb-4 -mx-6 px-6">
           <div className="flex gap-3 min-w-max">
             {STAGE_ORDER.map((stage) => {

@@ -160,6 +160,22 @@ export function enrollInSequence(id: string) {
   return delay(l)
 }
 
+// Enrôle UN contact et persiste (survit au reload).
+export async function enrollLead(id: string): Promise<Lead | undefined> {
+  const l = LEADS[id]
+  if (!l) return undefined
+  if (l.stage === 'to_invite' || l.stage === 'invited' || l.stage === 'connected') { l.stage = 'in_sequence'; await persistLead(l) }
+  return l
+}
+
+// Enrôle TOUT un compte : fan-out en N actions INDIVIDUELLES (une par personne),
+// jamais un envoi groupé. C'est le raccourci UI « sélectionner le compte ».
+export async function enrollAccount(ids: string[]): Promise<{ enrolled: number }> {
+  let enrolled = 0
+  for (const id of ids) { const l = await enrollLead(id); if (l) enrolled++ }
+  return { enrolled }
+}
+
 const LEAD_TAGS: Record<string, string[]> = {
   l1: ['top-active'], l4: ['founder', 'new-role'], l7: ['top-active', 'warm-intro'],
   l10: ['new-role'], l12: ['founder'], l13: ['top-active'],
