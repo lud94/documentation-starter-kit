@@ -96,6 +96,31 @@ export async function lookupByName(
   }
 }
 
+export interface CompanyMatch { siren: string; name: string; dirigeant?: string; active?: boolean; city: string; naf: string }
+
+// Renvoie plusieurs entreprises candidates pour un nom → l'utilisateur choisit.
+export async function searchCandidates(name: string, n = 6): Promise<CompanyMatch[]> {
+  const q = (name || '').trim()
+  if (q.length < 2) return []
+  const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(q)}&page=1&per_page=${n}`
+  try {
+    const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
+    if (!res.ok) return []
+    const data = await res.json()
+    return (data.results || []).map((r: any): CompanyMatch => {
+      const dir = (r.dirigeants || []).find((d: any) => d && d.nom)
+      return {
+        siren: String(r.siren),
+        name: r.nom_complet || r.nom_raison_sociale || q,
+        dirigeant: dir ? `${String(dir.prenoms || '').split(' ')[0]} ${dir.nom}`.trim() : undefined,
+        active: r.etat_administratif ? r.etat_administratif === 'A' : undefined,
+        city: r.siege?.libelle_commune || '',
+        naf: r.activite_principale || '',
+      }
+    })
+  } catch { return [] }
+}
+
 // Réconcilie un nom d'entreprise (issu d'un signal) sur un SIREN réel.
 // Sert à vérifier qu'une entreprise citée par l'agent existe vraiment.
 export async function reconcileByName(

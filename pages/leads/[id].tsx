@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, verifyLeadCompany } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead } from '../../lib/prospector/capabilities'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
@@ -86,15 +86,28 @@ export default function LeadDetailPage() {
   useEffect(() => { getSequences().then(setSequences) }, [])
   useEffect(() => { if (typeof id === 'string') getLeadThread(id).then(setThread) }, [id])
 
-  const [verifying, setVerifying] = useState(false)
-  const [verifyMsg, setVerifyMsg] = useState<string | null>(null)
-  const verifyCompany = async () => {
+  const [verifyOpen, setVerifyOpen] = useState(false)
+  const [candidates, setCandidates] = useState<any[] | null>(null)
+  const [sirenInput, setSirenInput] = useState('')
+  const openVerify = async () => {
+    if (!d) return
+    setVerifyOpen(true); setCandidates(null); setSirenInput('')
+    const c = await fetch(`/api/company/verify?candidates=1&name=${encodeURIComponent(d.lead.company)}`).then((r) => r.json()).catch(() => ({}))
+    setCandidates(c.candidates || [])
+  }
+  const applyMatch = async (m: any) => {
     if (typeof id !== 'string') return
-    setVerifying(true); setVerifyMsg(null)
-    const r = await verifyLeadCompany(id)
-    if (r?.found) { setVerifyMsg(r.dirigeant ? `Dirigeant : ${r.dirigeant}` : 'Vérifiée'); reload() }
-    else setVerifyMsg('Entreprise introuvable sur data.gouv')
-    setVerifying(false)
+    const patch: any = { company: m.name, siren: m.siren, active: m.active }
+    const noPerson = !d?.lead.firstName || d.lead.firstName === 'Prénom' || d.lead.firstName === d.lead.company
+    if (noPerson && m.dirigeant) { const [fn, ...rest] = m.dirigeant.split(' '); patch.firstName = fn; patch.lastName = rest.join(' '); if (d?.lead.title === 'À qualifier') patch.title = 'Dirigeant' }
+    await updateLead(id, patch); setVerifyOpen(false); reload()
+  }
+  const applySiren = async () => {
+    const s = sirenInput.replace(/\D/g, '')
+    if (s.length !== 9) return
+    const v = await fetch(`/api/company/verify?siren=${s}`).then((r) => r.json())
+    if (v.found) applyMatch({ name: v.name, siren: v.siren, active: v.active, dirigeant: v.dirigeant })
+    else setCandidates([])
   }
   const [reminderMsg, setReminderMsg] = useState<string | null>(null)
   const planReminder = async () => {
@@ -149,10 +162,8 @@ export default function LeadDetailPage() {
             </div>
             <p className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
               {d.headline}
-              {lead.siren
-                ? <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${lead.active === false ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}`}>{lead.active === false ? '⚠ radiée' : '✓ vérifiée'} · SIREN {lead.siren}</span>
-                : <button onClick={verifyCompany} disabled={verifying} className="text-[10px] font-semibold px-2 py-0.5 rounded-full border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors">{verifying ? 'Vérif…' : 'Vérifier l\'entreprise'}</button>}
-              {verifyMsg && <span className="text-[10px] text-emerald-600">{verifyMsg}</span>}
+              {lead.siren && <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${lead.active === false ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}`}>{lead.active === false ? '⚠ radiée' : '✓ vérifiée'} · SIREN {lead.siren}</span>}
+              <button onClick={openVerify} className="text-[10px] font-semibold px-2 py-0.5 rounded-full border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors">{lead.siren ? 'Corriger' : 'Vérifier l\'entreprise'}</button>
             </p>
             <div className="flex items-center gap-1.5 mt-2 flex-wrap">
               <span className="text-xs text-gray-400 bg-gray-50 border border-gray-100 px-2 py-0.5 rounded-full">{d.connectionDegree}</span>
@@ -564,6 +575,46 @@ ${dossier.aEviter.map((p) => `- ${p}`).join('\n')}
           </div>
         )
       })()}
+
+      {verifyOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setVerifyOpen(false)} />
+          <div className="relative card w-full max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-gray-900">Vérifier l'entreprise</h2>
+                <p className="text-xs text-gray-400">Source officielle data.gouv — choisis la bonne société.</p>
+              </div>
+              <button onClick={() => setVerifyOpen(false)} className="text-gray-400 hover:text-gray-700"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+            </div>
+            <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-2 bg-gray-50/60">
+              <span className="text-xs font-semibold text-gray-500">SIREN exact :</span>
+              <input value={sirenInput} onChange={(e) => setSirenInput(e.target.value.replace(/\D/g, '').slice(0, 9))} className="flex-1 px-3 py-1.5 rounded-lg text-sm bg-white border border-gray-200 focus:outline-none focus:border-indigo-400" placeholder="9 chiffres" />
+              <button onClick={applySiren} disabled={sirenInput.length !== 9} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-50">Appliquer</button>
+            </div>
+            <div className="p-3 overflow-y-auto">
+              <p className="text-[11px] text-gray-400 px-2 pb-1">Résultats pour « {d.lead.company} »</p>
+              {candidates === null ? (
+                <p className="text-sm text-gray-400 text-center py-8">Recherche…</p>
+              ) : candidates.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-8">Aucune correspondance. Essaie le SIREN exact ci-dessus, ou corrige le nom d'entreprise via « Modifier ».</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {candidates.map((m: any) => (
+                    <button key={m.siren} onClick={() => applyMatch(m)} className="w-full text-left p-3 rounded-xl border border-gray-100 hover:bg-gray-50 hover:border-indigo-200 transition-colors">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium text-gray-800">{m.name}</span>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${m.active === false ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}`}>{m.active === false ? 'radiée' : 'active'}</span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-0.5">SIREN {m.siren}{m.city ? ` · ${m.city}` : ''}{m.dirigeant ? ` · dir. ${m.dirigeant}` : ''}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {editOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
