@@ -14,7 +14,8 @@ const USAGE_PERIODS: { key: Period; label: string }[] = [
 const LOG_STYLE: Record<LogEntry['level'], string> = { info: 'bg-gray-300', warn: 'bg-amber-400', error: 'bg-red-500' }
 
 const FULL_SQL = `create table if not exists prospector_settings (key text primary key, value text, updated_at timestamptz default now());
-create table if not exists prospector_leads (id text primary key, data jsonb, created_at timestamptz default now());
+create table if not exists prospector_leads (id text primary key, data jsonb, workspace_id text, created_at timestamptz default now());
+alter table prospector_leads add column if not exists workspace_id text;
 create table if not exists prospector_workspaces (id text primary key, name text not null, leads int default 0, users int default 1, plan text default 'Starter', created_at timestamptz default now());
 alter table prospector_workspaces add column if not exists client_email text;
 alter table prospector_workspaces add column if not exists status text default 'active';

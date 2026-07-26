@@ -42,8 +42,10 @@ create table if not exists prospector_usage (
 create table if not exists prospector_leads (
   id          text primary key,
   data        jsonb,
+  workspace_id text,
   created_at  timestamptz not null default now()
 );
+alter table prospector_leads add column if not exists workspace_id text;
 alter table prospector_leads enable row level security;
 
 -- Sécurité : RLS activé, aucune policy publique.

@@ -31,7 +31,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     email: body?.email || null, phone: null,
     linkedinUrl: String(body?.url || '').trim() || undefined,
   }
-  const ok = await upsertLead(lead)
+  const ok = await upsertLead(lead, { isAdmin: true, ws: 'admin' })
   res.status(ok ? 200 : 502).json({ ok, id: lead.id })
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

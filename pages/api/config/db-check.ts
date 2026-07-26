@@ -4,7 +4,7 @@ import { supabase, supabaseConfigured } from '../../../lib/supabase/client'
 // Vérifie l'existence de chaque table + colonnes clés. Dit précisément ce qui manque.
 const CHECKS: { table: string; cols: string }[] = [
   { table: 'prospector_settings', cols: 'key' },
-  { table: 'prospector_leads', cols: 'id' },
+  { table: 'prospector_leads', cols: 'id,workspace_id' },
   { table: 'prospector_workspaces', cols: 'id,client_email,status,permissions,client_password_hash' },
   { table: 'prospector_pappers_cache', cols: 'siren' },
   { table: 'prospector_usage', cols: 'key' },
