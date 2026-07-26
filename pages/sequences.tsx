@@ -238,7 +238,7 @@ function LeadPicker({ onClose, onEnroll }: { onClose: () => void; onEnroll: (n: 
   const [q, setQ] = useState('')
   const [persona, setPersona] = useState<string>('')
   const [hideInSeq, setHideInSeq] = useState(true)
-  useEffect(() => { getLeads().then(setLeads) }, [])
+  useEffect(() => { getLeads().then((l) => setLeads(l.filter((x) => x.kind !== 'account'))) }, [])
 
   const filtered = leads.filter((l) =>
     (!q || `${l.firstName} ${l.lastName} ${l.company}`.toLowerCase().includes(q.toLowerCase()))

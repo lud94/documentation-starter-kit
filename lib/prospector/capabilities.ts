@@ -168,6 +168,30 @@ export async function enrollLead(id: string): Promise<Lead | undefined> {
   return l
 }
 
+// Promeut le dirigeant (data.gouv, réel) d'un compte en CONTACT invitable.
+// Ne crée rien s'il n'y a pas de dirigeant renseigné (aucune invention).
+export async function promoteDirigeant(accountId: string): Promise<Lead | undefined> {
+  const acc = LEADS[accountId]
+  if (!acc || !acc.dirigeant) return undefined
+  const [firstName, ...rest] = acc.dirigeant.split(' ')
+  const lead: Lead = {
+    id: newLeadId(), kind: 'contact', firstName: firstName || acc.dirigeant, lastName: rest.join(' '),
+    title: 'Dirigeant', company: acc.company, persona: 'Founder/CEO',
+    score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
+    siren: acc.siren, signal: acc.signal, icebreaker: acc.icebreaker,
+  }
+  LEADS[lead.id] = lead
+  await persistLead(lead)
+  return lead
+}
+
+// Charge la fiche compte détaillée (dirigeants, CA, effectif) depuis data.gouv.
+export interface AccountDetail { found: boolean; dirigeants: { name: string; role?: string; type: string }[]; finances?: { year: string; ca?: number; resultat?: number }; effectif?: string; city?: string; address?: string; website?: string; naf?: string; active?: boolean }
+export async function getAccountDetail(siren?: string): Promise<AccountDetail | null> {
+  if (!siren) return null
+  try { return await fetch(`/api/company/detail?siren=${siren}`).then((r) => r.json()) } catch { return null }
+}
+
 // Enrôle TOUT un compte : fan-out en N actions INDIVIDUELLES (une par personne),
 // jamais un envoi groupé. C'est le raccourci UI « sélectionner le compte ».
 export async function enrollAccount(ids: string[]): Promise<{ enrolled: number }> {
@@ -792,15 +816,15 @@ export async function importCompaniesToPipeline(companies: SourcedCompany[]) {
   const created: Lead[] = []
   companies.forEach((c) => {
     if (importedPlaceholders[c.id]) return
-    const [firstName, ...rest] = (c.dirigeant || '').split(' ')
     const id = newLeadId()
     importedPlaceholders[c.id] = id
-    // Auto-remplissage depuis data.gouv : on ne pose QUE les champs réellement fournis.
-    // Le SIREN vient de la recherche => l'entreprise est vérifiée d'office.
+    // Un import = un COMPTE (entreprise), PAS un contact. Aucun nom de personne
+    // n'est fabriqué : le compte reste hors « à inviter » tant qu'aucune personne
+    // n'est résolue. Auto-remplissage data.gouv : uniquement les champs réels.
     const siren = /^\d{9}$/.test(c.id) ? c.id : undefined
     const lead: Lead = {
-      id, firstName: firstName || c.name, lastName: rest.join(' '),
-      title: c.dirigeant ? 'Dirigeant (SIRENE)' : 'Contact à trouver', company: c.name,
+      id, kind: 'account', firstName: '', lastName: '',
+      title: '', company: c.name,
       score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
       siren,
       active: true,
@@ -824,8 +848,9 @@ export async function importSignalToPipeline(hit: SignalHit) {
   const id = newLeadId()
   importedPlaceholders[siren] = id
   const lead: Lead = {
-    id, firstName: hit.company, lastName: '', title: 'Contact à trouver', company: hit.company,
+    id, kind: 'account', firstName: '', lastName: '', title: '', company: hit.company,
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
+    siren: hit.siren, city: hit.city, active: hit.verified ? true : undefined,
     signal: hit.detail, icebreaker: hit.icebreaker,
   }
   LEADS[id] = lead
@@ -840,7 +865,7 @@ function newLeadId(): string { return `ld_${Math.random().toString(36).slice(2, 
 
 export async function addLead(input: NewLeadInput): Promise<Lead> {
   const lead: Lead = {
-    id: newLeadId(),
+    id: newLeadId(), kind: 'contact',
     firstName: (input.firstName || '').trim() || 'Prénom',
     lastName: (input.lastName || '').trim(),
     title: (input.title || '').trim() || 'À qualifier',
@@ -866,7 +891,7 @@ export async function addLeadsFromCsv(csv: string): Promise<{ added: number }> {
     if (i === 0 && /pr[ée]nom|first|nom|email|entreprise|company/i.test(line)) return // en-tête
     if (!cols[0] && !cols[3]) return
     const lead: Lead = {
-      id: newLeadId(), firstName: cols[0] || 'Prénom', lastName: cols[1] || '', title: cols[2] || 'À qualifier',
+      id: newLeadId(), kind: 'contact', firstName: cols[0] || 'Prénom', lastName: cols[1] || '', title: cols[2] || 'À qualifier',
       company: cols[3] || '—', score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
       email: cols[4] || null, phone: cols[5] || null,
     }
@@ -886,19 +911,20 @@ export function getImportedSirens(): Promise<string[]> {
 // Transforme des contacts résolus en vraies cartes contact dans le pipe.
 // Remplace la carte placeholder « à enrichir » de l'entreprise si elle existe.
 export async function addContactsToPipeline(company: SourcedCompany, contacts: ResolvedContact[]) {
+  // Le COMPTE (placeholder) est CONSERVÉ : il porte les métadonnées entreprise.
+  // Les contacts s'y rattachent (même `company`) et entrent, eux, dans « à inviter ».
   const placeholder = importedPlaceholders[company.id]
   const inheritedSignal = placeholder ? LEADS[placeholder]?.signal : undefined
   const inheritedIce = placeholder ? LEADS[placeholder]?.icebreaker : undefined
-  if (placeholder) { const pid = placeholder; delete LEADS[pid]; delete importedPlaceholders[company.id]; try { await fetch('/api/leads', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: pid }) }) } catch { /* mémoire */ } }
 
   const created: Lead[] = []
   contacts.forEach((ct) => {
     const [firstName, ...rest] = ct.name.split(' ')
     const lead: Lead = {
-      id: newLeadId(), firstName: firstName || ct.name, lastName: rest.join(' '),
-      title: ct.title || ct.persona, company: company.name,
+      id: newLeadId(), kind: 'contact', firstName: firstName || ct.name, lastName: rest.join(' '),
+      title: ct.title || ct.persona, company: company.name, persona: ct.persona,
       score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
-      email: ct.email || null, phone: null, signal: inheritedSignal, icebreaker: inheritedIce,
+      email: ct.email || null, phone: null, linkedinUrl: ct.linkedinUrl, signal: inheritedSignal, icebreaker: inheritedIce,
     }
     LEADS[lead.id] = lead; created.push(lead)
   })
@@ -955,7 +981,7 @@ export async function searchPeople(filters: { role?: string; sector?: string; lo
 export async function importPerson(hit: PersonHit): Promise<Lead> {
   const [firstName, ...rest] = hit.name.split(' ')
   const lead: Lead = {
-    id: newLeadId(), firstName, lastName: rest.join(' '), title: hit.title, company: hit.company,
+    id: newLeadId(), kind: 'contact', firstName, lastName: rest.join(' '), title: hit.title, company: hit.company,
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
     linkedinUrl: hit.linkedinUrl, city: hit.location,
   }

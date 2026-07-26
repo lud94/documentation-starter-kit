@@ -60,6 +60,7 @@ export interface Lead {
   dirigeant?: string    // dirigeant officiel (data.gouv)
   effectif?: string     // tranche d'effectif (data.gouv)
   website?: string      // site web déclaré (data.gouv, si présent)
+  kind?: 'account' | 'contact' // 'account' = entreprise sans personne (reste hors « à inviter »)
 }
 
 export interface Action {

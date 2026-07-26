@@ -31,6 +31,23 @@ const SIZE_TO_TRANCHE: Record<string, string> = {
 const CITY_TO_DEP: Record<string, string> = {
   'paris': '75', 'lyon': '69', 'marseille': '13', 'bordeaux': '33', 'lille': '59',
   'nantes': '44', 'toulouse': '31', 'nice': '06', 'strasbourg': '67', 'montpellier': '34', 'rennes': '35',
+  'grenoble': '38', 'angers': '49', 'reims': '51', 'saint-étienne': '42', 'saint-etienne': '42',
+  'toulon': '83', 'le havre': '76', 'dijon': '21', 'brest': '29', 'clermont-ferrand': '63',
+  'aix-en-provence': '13', 'tours': '37', 'amiens': '80', 'metz': '57', 'nancy': '54',
+  'orléans': '45', 'orleans': '45', 'rouen': '76', 'caen': '14', 'nîmes': '30', 'nimes': '30',
+  'annecy': '74', 'versailles': '78', 'boulogne-billancourt': '92', 'nanterre': '92',
+  'ile-de-france': '75', 'île-de-france': '75', 'idf': '75',
+}
+
+// Résout une localisation (ville, département, code postal) en code département.
+// Renvoie null si non résolu → on retombera sur une recherche texte floue.
+export function resolveDepartement(loc: string): string | null {
+  const s = (loc || '').trim().toLowerCase()
+  if (!s) return null
+  if (/^\d{5}$/.test(s)) return s.slice(0, 2)   // code postal → département
+  if (/^\d{2,3}$/.test(s)) return s             // département déjà saisi
+  if (/^\d{2}[ab]$/i.test(s)) return s.toUpperCase() // Corse 2A/2B
+  return CITY_TO_DEP[s] || null
 }
 
 // Extrait un site web SEULEMENT s'il est réellement fourni par l'API (jamais deviné).
@@ -54,9 +71,9 @@ export function buildSearchUrl(q: SourcingQuery): string {
 
   const loc = (q.location || '').trim()
   if (loc) {
-    if (/^\d{2,3}$/.test(loc)) params.set('departement', loc)
-    else if (CITY_TO_DEP[loc.toLowerCase()]) params.set('departement', CITY_TO_DEP[loc.toLowerCase()])
-    else params.set('q', loc)
+    const dep = resolveDepartement(loc)
+    if (dep) params.set('departement', dep)
+    else params.set('q', loc) // ville inconnue → recherche texte (best-effort, post-filtrée en aval)
   }
 
   const tr = q.size ? SIZE_TO_TRANCHE[q.size] : undefined
@@ -201,7 +218,11 @@ export async function fetchCompanies(
   }
   const data = await res.json()
 
-  const results: SourcedCompany[] = (data.results || []).map((r: any) => {
+  // Cible département (ville/CP/dep) → on post-filtre pour éviter les faux positifs
+  // (ex: recherche « Paris » qui remonterait des sociétés d'un autre département).
+  const depTarget = resolveDepartement(q.location || '')
+
+  const mapped: SourcedCompany[] = (data.results || []).map((r: any) => {
     const dir = (r.dirigeants || []).find((d: any) => d && d.nom)
     const eff = TRANCHE[r.tranche_effectif_salarie] || ''
     const city = r.siege?.libelle_commune || ''
@@ -229,10 +250,74 @@ export async function fetchCompanies(
     }
   })
 
+  const results = depTarget ? mapped.filter((c) => c.dep === depTarget) : mapped
+
   return {
     total: data.total_results ?? results.length,
     page: data.page ?? (q.page || 1),
     totalPages: data.total_pages ?? 1,
     results,
+  }
+}
+
+// Fiche COMPTE détaillée (data.gouv, gratuit) : tous les dirigeants + CA/résultat
+// (finances) + effectif + adresse. Site web/email NE sont PAS exposés par SIRENE.
+export interface CompanyDetail {
+  found: boolean
+  siren?: string
+  name?: string
+  active?: boolean
+  naf?: string
+  effectif?: string
+  city?: string
+  address?: string
+  website?: string
+  dirigeants: { name: string; role?: string; type: 'physique' | 'morale' }[]
+  finances?: { year: string; ca?: number; resultat?: number }
+}
+
+export async function fetchCompanyDetail(siren: string): Promise<CompanyDetail> {
+  const clean = (siren || '').replace(/\s/g, '')
+  if (!/^\d{9}$/.test(clean)) return { found: false, dirigeants: [] }
+  const url = `https://recherche-entreprises.api.gouv.fr/search?q=${clean}&page=1&per_page=1`
+  try {
+    const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
+    if (!res.ok) return { found: false, dirigeants: [] }
+    const data = await res.json()
+    const r = (data.results || []).find((x: any) => String(x.siren) === clean) || (data.results || [])[0]
+    if (!r || String(r.siren) !== clean) return { found: false, dirigeants: [] }
+
+    const dirigeants = (r.dirigeants || []).map((d: any) => {
+      if (d?.nom || d?.prenoms) {
+        const name = `${String(d.prenoms || '').split(' ')[0]} ${d.nom || ''}`.trim()
+        return { name, role: d.qualite || undefined, type: 'physique' as const }
+      }
+      return { name: d?.denomination || d?.sigle || 'Personne morale', role: d?.qualite || undefined, type: 'morale' as const }
+    }).filter((d: any) => d.name)
+
+    // finances : { "2023": { ca, resultat_net }, ... } → on prend l'année la plus récente.
+    let finances: CompanyDetail['finances'] | undefined
+    const fin = r.finances || {}
+    const years = Object.keys(fin).sort().reverse()
+    if (years.length) {
+      const y = years[0]
+      finances = { year: y, ca: fin[y]?.ca ?? undefined, resultat: fin[y]?.resultat_net ?? undefined }
+    }
+
+    return {
+      found: true,
+      siren: clean,
+      name: r.nom_complet || r.nom_raison_sociale || '',
+      active: r.etat_administratif ? r.etat_administratif === 'A' : undefined,
+      naf: r.activite_principale || '',
+      effectif: TRANCHE[r.tranche_effectif_salarie] || undefined,
+      city: r.siege?.libelle_commune || '',
+      address: r.siege?.adresse || r.siege?.geo_adresse || '',
+      website: extractWebsite(r),
+      dirigeants,
+      finances,
+    }
+  } catch {
+    return { found: false, dirigeants: [] }
   }
 }

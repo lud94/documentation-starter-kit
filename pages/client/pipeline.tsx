@@ -8,7 +8,7 @@ const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence'
 
 export default function ClientPipeline() {
   const [leads, setLeads] = useState<Lead[]>([])
-  useEffect(() => { getLeads().then(setLeads) }, [])
+  useEffect(() => { getLeads().then((l) => setLeads(l.filter((x) => x.kind !== 'account'))) }, [])
   const byStage = (s: Stage) => leads.filter((l) => l.stage === s)
 
   return (

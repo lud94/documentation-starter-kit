@@ -3,7 +3,8 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, enrollAccount, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, enrollAccount, promoteDirigeant, getAccountDetail, PERSONAS } from '../lib/prospector/capabilities'
+import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
@@ -86,57 +87,94 @@ function LeadCard({ lead }: { lead: Lead }) {
 }
 
 // ── Vue COMPTES : une ligne = une entreprise, dépliable vers ses contacts ──────
-// « Sélectionner tout le compte » puis « Enrôler » = N actions INDIVIDUELLES
-// (une invitation par personne), jamais un envoi groupé.
-function AccountCard({ company, contacts, onEnrolled }: { company: string; contacts: Lead[]; onEnrolled: () => void }) {
+// Un compte SANS personne reste ici (jamais dans « à inviter »). « Sélectionner
+// tout le compte » puis « Enrôler » = N actions INDIVIDUELLES (une par personne).
+const fmtEuro = (n?: number) => (typeof n === 'number' ? new Intl.NumberFormat('fr-FR', { notation: 'compact', maximumFractionDigits: 1 }).format(n) + ' €' : null)
+
+function AccountCard({ company, account, contacts, onChanged }: { company: string; account?: Lead; contacts: Lead[]; onChanged: () => void }) {
   const [open, setOpen] = useState(false)
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
-  // Métadonnées entreprise : on prend le contact qui porte les infos data.gouv.
-  const meta = contacts.find((c) => c.siren) || contacts[0]
+  const [detail, setDetail] = useState<AccountDetail | null>(null)
+  const [loadingDetail, setLoadingDetail] = useState(false)
+  // Métadonnées entreprise : le lead-compte, sinon le 1er contact porteur d'un SIREN.
+  const meta = account || contacts.find((c) => c.siren) || contacts[0]
   const enrollable = contacts.filter((c) => c.stage === 'to_invite' || c.stage === 'invited' || c.stage === 'connected')
   const allSel = enrollable.length > 0 && enrollable.every((c) => sel.has(c.id))
+  const hasDirigeantContact = contacts.some((c) => (meta?.dirigeant || '').toLowerCase().includes((c.lastName || '').toLowerCase()) && c.lastName)
   const toggleAll = () => setSel(allSel ? new Set() : new Set(enrollable.map((c) => c.id)))
   const toggleOne = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const expand = async () => {
+    const next = !open; setOpen(next)
+    if (next && !detail && meta?.siren) { setLoadingDetail(true); const d = await getAccountDetail(meta.siren); setDetail(d); setLoadingDetail(false) }
+  }
   const enroll = async () => {
-    const ids = Array.from(sel)
-    if (!ids.length) return
-    setBusy(true)
-    const r = await enrollAccount(ids)
-    setBusy(false); setSel(new Set())
-    setMsg(`${r.enrolled} contact(s) enrôlé(s) individuellement.`)
-    onEnrolled()
-    setTimeout(() => setMsg(null), 3000)
+    const ids = Array.from(sel); if (!ids.length) return
+    setBusy(true); const r = await enrollAccount(ids); setBusy(false); setSel(new Set())
+    setMsg(`${r.enrolled} contact(s) enrôlé(s) individuellement.`); onChanged(); setTimeout(() => setMsg(null), 3000)
+  }
+  const promote = async () => {
+    if (!account) return
+    setBusy(true); await promoteDirigeant(account.id); setBusy(false)
+    setMsg('Dirigeant ajouté comme contact invitable.'); onChanged(); setTimeout(() => setMsg(null), 3000)
   }
   return (
     <div className="card overflow-hidden">
-      <div className="flex items-center gap-3 p-4">
-        <button onClick={() => setOpen((v) => !v)} className="w-9 h-9 rounded-xl gradient-brand flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
-          {company.slice(0, 2).toUpperCase()}
-        </button>
+      <div className="flex items-center gap-3 p-4 cursor-pointer" onClick={expand}>
+        <span className="w-9 h-9 rounded-xl gradient-brand flex items-center justify-center text-white text-sm font-bold flex-shrink-0">{company.slice(0, 2).toUpperCase()}</span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-semibold text-gray-900 truncate">{company}</p>
             {meta?.siren && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${meta.active === false ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}`}>{meta.active === false ? 'Radiée' : 'Active'}</span>}
             {meta?.siren && <span className="text-[10px] text-gray-400 font-mono">SIREN {meta.siren}</span>}
+            {contacts.length === 0 && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 text-amber-600">Compte seul · 0 contact</span>}
           </div>
           <p className="text-xs text-gray-400 truncate mt-0.5">
             {[meta?.dirigeant && `Dirigeant : ${meta.dirigeant}`, meta?.city, meta?.effectif && `${meta.effectif} sal.`, meta?.website].filter(Boolean).join(' · ') || 'Infos entreprise à enrichir'}
           </p>
         </div>
         <span className="text-xs font-semibold text-gray-500 bg-gray-100 rounded-full px-2.5 py-1 flex-shrink-0">{contacts.length} contact{contacts.length > 1 ? 's' : ''}</span>
-        <button onClick={() => setOpen((v) => !v)} className="text-gray-400 flex-shrink-0">
-          <svg className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-        </button>
+        <svg className={`w-4 h-4 text-gray-400 transition-transform flex-shrink-0 ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
       </div>
       {open && (
-        <div className="border-t border-gray-100 bg-gray-50/50 px-4 py-3">
-          {contacts.length === 0 || (contacts.length === 1 && !meta?.firstName) ? (
-            <p className="text-xs text-gray-400 py-2">Aucun contact résolu. Ouvre la fiche → « Personas + séquence (compte) » pour résoudre les personas (Unipile). Rien n'est inventé.</p>
+        <div className="border-t border-gray-100 bg-gray-50/50 px-4 py-3 space-y-3">
+          {/* Fiche compte (data.gouv) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {[
+              { k: 'Effectif', v: (detail?.effectif || meta?.effectif) ? `${detail?.effectif || meta?.effectif} sal.` : '—' },
+              { k: 'Chiffre d\'affaires', v: (detail?.finances && fmtEuro(detail.finances.ca)) ? `${fmtEuro(detail!.finances!.ca)} (${detail!.finances!.year})` : (loadingDetail ? '…' : 'non publié') },
+              { k: 'Dirigeants', v: detail ? String(detail.dirigeants.length || (meta?.dirigeant ? 1 : 0)) : (loadingDetail ? '…' : (meta?.dirigeant ? '1' : '—')) },
+              { k: 'Secteur (NAF)', v: detail?.naf || meta?.naf || '—' },
+            ].map((s) => (
+              <div key={s.k} className="bg-white rounded-lg border border-gray-100 px-2.5 py-2">
+                <p className="text-[10px] font-semibold text-gray-400">{s.k}</p>
+                <p className="text-xs font-medium text-gray-700 truncate">{s.v}</p>
+              </div>
+            ))}
+          </div>
+          {detail && detail.dirigeants.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {detail.dirigeants.map((d, i) => (
+                <span key={i} className="text-[11px] px-2 py-0.5 rounded-full bg-white border border-gray-200 text-gray-600">
+                  {d.name}{d.role ? ` · ${d.role}` : ''}{d.type === 'morale' ? ' (pers. morale)' : ''}
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="text-[11px] text-gray-400">Site web / email ne sont pas exposés par data.gouv (SIRENE). {meta?.website ? <>Site : <a href={`https://${meta.website}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{meta.website}</a></> : 'À compléter via Unipile/web (manuel).'}</p>
+
+          {/* Contacts */}
+          {contacts.length === 0 ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-xs text-gray-400 flex-1 min-w-[180px]">Aucun contact. {meta?.dirigeant ? 'Promeus le dirigeant, ou résous les personas via Unipile.' : 'Résous les personas via Unipile (rien n\'est inventé).'}</p>
+              {account && meta?.dirigeant && !hasDirigeantContact && (
+                <button onClick={promote} disabled={busy} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-40">+ Dirigeant en contact</button>
+              )}
+            </div>
           ) : (
             <>
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between">
                 <label className="flex items-center gap-2 text-xs font-medium text-gray-600 cursor-pointer">
                   <span className={`w-4 h-4 rounded border flex items-center justify-center ${allSel ? 'gradient-brand border-transparent' : 'border-gray-300 bg-white'}`}>
                     {allSel && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
@@ -144,11 +182,13 @@ function AccountCard({ company, contacts, onEnrolled }: { company: string; conta
                   <input type="checkbox" checked={allSel} onChange={toggleAll} className="hidden" />
                   Sélectionner tout le compte {enrollable.length > 0 && `(${enrollable.length} enrôlable${enrollable.length > 1 ? 's' : ''})`}
                 </label>
-                <button onClick={enroll} disabled={busy || sel.size === 0} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-40 transition-opacity">
-                  {busy ? 'Enrôlement…' : `Enrôler la sélection (${sel.size})`}
-                </button>
+                <div className="flex items-center gap-2">
+                  {account && meta?.dirigeant && !hasDirigeantContact && <button onClick={promote} disabled={busy} className="text-xs font-medium text-gray-500 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">+ Dirigeant</button>}
+                  <button onClick={enroll} disabled={busy || sel.size === 0} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-40 transition-opacity">
+                    {busy ? '…' : `Enrôler la sélection (${sel.size})`}
+                  </button>
+                </div>
               </div>
-              {msg && <p className="text-[11px] text-emerald-600 mb-2">{msg}</p>}
               <div className="space-y-1.5">
                 {contacts.map((c) => {
                   const canEnroll = c.stage === 'to_invite' || c.stage === 'invited' || c.stage === 'connected'
@@ -169,20 +209,27 @@ function AccountCard({ company, contacts, onEnrolled }: { company: string; conta
               </div>
             </>
           )}
+          {msg && <p className="text-[11px] text-emerald-600">{msg}</p>}
         </div>
       )}
     </div>
   )
 }
 
-function AccountsView({ leads, onEnrolled }: { leads: Lead[]; onEnrolled: () => void }) {
-  const map = new Map<string, Lead[]>()
-  for (const l of leads) { const k = l.company || '—'; if (!map.has(k)) map.set(k, []); map.get(k)!.push(l) }
-  const accounts = Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]))
-  if (accounts.length === 0) return <p className="text-sm text-gray-400 text-center py-12">Aucun compte. Importe des entreprises depuis Sourcing.</p>
+function AccountsView({ leads, onChanged }: { leads: Lead[]; onChanged: () => void }) {
+  const groups = new Map<string, { account?: Lead; contacts: Lead[] }>()
+  for (const l of leads) {
+    const k = l.company || '—'
+    if (!groups.has(k)) groups.set(k, { contacts: [] })
+    const g = groups.get(k)!
+    if (l.kind === 'account') g.account = l
+    else g.contacts.push(l)
+  }
+  const entries = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+  if (entries.length === 0) return <p className="text-sm text-gray-400 text-center py-12">Aucun compte. Importe des entreprises depuis Sourcing.</p>
   return (
     <div className="space-y-3">
-      {accounts.map(([company, contacts]) => <AccountCard key={company} company={company} contacts={contacts} onEnrolled={onEnrolled} />)}
+      {entries.map(([company, g]) => <AccountCard key={company} company={company} account={g.account} contacts={g.contacts} onChanged={onChanged} />)}
     </div>
   )
 }
@@ -218,7 +265,9 @@ export default function PipelinePage() {
     if (enrichF === 'no_phone' && l.phone) return false
     return true
   })
-  const byStage = (s: Stage) => filtered.filter((l) => l.stage === s)
+  // La vue Contacts n'affiche QUE des personnes (les comptes seuls restent en vue Comptes).
+  const contactLeads = filtered.filter((l) => l.kind !== 'account')
+  const byStage = (s: Stage) => contactLeads.filter((l) => l.stage === s)
   const hasFilter = query || statusF.size || stageF.size || personaF.size || enrichF !== 'all'
 
   const changeStatus = async (id: string, status: LeadStatus) => { await setLeadStatus(id, status); refresh() }
@@ -246,8 +295,8 @@ export default function PipelinePage() {
           <h1 className="text-2xl font-bold text-gray-900">Pipeline &amp; Leads</h1>
           <p className="text-gray-400 text-sm mt-0.5">
             {loading ? 'Chargement…'
-              : mainView === 'comptes' ? `${new Set(filtered.map((l) => l.company)).size} comptes · ${filtered.length} contacts`
-              : hasFilter ? `${filtered.length} leads sur ${leads.length}` : `${leads.length} prospects dans votre base`}
+              : mainView === 'comptes' ? `${new Set(filtered.map((l) => l.company)).size} comptes · ${contactLeads.length} contacts`
+              : hasFilter ? `${contactLeads.length} contacts filtrés` : `${contactLeads.length} contacts dans votre base`}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -297,7 +346,7 @@ export default function PipelinePage() {
       </div>
 
       {/* Comptes (entreprises) */}
-      {mainView === 'comptes' && <AccountsView leads={filtered} onEnrolled={refresh} />}
+      {mainView === 'comptes' && <AccountsView leads={filtered} onChanged={refresh} />}
 
       {/* Table */}
       {mainView === 'contacts' && view === 'table' && (
@@ -308,7 +357,7 @@ export default function PipelinePage() {
                 {['Contact', 'Entreprise', 'Persona', 'Stage', 'Statut', 'Enrich.', 'Score'].map((h) => <th key={h} className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>)}
               </tr></thead>
               <tbody>
-                {[...filtered].sort((a, b) => b.score - a.score).map((lead) => {
+                {[...contactLeads].sort((a, b) => b.score - a.score).map((lead) => {
                   const sm = STAGE_META[lead.stage]
                   return (
                     <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50/60 transition-colors">
