@@ -114,7 +114,7 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
   const getWebsite = async () => {
     if (!account) return
     setBusy(true); const r = await enrichCompanyWebsite(account.id); setBusy(false)
-    flash(r.website ? `Site trouvé : ${r.website}` : (r.mode === 'heuristic' ? 'Agent web non configuré — pose ANTHROPIC_API_KEY (+ EXA_API_KEY).' : 'Aucun site web prouvé — rien n\'a été inventé.'))
+    flash(r.website ? `Site trouvé : ${r.website}` : (r.mode === 'off' ? 'Agent web non configuré — pose ANTHROPIC_API_KEY dans Admin → Connexions.' : 'Aucun site web prouvé — rien n\'a été inventé.'))
   }
   const addContact = async () => {
     if (!account || (!cf.firstName.trim() && !cf.lastName.trim())) return

@@ -185,7 +185,23 @@ export async function promoteDirigeant(accountId: string): Promise<Lead | undefi
   return lead
 }
 
-// Retrouve le site web d'un compte via l'agent web (Exa→Claude) et le persiste.
+// Corrige une mauvaise détection en 1 clic (gratuit, sans IA).
+// Contact → Compte : on garde l'entreprise, on retire la personne.
+export async function convertToAccount(id: string): Promise<Lead | undefined> {
+  const l = LEADS[id]; if (!l) return undefined
+  l.kind = 'account'; l.firstName = ''; l.lastName = ''; l.title = ''; l.persona = undefined; l.email = null; l.stage = 'to_invite'
+  await persistLead(l); return l
+}
+// Compte → Contact : on nomme la personne (sinon on ne convertit pas).
+export async function convertToContact(id: string, person: { firstName?: string; lastName?: string; title?: string }): Promise<Lead | undefined> {
+  const l = LEADS[id]; if (!l) return undefined
+  const fn = (person.firstName || '').trim(); const ln = (person.lastName || '').trim()
+  if (!fn && !ln) return undefined
+  l.kind = 'contact'; l.firstName = fn || ln; l.lastName = fn ? ln : ''; l.title = (person.title || '').trim() || 'À qualifier'
+  await persistLead(l); return l
+}
+
+// Retrouve le site web d'un compte via l'agent web (Claude web) et le persiste.
 // Renvoie { website, mode }. website undefined si aucune preuve (jamais deviné).
 export async function enrichCompanyWebsite(accountId: string): Promise<{ website?: string; mode: string }> {
   const acc = LEADS[accountId]

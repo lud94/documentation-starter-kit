@@ -52,15 +52,18 @@ function cleanWebsite(raw?: string): string | undefined {
   return s.replace(/^https?:\/\//i, '').replace(/\/.*$/, '')
 }
 
-// ── Agent Exa → Claude : classe l'entité et retrouve site web + société. ───────
-async function agentIdentify(input: IdentifyInput): Promise<IdentifyResult | null> {
+// ── Agent web : classe l'entité et retrouve site web + société. ────────────────
+// Un SEUL fournisseur par appel : Claude (avec son outil web) par défaut. Exa
+// n'est utilisé QUE si on l'active explicitement (forceClaudeWeb=false) — jamais
+// les deux « en plus » l'un de l'autre.
+async function agentIdentify(input: IdentifyInput, opts: { forceClaudeWeb?: boolean } = {}): Promise<IdentifyResult | null> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return null
   const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
   const q = [input.name, input.company, input.title].filter(Boolean).join(' ')
 
   let docs: ExaDoc[] = []
-  const useExa = exaConfigured()
+  const useExa = exaConfigured() && !opts.forceClaudeWeb
   if (useExa) { try { docs = await searchExaWeb(q) } catch { docs = [] } }
 
   const corpus = docs.map((d, i) => `[${i + 1}] ${d.title}\nURL: ${d.url}\n${d.text}`).join('\n\n')
@@ -133,22 +136,21 @@ export async function identifyLead(input: IdentifyInput): Promise<IdentifyResult
     return { kind: 'company', company: input.company || name, confidence: 'high', mode: 'url' }
   }
 
-  // 2) Cas non tranché par l'URL → agent web si clés posées, sinon heuristique.
-  if (identifyMode() !== 'heuristic') {
-    try { const r = await agentIdentify(input); if (r) return r } catch { /* repli heuristique */ }
-  }
+  // 2) Cas non tranché par l'URL → heuristique GRATUITE (URL + forme du nom +
+  //    data.gouv). PAS d'appel IA à l'import : détection simple, corrigeable en
+  //    1 clic dans l'UI. L'agent web reste réservé à l'enrichissement (opt-in).
   return heuristicIdentify(input)
 }
 
 // Complète le site web d'une entreprise déjà connue (Comptes) via l'agent web.
 // Renvoie undefined si aucune preuve — jamais deviné.
 export async function findCompanyWebsite(company: string, city?: string): Promise<{ website?: string; mode: string }> {
-  const mode = identifyMode()
-  if (mode === 'heuristic') return { website: undefined, mode }
+  // Un seul fournisseur : Claude web. (Pas d'Exa en plus → pas de double conso.)
+  if (!getKey('ANTHROPIC_API_KEY')) return { website: undefined, mode: 'off' }
   try {
-    const r = await agentIdentify({ name: company, company, title: city })
-    return { website: r?.website, mode }
+    const r = await agentIdentify({ name: company, company, title: city }, { forceClaudeWeb: true })
+    return { website: r?.website, mode: 'claude-web' }
   } catch {
-    return { website: undefined, mode }
+    return { website: undefined, mode: 'error' }
   }
 }

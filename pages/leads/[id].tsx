@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, convertToAccount } from '../../lib/prospector/capabilities'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
@@ -129,6 +129,11 @@ export default function LeadDetailPage() {
     setAccountBusy(false)
   }
   const [reminderMsg, setReminderMsg] = useState<string | null>(null)
+  const toAccount = async () => {
+    if (typeof id !== 'string') return
+    if (!confirm('Convertir ce contact en compte (entreprise) ? La personne sera retirée, l\'entreprise conservée.')) return
+    await convertToAccount(id); router.push('/pipeline')
+  }
   const planReminder = async () => {
     if (!d) return
     await addTask({ title: `Relancer ${d.lead.firstName} ${d.lead.lastName}`, due: 'Demain', leadId: d.lead.id, leadName: `${d.lead.firstName} ${d.lead.lastName}` })
@@ -220,6 +225,7 @@ export default function LeadDetailPage() {
             Envoyer un message
           </button>
           <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">LinkedIn</button>
+          <button onClick={toAccount} title="Mauvaise détection : c'est une entreprise, pas une personne" className="text-sm font-medium text-gray-500 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">C'est un compte</button>
           <button onClick={genAccountSeq} disabled={accountBusy} className="text-sm font-semibold gradient-brand text-white px-3 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-1.5">
             <span className="font-bold">✦</span>{accountBusy ? 'Génération…' : 'Personas + séquence (compte)'}
           </button>
