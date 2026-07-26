@@ -18,6 +18,7 @@ export default async function handler(_req: NextApiRequest, res: NextApiResponse
       row('UNIPILE_DSN', 'Unipile DSN'),
       row('UNIPILE_API_KEY', 'Unipile API key'),
       row('UNIPILE_ACCOUNT_ID', 'Unipile compte LinkedIn lié'),
+      row('INGEST_TOKEN', 'Extension Jarvis (jeton d\'ingestion)'),
     ],
     signalsMode: hasKey('ANTHROPIC_API_KEY') && hasKey('EXA_API_KEY') ? 'exa+claude'
       : hasKey('ANTHROPIC_API_KEY') ? 'claude-web' : 'mock',
