@@ -89,15 +89,20 @@ export default function LeadDetailPage() {
   const [verifyOpen, setVerifyOpen] = useState(false)
   const [candidates, setCandidates] = useState<any[] | null>(null)
   const [sirenInput, setSirenInput] = useState('')
+  const [searchQ, setSearchQ] = useState('')
+  const runSearch = async (q: string) => {
+    setCandidates(null)
+    const c = await fetch(`/api/company/verify?candidates=1&name=${encodeURIComponent(q)}`).then((r) => r.json()).catch(() => ({}))
+    setCandidates(c.candidates || [])
+  }
   const openVerify = async () => {
     if (!d) return
-    setVerifyOpen(true); setCandidates(null); setSirenInput('')
-    const c = await fetch(`/api/company/verify?candidates=1&name=${encodeURIComponent(d.lead.company)}`).then((r) => r.json()).catch(() => ({}))
-    setCandidates(c.candidates || [])
+    setVerifyOpen(true); setSirenInput(''); setSearchQ(d.lead.company)
+    runSearch(d.lead.company)
   }
   const applyMatch = async (m: any) => {
     if (typeof id !== 'string') return
-    const patch: any = { company: m.name, siren: m.siren, active: m.active }
+    const patch: any = { company: m.name, siren: m.siren, active: m.active, naf: m.naf, city: m.city, dirigeant: m.dirigeant }
     const noPerson = !d?.lead.firstName || d.lead.firstName === 'Prénom' || d.lead.firstName === d.lead.company
     if (noPerson && m.dirigeant) { const [fn, ...rest] = m.dirigeant.split(' '); patch.firstName = fn; patch.lastName = rest.join(' '); if (d?.lead.title === 'À qualifier') patch.title = 'Dirigeant' }
     await updateLead(id, patch); setVerifyOpen(false); reload()
@@ -606,13 +611,20 @@ ${dossier.aEviter.map((p) => `- ${p}`).join('\n')}
               </div>
               <button onClick={() => setVerifyOpen(false)} className="text-gray-400 hover:text-gray-700"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
             </div>
-            <div className="px-5 py-3 border-b border-gray-100 flex items-center gap-2 bg-gray-50/60">
-              <span className="text-xs font-semibold text-gray-500">SIREN exact :</span>
-              <input value={sirenInput} onChange={(e) => setSirenInput(e.target.value.replace(/\D/g, '').slice(0, 9))} className="flex-1 px-3 py-1.5 rounded-lg text-sm bg-white border border-gray-200 focus:outline-none focus:border-indigo-400" placeholder="9 chiffres" />
-              <button onClick={applySiren} disabled={sirenInput.length !== 9} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-50">Appliquer</button>
+            <div className="px-5 py-3 border-b border-gray-100 space-y-2 bg-gray-50/60">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-gray-500 w-16">Recherche :</span>
+                <input value={searchQ} onChange={(e) => setSearchQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && runSearch(searchQ)} className="flex-1 px-3 py-1.5 rounded-lg text-sm bg-white border border-gray-200 focus:outline-none focus:border-indigo-400" placeholder="nom d'entreprise…" />
+                <button onClick={() => runSearch(searchQ)} className="text-xs font-semibold text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-50">Chercher</button>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-gray-500 w-16">SIREN :</span>
+                <input value={sirenInput} onChange={(e) => setSirenInput(e.target.value.replace(/\D/g, '').slice(0, 9))} className="flex-1 px-3 py-1.5 rounded-lg text-sm bg-white border border-gray-200 focus:outline-none focus:border-indigo-400" placeholder="9 chiffres (match exact)" />
+                <button onClick={applySiren} disabled={sirenInput.length !== 9} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-50">Appliquer</button>
+              </div>
             </div>
             <div className="p-3 overflow-y-auto">
-              <p className="text-[11px] text-gray-400 px-2 pb-1">Résultats pour « {d.lead.company} »</p>
+              <p className="text-[11px] text-gray-400 px-2 pb-1">Résultats data.gouv</p>
               {candidates === null ? (
                 <p className="text-sm text-gray-400 text-center py-8">Recherche…</p>
               ) : candidates.length === 0 ? (

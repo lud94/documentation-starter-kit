@@ -99,7 +99,7 @@ export async function lookupByName(
 export interface CompanyMatch { siren: string; name: string; dirigeant?: string; active?: boolean; city: string; naf: string }
 
 // Renvoie plusieurs entreprises candidates pour un nom → l'utilisateur choisit.
-export async function searchCandidates(name: string, n = 6): Promise<CompanyMatch[]> {
+export async function searchCandidates(name: string, n = 10): Promise<CompanyMatch[]> {
   const q = (name || '').trim()
   if (q.length < 2) return []
   const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(q)}&page=1&per_page=${n}`

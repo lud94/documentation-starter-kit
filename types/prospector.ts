@@ -55,6 +55,9 @@ export interface Lead {
   linkedinUrl?: string  // profil LinkedIn (ex: ajouté via l'extension)
   siren?: string        // vérifié via data.gouv
   active?: boolean      // entreprise active (etat_administratif)
+  naf?: string          // code activité principal (data.gouv)
+  city?: string         // ville du siège (data.gouv)
+  dirigeant?: string    // dirigeant officiel (data.gouv)
 }
 
 export interface Action {

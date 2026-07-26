@@ -192,8 +192,13 @@ function emptyDetail(lead: Lead): LeadDetail {
     linkedinUrl: lead.linkedinUrl || '',
     scoring: { fit: 0, intent: 0, timing: 0, segment: '—', band: 'COLD', confidence: 'low', edgeCase: false,
       rationale: 'Lead non encore scoré. Lance l\'enrichissement pour analyser le signal et générer le dossier.', aiAdjustment: 0 },
-    company: { name: lead.company, size: '—', location: '—', website: '', sector: '—', funding: '—',
-      description: 'Informations entreprise à enrichir (Pappers / Unipile / data.gouv).' },
+    company: {
+      name: lead.company, size: '—', location: lead.city || '—', website: '',
+      sector: lead.naf || '—', funding: '—',
+      description: lead.siren
+        ? `Entreprise vérifiée data.gouv — SIREN ${lead.siren}${lead.active === false ? ' (radiée)' : ' (active)'}${lead.dirigeant ? ` · dirigeant : ${lead.dirigeant}` : ''}.`
+        : 'Informations entreprise à enrichir (clique « Vérifier l\'entreprise »).',
+    },
     dossier: {
       status: 'faible', ageLabel: 'à enrichir', ageDays: 0, stale: false,
       mecanisme: 'À enrichir',
@@ -306,7 +311,7 @@ export async function verifyLeadCompany(id: string): Promise<{ found: boolean; a
   try {
     const v = await fetch(`/api/company/verify?name=${encodeURIComponent(l.company)}`).then((r) => r.json())
     if (v.found) {
-      l.company = v.name || l.company; l.siren = v.siren; l.active = v.active
+      l.company = v.name || l.company; l.siren = v.siren; l.active = v.active; l.naf = v.naf; l.city = v.city; l.dirigeant = v.dirigeant
       const noPerson = !l.firstName || l.firstName === 'Prénom' || l.firstName === l.company
       if (noPerson && v.dirigeant) { const [fn, ...rest] = v.dirigeant.split(' '); l.firstName = fn; l.lastName = rest.join(' '); if (l.title === 'À qualifier') l.title = 'Dirigeant' }
       await persistLead(l)
@@ -905,6 +910,29 @@ export async function generateAccountSequence(
   }
   await saveSequence(seq)
   return { sequenceId: seq.id, contacts: res.contacts.length, mockPersonas: res.mock }
+}
+
+// Recherche de PERSONNES sur LinkedIn (Unipile, mock fallback).
+export interface PersonHit { id: string; name: string; title: string; company: string; location: string; sector: string; linkedinUrl: string }
+export async function searchPeople(filters: { role?: string; sector?: string; location?: string }): Promise<{ people: PersonHit[]; mock: boolean }> {
+  const p = new URLSearchParams()
+  if (filters.role) p.set('role', filters.role)
+  if (filters.sector) p.set('sector', filters.sector)
+  if (filters.location) p.set('location', filters.location)
+  try { const d = await fetch(`/api/sourcing/people?${p.toString()}`).then((r) => r.json()); return { people: d.people || [], mock: !!d.mock } }
+  catch { return { people: [], mock: true } }
+}
+
+export async function importPerson(hit: PersonHit): Promise<Lead> {
+  const [firstName, ...rest] = hit.name.split(' ')
+  const lead: Lead = {
+    id: newLeadId(), firstName, lastName: rest.join(' '), title: hit.title, company: hit.company,
+    score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
+    linkedinUrl: hit.linkedinUrl, city: hit.location,
+  }
+  LEADS[lead.id] = lead
+  await persistLead(lead)
+  return lead
 }
 
 // Plafond du lot de résolution (garde-fou coût, comme l'enrichissement Kaspr).

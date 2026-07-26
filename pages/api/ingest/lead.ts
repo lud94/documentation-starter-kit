@@ -45,6 +45,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lead.company = v.name || lead.company
         lead.siren = v.siren
         lead.active = v.active
+        lead.naf = v.naf
+        lead.city = v.city
+        lead.dirigeant = v.dirigeant
         // Si aucun contact nommé, on rattache le dirigeant officiel comme point de contact.
         const noPerson = !lead.firstName || lead.firstName === 'Prénom' || lead.firstName === lead.company
         if (noPerson && v.dirigeant) {

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../types/prospector'
-import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import type { PersonHit } from '../lib/prospector/capabilities'
 
 const INDUSTRIES = [
   'Real Estate', 'Technology', 'Healthcare', 'Finance', 'Retail', 'Manufacturing',
@@ -71,7 +72,22 @@ const SOURCE_STYLE: Record<string, string> = {
 export default function SourcingPage() {
   const [data, setData] = useState<SourcingData | null>(null)
   const [period, setPeriod] = useState<Period>('month')
-  const [tab, setTab] = useState<'recherche' | 'signal' | 'prospects'>('recherche')
+  const [tab, setTab] = useState<'recherche' | 'signal' | 'people' | 'prospects'>('recherche')
+
+  // Recherche de personnes (Unipile / LinkedIn)
+  const [pRole, setPRole] = useState('')
+  const [pSector, setPSector] = useState('')
+  const [pLocation, setPLocation] = useState('')
+  const [pRunning, setPRunning] = useState(false)
+  const [pPeople, setPPeople] = useState<PersonHit[]>([])
+  const [pMock, setPMock] = useState(false)
+  const [pImported, setPImported] = useState<Set<string>>(new Set())
+  const runPeople = async () => {
+    setPRunning(true)
+    const r = await searchPeople({ role: pRole, sector: pSector, location: pLocation })
+    setPPeople(r.people); setPMock(r.mock); setPRunning(false)
+  }
+  const importP = async (p: PersonHit) => { await importPerson(p); setPImported((s) => new Set(s).add(p.id)) }
 
   // Recherche par signal (agent Claude web)
   const [sigThesis, setSigThesis] = useState('')
@@ -268,6 +284,10 @@ export default function SourcingPage() {
           Par signal
           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded gradient-brand text-white">IA</span>
         </button>
+        <button onClick={() => setTab('people')} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5 ${tab === 'people' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>
+          Par personnes
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-500 text-white">in</span>
+        </button>
         <button onClick={() => setTab('prospects')} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2 ${tab === 'prospects' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>
           Entreprises sourcées
           {companies.length > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full gradient-brand text-white">{companies.length}</span>}
@@ -378,6 +398,47 @@ export default function SourcingPage() {
                         {sigImported.has(h.company) ? '✓ Dans le pipe' : '+ Importer'}
                       </button>
                     </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : tab === 'people' ? (
+        <div className="space-y-4">
+          <div className="card p-6 max-w-3xl">
+            <p className="text-sm text-gray-500 mb-4">Recherche de <strong className="text-gray-700">personnes</strong> sur LinkedIn (via Unipile) — par poste, secteur, localisation.</p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Poste / titre</label>
+                <input value={pRole} onChange={(e) => setPRole(e.target.value)} className={inputClass} placeholder="ex: Head of Sales" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Secteur</label>
+                <select value={pSector} onChange={(e) => setPSector(e.target.value)} className={inputClass}><option value="">Tous</option>{INDUSTRIES.map((i) => <option key={i} value={i}>{i}</option>)}</select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Localisation</label>
+                <input value={pLocation} onChange={(e) => setPLocation(e.target.value)} className={inputClass} placeholder="ex: Paris" />
+              </div>
+            </div>
+            <button onClick={runPeople} disabled={pRunning} className="gradient-brand text-white text-sm font-semibold px-4 py-2.5 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">{pRunning ? 'Recherche…' : 'Rechercher sur LinkedIn'}</button>
+          </div>
+
+          {pPeople.length > 0 && (
+            <div className="card p-5 max-w-3xl">
+              <h2 className="text-sm font-semibold text-gray-700 mb-1">Profils trouvés</h2>
+              {pMock && <p className="text-[11px] text-amber-600 mb-3">⚠️ Résultats simulés — connecte Unipile (Admin → Connexions) pour la vraie recherche LinkedIn.</p>}
+              <div className="space-y-2">
+                {pPeople.map((p) => (
+                  <div key={p.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50/50 transition-colors flex-wrap">
+                    <span className="w-9 h-9 rounded-full bg-blue-500 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">{p.name.slice(0, 2).toUpperCase()}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-800 truncate">{p.name} <span className="text-gray-400 font-normal">· {p.title}</span></p>
+                      <p className="text-xs text-gray-400 truncate">{p.company} · {p.location}</p>
+                    </div>
+                    <a href={p.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-indigo-600 hover:underline flex-shrink-0">LinkedIn</a>
+                    <button onClick={() => importP(p)} disabled={pImported.has(p.id)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-opacity flex-shrink-0 ${pImported.has(p.id) ? 'bg-emerald-50 text-emerald-600' : 'gradient-brand text-white hover:opacity-90'}`}>{pImported.has(p.id) ? '✓ Ajouté' : '+ Pipeline'}</button>
                   </div>
                 ))}
               </div>
