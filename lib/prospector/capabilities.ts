@@ -193,7 +193,8 @@ function emptyDetail(lead: Lead): LeadDetail {
     scoring: { fit: 0, intent: 0, timing: 0, segment: '—', band: 'COLD', confidence: 'low', edgeCase: false,
       rationale: 'Lead non encore scoré. Lance l\'enrichissement pour analyser le signal et générer le dossier.', aiAdjustment: 0 },
     company: {
-      name: lead.company, size: '—', location: lead.city || '—', website: '',
+      name: lead.company, size: lead.effectif || '—', location: lead.city || '—',
+      website: lead.website || '',
       sector: lead.naf || '—', funding: '—',
       description: lead.siren
         ? `Entreprise vérifiée data.gouv — SIREN ${lead.siren}${lead.active === false ? ' (radiée)' : ' (active)'}${lead.dirigeant ? ` · dirigeant : ${lead.dirigeant}` : ''}.`
@@ -312,6 +313,8 @@ export async function verifyLeadCompany(id: string): Promise<{ found: boolean; a
     const v = await fetch(`/api/company/verify?name=${encodeURIComponent(l.company)}`).then((r) => r.json())
     if (v.found) {
       l.company = v.name || l.company; l.siren = v.siren; l.active = v.active; l.naf = v.naf; l.city = v.city; l.dirigeant = v.dirigeant
+      if (v.effectif) l.effectif = v.effectif
+      if (v.website) l.website = v.website
       const noPerson = !l.firstName || l.firstName === 'Prénom' || l.firstName === l.company
       if (noPerson && v.dirigeant) { const [fn, ...rest] = v.dirigeant.split(' '); l.firstName = fn; l.lastName = rest.join(' '); if (l.title === 'À qualifier') l.title = 'Dirigeant' }
       await persistLead(l)
@@ -776,10 +779,20 @@ export async function importCompaniesToPipeline(companies: SourcedCompany[]) {
     const [firstName, ...rest] = (c.dirigeant || '').split(' ')
     const id = newLeadId()
     importedPlaceholders[c.id] = id
+    // Auto-remplissage depuis data.gouv : on ne pose QUE les champs réellement fournis.
+    // Le SIREN vient de la recherche => l'entreprise est vérifiée d'office.
+    const siren = /^\d{9}$/.test(c.id) ? c.id : undefined
     const lead: Lead = {
       id, firstName: firstName || c.name, lastName: rest.join(' '),
       title: c.dirigeant ? 'Dirigeant (SIRENE)' : 'Contact à trouver', company: c.name,
       score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
+      siren,
+      active: true,
+      naf: c.naf || undefined,
+      city: c.city || undefined,
+      dirigeant: c.dirigeant || undefined,
+      effectif: c.effectif || undefined,
+      website: c.website || undefined,
     }
     LEADS[id] = lead; created.push(lead)
   })
@@ -890,12 +903,12 @@ const ACCOUNT_SEQ_TEMPLATE = (): SequenceStep[] => [
 export async function generateAccountSequence(
   company: { name: string; siren?: string; city?: string },
   personas: string[] = PERSONA_TARGETS,
-): Promise<{ sequenceId: string; contacts: number; mockPersonas: boolean }> {
+): Promise<{ sequenceId: string; contacts: number; mockPersonas: boolean; connected: boolean }> {
   const comp: SourcedCompany = {
     id: company.siren || `acc-${company.name}`, name: company.name, naf: '', sector: '',
-    effectif: '', city: company.city || '', dep: '', signals: [],
+    effectif: '', city: company.city || '', dep: '', dirigeant: (company as any).dirigeant, signals: [],
   }
-  // 1) Personas via Unipile (fallback mock) — passe par /api/enrich/contacts.
+  // 1) Personas via Unipile si connecté — sinon SEUL le dirigeant réel (data.gouv). Aucun contact inventé.
   const res = await resolveOne(comp, personas)
   // 2) Crée les contacts dans le pipe (persistés + cloisonnés)
   await addContactsToPipeline(comp, res.contacts)
@@ -909,7 +922,7 @@ export async function generateAccountSequence(
     steps: ACCOUNT_SEQ_TEMPLATE(),
   }
   await saveSequence(seq)
-  return { sequenceId: seq.id, contacts: res.contacts.length, mockPersonas: res.mock }
+  return { sequenceId: seq.id, contacts: res.contacts.length, mockPersonas: res.mock, connected: res.connected }
 }
 
 // Recherche de PERSONNES sur LinkedIn (Unipile, mock fallback).
@@ -919,7 +932,7 @@ export async function searchPeople(filters: { role?: string; sector?: string; lo
   if (filters.role) p.set('role', filters.role)
   if (filters.sector) p.set('sector', filters.sector)
   if (filters.location) p.set('location', filters.location)
-  try { const d = await fetch(`/api/sourcing/people?${p.toString()}`).then((r) => r.json()); return { people: d.people || [], mock: !!d.mock } }
+  try { const d = await fetch(`/api/sourcing/people?${p.toString()}`).then((r) => r.json()); return { people: d.people || [], mock: d.connected === false } }
   catch { return { people: [], mock: true } }
 }
 
@@ -938,7 +951,7 @@ export async function importPerson(hit: PersonHit): Promise<Lead> {
 // Plafond du lot de résolution (garde-fou coût, comme l'enrichissement Kaspr).
 export const CONTACT_BATCH_CAP = 20
 
-export interface ContactResult { company: SourcedCompany; contacts: ResolvedContact[]; mock: boolean }
+export interface ContactResult { company: SourcedCompany; contacts: ResolvedContact[]; mock: boolean; connected: boolean }
 
 // Résout les contacts d'UNE entreprise pour les personas demandés.
 // Passe par /api/enrich/contacts → Pappers (dirigeants) + Unipile (personas),
@@ -959,9 +972,9 @@ async function resolveOne(company: SourcedCompany, personas: string[]): Promise<
   try {
     const res = await fetch(`/api/enrich/contacts?${params.toString()}`)
     const d = await res.json()
-    return { company, contacts: d.contacts || [], mock: !!d.mock }
+    return { company, contacts: d.contacts || [], mock: !!d.mock, connected: d.connected !== false }
   } catch {
-    return { company, contacts: [], mock: true }
+    return { company, contacts: [], mock: false, connected: false }
   }
 }
 

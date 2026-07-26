@@ -33,6 +33,14 @@ const CITY_TO_DEP: Record<string, string> = {
   'nantes': '44', 'toulouse': '31', 'nice': '06', 'strasbourg': '67', 'montpellier': '34', 'rennes': '35',
 }
 
+// Extrait un site web SEULEMENT s'il est réellement fourni par l'API (jamais deviné).
+function extractWebsite(r: any): string | undefined {
+  const raw = r?.complements?.site_web || r?.site_web || ''
+  const s = String(raw).trim()
+  if (!s || !/\./.test(s)) return undefined
+  return s.replace(/^https?:\/\//i, '').replace(/\/$/, '')
+}
+
 export interface SourcingQuery { sector?: string; location?: string; size?: string; page?: number; activeOnly?: boolean }
 
 // L'API plafonne per_page à 25 ; on pagine pour aller au-delà.
@@ -71,7 +79,7 @@ export function buildSearchUrl(q: SourcingQuery): string {
 // Source officielle gratuite (data.gouv) : ni token Pappers, ni scraping.
 export async function lookupByName(
   name: string,
-): Promise<{ found: boolean; siren?: string; name?: string; dirigeant?: string; active?: boolean; city?: string; naf?: string }> {
+): Promise<{ found: boolean; siren?: string; name?: string; dirigeant?: string; active?: boolean; city?: string; naf?: string; effectif?: string; website?: string }> {
   const n = (name || '').trim()
   if (n.length < 2) return { found: false }
   const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(n)}&page=1&per_page=1`
@@ -90,13 +98,15 @@ export async function lookupByName(
       active: r.etat_administratif ? r.etat_administratif === 'A' : undefined,
       city: r.siege?.libelle_commune || '',
       naf: r.activite_principale || '',
+      effectif: TRANCHE[r.tranche_effectif_salarie] || undefined,
+      website: extractWebsite(r),
     }
   } catch {
     return { found: false }
   }
 }
 
-export interface CompanyMatch { siren: string; name: string; dirigeant?: string; active?: boolean; city: string; naf: string }
+export interface CompanyMatch { siren: string; name: string; dirigeant?: string; active?: boolean; city: string; naf: string; effectif?: string; website?: string }
 
 // Renvoie plusieurs entreprises candidates pour un nom → l'utilisateur choisit.
 export async function searchCandidates(name: string, n = 10): Promise<CompanyMatch[]> {
@@ -116,6 +126,8 @@ export async function searchCandidates(name: string, n = 10): Promise<CompanyMat
         active: r.etat_administratif ? r.etat_administratif === 'A' : undefined,
         city: r.siege?.libelle_commune || '',
         naf: r.activite_principale || '',
+        effectif: TRANCHE[r.tranche_effectif_salarie] || undefined,
+        website: extractWebsite(r),
       }
     })
   } catch { return [] }
@@ -143,7 +155,7 @@ export async function reconcileByName(
 // Vérifie un SIREN et renvoie les infos entreprise (anti-faux positifs à la saisie).
 export async function lookupBySiren(
   siren: string,
-): Promise<{ found: boolean; name?: string; naf?: string; city?: string; dirigeant?: string; active?: boolean }> {
+): Promise<{ found: boolean; name?: string; naf?: string; city?: string; dirigeant?: string; active?: boolean; effectif?: string; website?: string }> {
   const clean = (siren || '').replace(/\s/g, '')
   if (!/^\d{9}$/.test(clean)) return { found: false }
   const url = `https://recherche-entreprises.api.gouv.fr/search?q=${clean}&page=1&per_page=1`
@@ -161,6 +173,8 @@ export async function lookupBySiren(
       city: r.siege?.libelle_commune || '',
       dirigeant: dir ? `${String(dir.prenoms || '').split(' ')[0]} ${dir.nom}`.trim() : undefined,
       active: r.etat_administratif ? r.etat_administratif === 'A' : undefined,
+      effectif: TRANCHE[r.tranche_effectif_salarie] || undefined,
+      website: extractWebsite(r),
     }
   } catch {
     return { found: false }
@@ -208,6 +222,7 @@ export async function fetchCompanies(
       city,
       dep,
       dirigeant: dir ? `${String(dir.prenoms || '').split(' ')[0]} ${dir.nom}`.trim() : undefined,
+      website: extractWebsite(r),
       dateCreation: dateCreation || undefined,
       young,
       signals,

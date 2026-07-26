@@ -119,8 +119,13 @@ export default function LeadDetailPage() {
   const genAccountSeq = async () => {
     if (!d) return
     setAccountBusy(true); setAccountMsg(null)
-    const r = await generateAccountSequence({ name: d.lead.company, siren: d.lead.siren, city: d.company?.location })
-    setAccountMsg(`${r.contacts} personas ajoutés + séquence créée${r.mockPersonas ? ' (personas simulés — connecte Unipile pour le réel)' : ''}.`)
+    const r = await generateAccountSequence({ name: d.lead.company, siren: d.lead.siren, city: d.company?.location, dirigeant: d.lead.dirigeant } as any)
+    const msg = r.contacts === 0
+      ? 'Aucun contact réel disponible. Connecte Unipile pour résoudre les personas (aucun contact n\'est inventé).'
+      : r.connected
+        ? `${r.contacts} contact(s) réel(s) ajouté(s) + séquence créée.`
+        : `${r.contacts} contact réel (dirigeant data.gouv) + séquence créée. Connecte Unipile pour Head of Sales / Marketing.`
+    setAccountMsg(msg)
     setAccountBusy(false)
   }
   const [reminderMsg, setReminderMsg] = useState<string | null>(null)

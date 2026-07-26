@@ -58,6 +58,8 @@ export interface Lead {
   naf?: string          // code activité principal (data.gouv)
   city?: string         // ville du siège (data.gouv)
   dirigeant?: string    // dirigeant officiel (data.gouv)
+  effectif?: string     // tranche d'effectif (data.gouv)
+  website?: string      // site web déclaré (data.gouv, si présent)
 }
 
 export interface Action {
@@ -159,6 +161,7 @@ export interface SourcedCompany {
   city: string
   dep: string
   dirigeant?: string  // dirigeant SIRENE (best-effort, pas un persona ciblé)
+  website?: string    // site web déclaré (data.gouv, si présent — sinon absent)
   dateCreation?: string // AAAA-MM-JJ
   young?: boolean     // créée il y a < 3 ans (proxy startup)
   signals: string[]   // ville, effectif… (signaux structurels)

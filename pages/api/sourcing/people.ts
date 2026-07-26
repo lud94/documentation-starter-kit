@@ -12,26 +12,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const location = str(req.query.location)
   const sector = str(req.query.sector)
 
-  if (unipileConfigured()) {
-    // TODO câblage réel : Unipile /linkedin/search (people) avec keywords = role + sector + location.
-    // Format à valider au 1er appel réel → on retombe sur mock si erreur.
+  // Sans Unipile connecté, on NE fabrique AUCUNE personne : recherche = 0 résultat.
+  // (La recherche de personnes sur LinkedIn dépend strictement du connecteur.)
+  if (!unipileConfigured()) {
+    return res.status(200).json({ connected: false, people: [] })
   }
 
-  // Mock déterministe (prêt à remplacer par Unipile)
-  const firsts = ['Julien', 'Marie', 'Alexandre', 'Sophie', 'Nicolas', 'Camille', 'Thomas', 'Léa']
-  const lasts = ['Durand', 'Leroy', 'Moreau', 'Simon', 'Michel', 'Garcia', 'Bernard', 'Petit']
-  const companies = ['Cardo', 'Flowly', 'Beacon', 'Vecto', 'Nomia', 'Swan', 'Lago', 'Dust']
-  const people = Array.from({ length: 8 }, (_, i) => {
-    const name = `${firsts[i % firsts.length]} ${lasts[(i * 3) % lasts.length]}`
-    return {
-      id: `pp_${i}`,
-      name,
-      title: role || 'Head of Sales',
-      company: companies[i % companies.length],
-      location: location || 'Paris',
-      sector: sector || 'SaaS B2B',
-      linkedinUrl: `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(name)}`,
-    }
-  })
-  res.status(200).json({ mock: !unipileConfigured(), people })
+  try {
+    // TODO câblage réel : Unipile /linkedin/search (people) — keywords = role + sector + location.
+    // Tant que le format n'est pas validé, on renvoie une liste vide plutôt que du faux.
+    const people: any[] = []
+    void role; void location; void sector
+    return res.status(200).json({ connected: true, people })
+  } catch (e: any) {
+    return res.status(200).json({ connected: true, error: e?.message, people: [] })
+  }
 }

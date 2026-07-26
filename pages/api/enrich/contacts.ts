@@ -7,24 +7,12 @@ import { getCachedDirigeants, setCachedDirigeants, bumpUsage } from '../../../li
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
-// Fallback mock — déterministe par SIREN, utilisé tant que les clés ne sont pas posées.
-function mockContacts(siren: string, company: string, personas: string[], dirigeant?: string): ResolvedContact[] {
-  const firsts = ['Julien', 'Marie', 'Alexandre', 'Sophie', 'Nicolas', 'Camille']
-  const lasts = ['Durand', 'Leroy', 'Moreau', 'Simon', 'Michel', 'Garcia']
-  const slug = company.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 14)
-  return personas.map((persona, i) => {
-    const f = firsts[((siren.charCodeAt(0) || 65) + i) % firsts.length]
-    const l = lasts[((siren.charCodeAt(1) || 66) + i) % lasts.length]
-    const isDir = persona.includes('Founder') || persona.includes('CEO')
-    return {
-      name: isDir && dirigeant ? dirigeant : `${f} ${l}`,
-      persona,
-      title: persona,
-      linkedinUrl: `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${f} ${l} ${company}`)}`,
-      email: `${f}.${l}@${slug}.com`.toLowerCase(),
-      source: isDir ? 'pappers' : 'unipile',
-    }
-  })
+// Contact RÉEL issu du dirigeant data.gouv (aucune invention).
+// Pas d'email ni d'URL LinkedIn fabriqués : on ne remplit que ce qu'on sait.
+function dirigeantContact(dirigeant?: string): ResolvedContact[] {
+  const name = (dirigeant || '').trim()
+  if (!name) return []
+  return [{ name, persona: 'Founder/CEO', title: 'Dirigeant', source: 'sirene' }]
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -37,31 +25,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const usingReal = pappersConfigured() || unipileConfigured()
 
   try {
-    if (usingReal) {
-      // Pappers : cache par SIREN → on ne repaie pas un dirigeant déjà résolu.
-      const pappers = async (): Promise<ResolvedContact[]> => {
-        if (!pappersConfigured() || !siren) return []
-        const cached = await getCachedDirigeants(siren)
-        if (cached) return cached // hit → 0 appel facturé
-        const fresh = await fetchDirigeants(siren)
-        await bumpUsage('pappers_calls') // 1 appel réel facturé
-        if (fresh.length) await setCachedDirigeants(siren, fresh)
-        return fresh
-      }
-      const [dirs, personaContacts] = await Promise.all([
-        pappers(),
-        unipileConfigured() ? findPersonas(company, personas) : Promise.resolve([]),
-      ])
-      // fusion : dirigeants Pappers + personas Unipile ; complète les manquants par mock.
-      const merged: ResolvedContact[] = [...dirs, ...personaContacts]
-      const covered = new Set(merged.map((c) => c.persona))
-      const missing = personas.filter((p) => !covered.has(p))
-      if (missing.length) merged.push(...mockContacts(siren, company, missing, dirigeant).map((c) => ({ ...c, source: 'sirene' as const })))
-      return res.status(200).json({ mock: false, contacts: merged })
+    // Aucun connecteur de personas configuré → on NE devine RIEN.
+    // Seul le dirigeant réel (data.gouv/SIRENE) peut remonter. Sinon : 0 contact.
+    if (!usingReal) {
+      const contacts = dirigeantContact(dirigeant)
+      return res.status(200).json({ mock: false, connected: false, contacts })
     }
-    return res.status(200).json({ mock: true, contacts: mockContacts(siren, company, personas, dirigeant) })
+
+    // Pappers : cache par SIREN → on ne repaie pas un dirigeant déjà résolu.
+    const pappers = async (): Promise<ResolvedContact[]> => {
+      if (!pappersConfigured() || !siren) return []
+      const cached = await getCachedDirigeants(siren)
+      if (cached) return cached // hit → 0 appel facturé
+      const fresh = await fetchDirigeants(siren)
+      await bumpUsage('pappers_calls') // 1 appel réel facturé
+      if (fresh.length) await setCachedDirigeants(siren, fresh)
+      return fresh
+    }
+    const [dirs, personaContacts] = await Promise.all([
+      pappers(),
+      unipileConfigured() ? findPersonas(company, personas) : Promise.resolve([]),
+    ])
+    // Fusion : dirigeants Pappers + personas Unipile. On complète le dirigeant
+    // par data.gouv s'il manque, mais JAMAIS de personas inventés.
+    const merged: ResolvedContact[] = [...dirs, ...personaContacts]
+    const hasFounder = merged.some((c) => /founder|ceo|dirigeant/i.test(c.persona))
+    if (!hasFounder) merged.push(...dirigeantContact(dirigeant))
+    return res.status(200).json({ mock: false, connected: true, contacts: merged })
   } catch (e: any) {
-    // en cas d'erreur réseau côté connecteur, on ne casse pas l'UI : mock.
-    return res.status(200).json({ mock: true, error: e?.message, contacts: mockContacts(siren, company, personas, dirigeant) })
+    // Erreur réseau connecteur → on ne casse pas l'UI, mais on n'invente pas :
+    // au pire, le dirigeant réel, sinon rien.
+    return res.status(200).json({ mock: false, connected: false, error: e?.message, contacts: dirigeantContact(dirigeant) })
   }
 }
