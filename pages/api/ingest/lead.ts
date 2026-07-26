@@ -24,16 +24,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const name = String(body?.name || '').trim()
+  const isProfile = /linkedin\.com\/in\//i.test(String(body?.url || ''))
+  // Une personne n'est retenue QUE si un vrai nom est fourni (profil LinkedIn / saisie).
+  // Sinon (page société, Google…) → COMPTE : aucun nom fabriqué.
+  const hasPerson = name.length > 1
   const [firstName, ...rest] = name.split(' ')
   const lead: Lead = {
     id: `ld_${Math.random().toString(36).slice(2, 10)}`,
-    firstName: firstName || 'Prénom', lastName: rest.join(' '),
-    title: String(body?.title || '').trim() || 'À qualifier',
-    company: String(body?.company || '').trim() || '—',
+    kind: hasPerson ? 'contact' : 'account',
+    firstName: hasPerson ? firstName : '', lastName: hasPerson ? rest.join(' ') : '',
+    title: hasPerson ? (String(body?.title || '').trim() || 'À qualifier') : '',
+    company: String(body?.company || '').trim() || (hasPerson ? '—' : name) || '—',
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
     email: body?.email || null, phone: null,
     // On ne renseigne linkedinUrl que si l'URL est vraiment un profil LinkedIn.
-    linkedinUrl: /linkedin\.com\/in\//i.test(String(body?.url || '')) ? String(body.url).trim() : undefined,
+    linkedinUrl: isProfile ? String(body.url).trim() : undefined,
   }
 
   // Vérification entreprise via data.gouv (gratuit, officiel) AVANT enregistrement.
@@ -48,12 +53,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         lead.naf = v.naf
         lead.city = v.city
         lead.dirigeant = v.dirigeant
-        // Si aucun contact nommé, on rattache le dirigeant officiel comme point de contact.
-        const noPerson = !lead.firstName || lead.firstName === 'Prénom' || lead.firstName === lead.company
-        if (noPerson && v.dirigeant) {
-          const [fn, ...rest] = v.dirigeant.split(' ')
-          lead.firstName = fn; lead.lastName = rest.join(' '); if (lead.title === 'À qualifier') lead.title = 'Dirigeant'
-        }
+        lead.effectif = v.effectif
+        lead.website = v.website
+        // On NE fabrique PAS de personne : le dirigeant reste une métadonnée du compte.
       }
     } catch { /* vérif best-effort */ }
   }

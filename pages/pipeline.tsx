@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, enrollAccount, promoteDirigeant, getAccountDetail, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, verifyLeadCompany, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 
@@ -93,31 +93,29 @@ const fmtEuro = (n?: number) => (typeof n === 'number' ? new Intl.NumberFormat('
 
 function AccountCard({ company, account, contacts, onChanged }: { company: string; account?: Lead; contacts: Lead[]; onChanged: () => void }) {
   const [open, setOpen] = useState(false)
-  const [sel, setSel] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [detail, setDetail] = useState<AccountDetail | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
+  const [cf, setCf] = useState({ firstName: '', lastName: '', title: '', persona: '', email: '', linkedinUrl: '' })
   // Métadonnées entreprise : le lead-compte, sinon le 1er contact porteur d'un SIREN.
   const meta = account || contacts.find((c) => c.siren) || contacts[0]
-  const enrollable = contacts.filter((c) => c.stage === 'to_invite' || c.stage === 'invited' || c.stage === 'connected')
-  const allSel = enrollable.length > 0 && enrollable.every((c) => sel.has(c.id))
   const hasDirigeantContact = contacts.some((c) => (meta?.dirigeant || '').toLowerCase().includes((c.lastName || '').toLowerCase()) && c.lastName)
-  const toggleAll = () => setSel(allSel ? new Set() : new Set(enrollable.map((c) => c.id)))
-  const toggleOne = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
-  const expand = async () => {
-    const next = !open; setOpen(next)
-    if (next && !detail && meta?.siren) { setLoadingDetail(true); const d = await getAccountDetail(meta.siren); setDetail(d); setLoadingDetail(false) }
-  }
-  const enroll = async () => {
-    const ids = Array.from(sel); if (!ids.length) return
-    setBusy(true); const r = await enrollAccount(ids); setBusy(false); setSel(new Set())
-    setMsg(`${r.enrolled} contact(s) enrôlé(s) individuellement.`); onChanged(); setTimeout(() => setMsg(null), 3000)
-  }
-  const promote = async () => {
+  const loadDetail = async () => { if (!detail && meta?.siren) { setLoadingDetail(true); const d = await getAccountDetail(meta.siren); setDetail(d); setLoadingDetail(false) } }
+  const expand = async () => { const next = !open; setOpen(next); if (next) loadDetail() }
+  const flash = (m: string) => { setMsg(m); onChanged(); setTimeout(() => setMsg(null), 3000) }
+  const promote = async () => { if (!account) return; setBusy(true); await promoteDirigeant(account.id); setBusy(false); flash('Dirigeant ajouté comme contact.') }
+  const verify = async () => {
     if (!account) return
-    setBusy(true); await promoteDirigeant(account.id); setBusy(false)
-    setMsg('Dirigeant ajouté comme contact invitable.'); onChanged(); setTimeout(() => setMsg(null), 3000)
+    setBusy(true); const r = await verifyLeadCompany(account.id); setBusy(false); setDetail(null); await loadDetail()
+    flash(r?.found ? 'Entreprise vérifiée (data.gouv).' : 'Entreprise introuvable sur data.gouv — précise le nom.')
+  }
+  const addContact = async () => {
+    if (!account || (!cf.firstName.trim() && !cf.lastName.trim())) return
+    setBusy(true); await addAccountContact(account.id, cf); setBusy(false)
+    setCf({ firstName: '', lastName: '', title: '', persona: '', email: '', linkedinUrl: '' }); setAddOpen(false)
+    flash('Contact ajouté au compte → il entre dans « à inviter ».')
   }
   return (
     <div className="card overflow-hidden">
@@ -126,7 +124,9 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-semibold text-gray-900 truncate">{company}</p>
-            {meta?.siren && <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${meta.active === false ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}`}>{meta.active === false ? 'Radiée' : 'Active'}</span>}
+            {meta?.siren
+              ? <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${meta.active === false ? 'bg-red-50 text-red-500' : 'bg-emerald-50 text-emerald-600'}`}>{meta.active === false ? 'Radiée' : 'Active'}</span>
+              : <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">Non vérifiée</span>}
             {meta?.siren && <span className="text-[10px] text-gray-400 font-mono">SIREN {meta.siren}</span>}
             {contacts.length === 0 && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 text-amber-600">Compte seul · 0 contact</span>}
           </div>
@@ -164,50 +164,57 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
           )}
           <p className="text-[11px] text-gray-400">Site web / email ne sont pas exposés par data.gouv (SIRENE). {meta?.website ? <>Site : <a href={`https://${meta.website}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{meta.website}</a></> : 'À compléter via Unipile/web (manuel).'}</p>
 
-          {/* Contacts */}
-          {contacts.length === 0 ? (
+          {/* Actions compte */}
+          {account && (
             <div className="flex items-center gap-2 flex-wrap">
-              <p className="text-xs text-gray-400 flex-1 min-w-[180px]">Aucun contact. {meta?.dirigeant ? 'Promeus le dirigeant, ou résous les personas via Unipile.' : 'Résous les personas via Unipile (rien n\'est inventé).'}</p>
-              {account && meta?.dirigeant && !hasDirigeantContact && (
-                <button onClick={promote} disabled={busy} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-40">+ Dirigeant en contact</button>
-              )}
+              <button onClick={verify} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40 flex items-center gap-1.5">
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                {meta?.siren ? 'Revérifier l\'entreprise' : 'Vérifier l\'entreprise'}
+              </button>
+              {meta?.dirigeant && !hasDirigeantContact && <button onClick={promote} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">+ Dirigeant en contact</button>}
+              <button onClick={() => setAddOpen((v) => !v)} className="text-xs font-semibold gradient-brand text-white px-2.5 py-1.5 rounded-lg">+ Renseigner un contact / persona</button>
             </div>
+          )}
+
+          {/* Formulaire ajout contact */}
+          {addOpen && account && (
+            <div className="bg-white rounded-xl border border-gray-200 p-3 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <input value={cf.firstName} onChange={(e) => setCf({ ...cf, firstName: e.target.value })} placeholder="Prénom" className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-indigo-400" />
+                <input value={cf.lastName} onChange={(e) => setCf({ ...cf, lastName: e.target.value })} placeholder="Nom" className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-indigo-400" />
+                <input value={cf.title} onChange={(e) => setCf({ ...cf, title: e.target.value })} placeholder="Titre (ex: Head of Sales)" className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-indigo-400" />
+                <select value={cf.persona} onChange={(e) => setCf({ ...cf, persona: e.target.value })} className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-indigo-400 text-gray-600">
+                  <option value="">Persona…</option>{PERSONAS.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+                <input value={cf.email} onChange={(e) => setCf({ ...cf, email: e.target.value })} placeholder="Email (optionnel)" className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-indigo-400" />
+                <input value={cf.linkedinUrl} onChange={(e) => setCf({ ...cf, linkedinUrl: e.target.value })} placeholder="URL LinkedIn (optionnel)" className="px-2.5 py-1.5 text-sm rounded-lg border border-gray-200 focus:outline-none focus:border-indigo-400" />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setAddOpen(false)} className="text-xs text-gray-400 px-2.5 py-1.5">Annuler</button>
+                <button onClick={addContact} disabled={busy || (!cf.firstName.trim() && !cf.lastName.trim())} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-40">Ajouter le contact</button>
+              </div>
+            </div>
+          )}
+
+          {/* Contacts rattachés */}
+          {contacts.length === 0 ? (
+            <p className="text-xs text-gray-400">Aucun contact rattaché. Renseigne une personne (ci-dessus) ou résous les personas via Unipile — rien n'est inventé.</p>
           ) : (
-            <>
-              <div className="flex items-center justify-between">
-                <label className="flex items-center gap-2 text-xs font-medium text-gray-600 cursor-pointer">
-                  <span className={`w-4 h-4 rounded border flex items-center justify-center ${allSel ? 'gradient-brand border-transparent' : 'border-gray-300 bg-white'}`}>
-                    {allSel && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-                  </span>
-                  <input type="checkbox" checked={allSel} onChange={toggleAll} className="hidden" />
-                  Sélectionner tout le compte {enrollable.length > 0 && `(${enrollable.length} enrôlable${enrollable.length > 1 ? 's' : ''})`}
-                </label>
-                <div className="flex items-center gap-2">
-                  {account && meta?.dirigeant && !hasDirigeantContact && <button onClick={promote} disabled={busy} className="text-xs font-medium text-gray-500 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">+ Dirigeant</button>}
-                  <button onClick={enroll} disabled={busy || sel.size === 0} className="text-xs font-semibold gradient-brand text-white px-3 py-1.5 rounded-lg disabled:opacity-40 transition-opacity">
-                    {busy ? '…' : `Enrôler la sélection (${sel.size})`}
-                  </button>
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                {contacts.map((c) => {
-                  const canEnroll = c.stage === 'to_invite' || c.stage === 'invited' || c.stage === 'connected'
-                  const sm = STAGE_META[c.stage]
-                  return (
-                    <div key={c.id} className="flex items-center gap-2.5 bg-white rounded-lg border border-gray-100 px-3 py-2">
-                      <button onClick={() => canEnroll && toggleOne(c.id)} disabled={!canEnroll} className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${sel.has(c.id) ? 'gradient-brand border-transparent' : 'border-gray-300'} ${!canEnroll ? 'opacity-30 cursor-not-allowed' : ''}`}>
-                        {sel.has(c.id) && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-                      </button>
-                      <Link href={`/leads/${c.id}`} className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium text-gray-800 truncate">{c.firstName} {c.lastName}</span>
-                        <span className="block text-xs text-gray-400 truncate">{c.title}{c.persona ? ` · ${c.persona}` : ''}</span>
-                      </Link>
-                      <span className="text-[10px] font-medium px-2 py-0.5 rounded-full text-white flex-shrink-0" style={{ backgroundColor: sm.color }}>{sm.label}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </>
+            <div className="space-y-1.5">
+              {contacts.map((c) => {
+                const sm = STAGE_META[c.stage]
+                return (
+                  <Link key={c.id} href={`/leads/${c.id}`} className="flex items-center gap-2.5 bg-white rounded-lg border border-gray-100 px-3 py-2 hover:border-gray-200">
+                    <span className="w-7 h-7 rounded-lg gradient-brand flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0">{`${(c.firstName[0] || '')}${(c.lastName[0] || '')}`.toUpperCase()}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium text-gray-800 truncate">{c.firstName} {c.lastName}</span>
+                      <span className="block text-xs text-gray-400 truncate">{c.title}{c.persona ? ` · ${c.persona}` : ''}</span>
+                    </span>
+                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full text-white flex-shrink-0" style={{ backgroundColor: sm.color }}>{sm.label}</span>
+                  </Link>
+                )
+              })}
+            </div>
           )}
           {msg && <p className="text-[11px] text-emerald-600">{msg}</p>}
         </div>
@@ -222,7 +229,7 @@ function AccountsView({ leads, onChanged }: { leads: Lead[]; onChanged: () => vo
     const k = l.company || '—'
     if (!groups.has(k)) groups.set(k, { contacts: [] })
     const g = groups.get(k)!
-    if (l.kind === 'account') g.account = l
+    if (isAccountLead(l)) g.account = l
     else g.contacts.push(l)
   }
   const entries = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]))
@@ -266,7 +273,7 @@ export default function PipelinePage() {
     return true
   })
   // La vue Contacts n'affiche QUE des personnes (les comptes seuls restent en vue Comptes).
-  const contactLeads = filtered.filter((l) => l.kind !== 'account')
+  const contactLeads = filtered.filter((l) => !isAccountLead(l))
   const byStage = (s: Stage) => contactLeads.filter((l) => l.stage === s)
   const hasFilter = query || statusF.size || stageF.size || personaF.size || enrichF !== 'all'
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { Sequence, SequenceStep, ActionType, Channel as ChannelType, StepCondition, Lead } from '../types/prospector'
 import { CONDITION_LABEL, ACTION_META, CHANNEL_META } from '../types/prospector'
-import { getSequences, saveSequence, deleteSequence, nextSequenceId, enrollLeadsInSequence, getChannels, toggleChannel, getLeads } from '../lib/prospector/capabilities'
+import { getSequences, saveSequence, deleteSequence, nextSequenceId, enrollLeadsInSequence, getChannels, toggleChannel, getLeads, isAccountLead } from '../lib/prospector/capabilities'
 import type { Channel } from '../lib/prospector/capabilities'
 
 const CHANNELS: ChannelType[] = ['linkedin', 'email', 'whatsapp']
@@ -238,7 +238,7 @@ function LeadPicker({ onClose, onEnroll }: { onClose: () => void; onEnroll: (n: 
   const [q, setQ] = useState('')
   const [persona, setPersona] = useState<string>('')
   const [hideInSeq, setHideInSeq] = useState(true)
-  useEffect(() => { getLeads().then((l) => setLeads(l.filter((x) => x.kind !== 'account'))) }, [])
+  useEffect(() => { getLeads().then((l) => setLeads(l.filter((x) => !isAccountLead(x)))) }, [])
 
   const filtered = leads.filter((l) =>
     (!q || `${l.firstName} ${l.lastName} ${l.company}`.toLowerCase().includes(q.toLowerCase()))

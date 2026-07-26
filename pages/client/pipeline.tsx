@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { Lead, Stage } from '../../types/prospector'
 import { STAGE_META } from '../../types/prospector'
-import { getLeads } from '../../lib/prospector/capabilities'
+import { getLeads, isAccountLead } from '../../lib/prospector/capabilities'
 
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
 
 export default function ClientPipeline() {
   const [leads, setLeads] = useState<Lead[]>([])
-  useEffect(() => { getLeads().then((l) => setLeads(l.filter((x) => x.kind !== 'account'))) }, [])
+  useEffect(() => { getLeads().then((l) => setLeads(l.filter((x) => !isAccountLead(x)))) }, [])
   const byStage = (s: Stage) => leads.filter((l) => l.stage === s)
 
   return (

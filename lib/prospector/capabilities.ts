@@ -355,8 +355,12 @@ export async function verifyLeadCompany(id: string): Promise<{ found: boolean; a
       l.company = v.name || l.company; l.siren = v.siren; l.active = v.active; l.naf = v.naf; l.city = v.city; l.dirigeant = v.dirigeant
       if (v.effectif) l.effectif = v.effectif
       if (v.website) l.website = v.website
-      const noPerson = !l.firstName || l.firstName === 'Prénom' || l.firstName === l.company
-      if (noPerson && v.dirigeant) { const [fn, ...rest] = v.dirigeant.split(' '); l.firstName = fn; l.lastName = rest.join(' '); if (l.title === 'À qualifier') l.title = 'Dirigeant' }
+      // Pour un COMPTE, on NE fabrique PAS de personne : le dirigeant reste une
+      // métadonnée. Il devient contact seulement via « + Dirigeant en contact ».
+      if (!isAccountLead(l)) {
+        const noPerson = !l.firstName || l.firstName === 'Prénom' || l.firstName === l.company
+        if (noPerson && v.dirigeant) { const [fn, ...rest] = v.dirigeant.split(' '); l.firstName = fn; l.lastName = rest.join(' '); if (l.title === 'À qualifier') l.title = 'Dirigeant' }
+      }
       await persistLead(l)
     }
     return { found: !!v.found, active: v.active, dirigeant: v.dirigeant }
@@ -810,6 +814,36 @@ let sourcedSeq = 0
 // SIREN → id de la carte « entreprise à enrichir » placeholder dans le pipe.
 const importedPlaceholders: Record<string, string> = {}
 
+// Un lead est un COMPTE (entreprise sans personne) si kind='account' OU si aucun
+// nom de personne n'est renseigné. Sert de garde-fou même pour d'anciens leads.
+export function isAccountLead(l: { kind?: string; firstName?: string; lastName?: string }): boolean {
+  if (l.kind === 'account') return true
+  if (l.kind === 'contact') return false
+  return !(l.firstName || '').trim() && !(l.lastName || '').trim()
+}
+
+// Ajoute un CONTACT (personne) rattaché à un compte → il entre, lui, dans « à inviter ».
+export interface AccountContactInput { firstName?: string; lastName?: string; title?: string; persona?: string; email?: string; linkedinUrl?: string }
+export async function addAccountContact(accountId: string, input: AccountContactInput): Promise<Lead | undefined> {
+  const acc = LEADS[accountId]
+  if (!acc) return undefined
+  const fn = (input.firstName || '').trim()
+  const ln = (input.lastName || '').trim()
+  if (!fn && !ln) return undefined // pas de personne → on ne crée rien
+  const lead: Lead = {
+    id: newLeadId(), kind: 'contact', firstName: fn || ln, lastName: fn ? ln : '',
+    title: (input.title || '').trim() || input.persona || 'À qualifier',
+    company: acc.company, persona: input.persona,
+    score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
+    email: input.email?.trim() || null, phone: null,
+    linkedinUrl: input.linkedinUrl?.trim() || undefined,
+    siren: acc.siren, signal: acc.signal, icebreaker: acc.icebreaker,
+  }
+  LEADS[lead.id] = lead
+  await persistLead(lead)
+  return lead
+}
+
 // Importe des entreprises sourcées dans le pipeline comme cartes « à enrichir »
 // (aucun contact encore : la résolution se déclenche ensuite, à la demande).
 export async function importCompaniesToPipeline(companies: SourcedCompany[]) {
@@ -864,11 +898,15 @@ export interface NewLeadInput { firstName?: string; lastName?: string; title?: s
 function newLeadId(): string { return `ld_${Math.random().toString(36).slice(2, 10)}` }
 
 export async function addLead(input: NewLeadInput): Promise<Lead> {
+  const fn = (input.firstName || '').trim()
+  const ln = (input.lastName || '').trim()
+  // Aucune personne nommée → c'est un COMPTE (reste hors « à inviter »).
+  const asAccount = !fn && !ln
   const lead: Lead = {
-    id: newLeadId(), kind: 'contact',
-    firstName: (input.firstName || '').trim() || 'Prénom',
-    lastName: (input.lastName || '').trim(),
-    title: (input.title || '').trim() || 'À qualifier',
+    id: newLeadId(), kind: asAccount ? 'account' : 'contact',
+    firstName: asAccount ? '' : (fn || 'Prénom'),
+    lastName: ln,
+    title: asAccount ? '' : ((input.title || '').trim() || 'À qualifier'),
     company: (input.company || '').trim() || '—',
     score: 0,
     temperature: 'warm',
@@ -876,6 +914,7 @@ export async function addLead(input: NewLeadInput): Promise<Lead> {
     stage: 'to_invite',
     email: input.email?.trim() || null,
     phone: input.phone?.trim() || null,
+    linkedinUrl: (input as any).linkedinUrl?.trim() || undefined,
   }
   LEADS[lead.id] = lead
   await persistLead(lead)
