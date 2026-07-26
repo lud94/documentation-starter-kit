@@ -17,7 +17,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   await hydrateKeystore()
   const ref = getKey('INGEST_TOKEN')
   const token = String(req.headers['x-ingest-token'] || (typeof req.body === 'object' ? req.body?.token : '') || '')
-  if (!ref || token !== ref) return res.status(401).json({ error: 'Jeton invalide.' })
+  if (!ref) return res.status(401).json({ error: 'Aucun jeton configuré côté Prospector (Admin → Connexions → INGEST_TOKEN, puis Enregistrer).' })
+  if (!token) return res.status(401).json({ error: 'Jeton absent dans l\'extension (champ Réglages vide).' })
+  if (token.trim() !== ref.trim()) return res.status(401).json({ error: 'Jeton différent de celui enregistré dans Prospector.' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const name = String(body?.name || '').trim()
