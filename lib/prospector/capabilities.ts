@@ -2,7 +2,7 @@
 // Chaque fonction exportée ici est une capacité appelable par l'UI ET, à terme,
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
-import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../../types/prospector'
+import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, SequenceStep, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../../types/prospector'
 import { ACTION_META } from '../../types/prospector'
 
 export type Period = 'week' | 'month' | 'quarter' | 'year'
@@ -870,6 +870,41 @@ export async function addContactsToPipeline(company: SourcedCompany, contacts: R
   })
   if (created.length) { try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ } }
   return { added: created.length }
+}
+
+// Orchestration : compte → personas (Unipile/mock) → contacts créés → séquence + enrôlement.
+// C'est le workflow « je charge un compte, je récupère mes personas et je lance la séquence ».
+const ACCOUNT_SEQ_TEMPLATE = (): SequenceStep[] => [
+  { id: 'st1', channel: 'linkedin', type: 'visit', condition: 'always', delayDays: 0 },
+  { id: 'st2', channel: 'linkedin', type: 'invitation', condition: 'always', delayDays: 1 },
+  { id: 'st3', channel: 'linkedin', type: 'message', condition: 'if_connected', delayDays: 2 },
+  { id: 'st4', channel: 'linkedin', type: 'relance', condition: 'if_no_response', delayDays: 4 },
+  { id: 'st5', channel: 'email', type: 'relance', condition: 'if_no_response', delayDays: 7 },
+]
+
+export async function generateAccountSequence(
+  company: { name: string; siren?: string; city?: string },
+  personas: string[] = PERSONA_TARGETS,
+): Promise<{ sequenceId: string; contacts: number; mockPersonas: boolean }> {
+  const comp: SourcedCompany = {
+    id: company.siren || `acc-${company.name}`, name: company.name, naf: '', sector: '',
+    effectif: '', city: company.city || '', dep: '', signals: [],
+  }
+  // 1) Personas via Unipile (fallback mock) — passe par /api/enrich/contacts.
+  const res = await resolveOne(comp, personas)
+  // 2) Crée les contacts dans le pipe (persistés + cloisonnés)
+  await addContactsToPipeline(comp, res.contacts)
+  // 3) Crée la séquence + enrôle
+  const seq: Sequence = {
+    id: nextSequenceId(),
+    name: `Compte ${company.name} · personas`,
+    status: 'active',
+    enrolled: res.contacts.length,
+    responseRate: 0,
+    steps: ACCOUNT_SEQ_TEMPLATE(),
+  }
+  await saveSequence(seq)
+  return { sequenceId: seq.id, contacts: res.contacts.length, mockPersonas: res.mock }
 }
 
 // Plafond du lot de résolution (garde-fou coût, comme l'enrichissement Kaspr).

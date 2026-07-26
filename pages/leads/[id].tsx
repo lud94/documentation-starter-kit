@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence } from '../../lib/prospector/capabilities'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
@@ -109,6 +109,15 @@ export default function LeadDetailPage() {
     if (v.found) applyMatch({ name: v.name, siren: v.siren, active: v.active, dirigeant: v.dirigeant })
     else setCandidates([])
   }
+  const [accountBusy, setAccountBusy] = useState(false)
+  const [accountMsg, setAccountMsg] = useState<string | null>(null)
+  const genAccountSeq = async () => {
+    if (!d) return
+    setAccountBusy(true); setAccountMsg(null)
+    const r = await generateAccountSequence({ name: d.lead.company, siren: d.lead.siren, city: d.company?.location })
+    setAccountMsg(`${r.contacts} personas ajoutés + séquence créée${r.mockPersonas ? ' (personas simulés — connecte Unipile pour le réel)' : ''}.`)
+    setAccountBusy(false)
+  }
   const [reminderMsg, setReminderMsg] = useState<string | null>(null)
   const planReminder = async () => {
     if (!d) return
@@ -147,6 +156,13 @@ export default function LeadDetailPage() {
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
         Retour au pipeline
       </Link>
+
+      {accountMsg && (
+        <div className="card p-3 mb-4 bg-emerald-50/50 border-emerald-100 flex items-center gap-2">
+          <span className="text-sm text-emerald-700">✓ {accountMsg}</span>
+          <Link href="/sequences" className="text-sm font-semibold text-indigo-600 hover:underline ml-auto">Voir la séquence →</Link>
+        </div>
+      )}
 
       {/* Header */}
       <div className="card p-5 mb-4">
@@ -194,6 +210,9 @@ export default function LeadDetailPage() {
             Envoyer un message
           </button>
           <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">LinkedIn</button>
+          <button onClick={genAccountSeq} disabled={accountBusy} className="text-sm font-semibold gradient-brand text-white px-3 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-1.5">
+            <span className="font-bold">✦</span>{accountBusy ? 'Génération…' : 'Personas + séquence (compte)'}
+          </button>
           <button onClick={() => setHandoffOpen(true)} className="text-sm font-medium text-violet-600 bg-violet-50 px-3 py-2 rounded-xl hover:bg-violet-100 transition-colors flex items-center gap-1.5">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
             Ouvrir dans Prospector Lab
