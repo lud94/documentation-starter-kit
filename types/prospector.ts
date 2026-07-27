@@ -253,6 +253,7 @@ export interface UsageSummary {
   cached: number
   byAgent: { agent: string; calls: number; tokens: number; cost: number }[]
   byModel: { model: string; calls: number; tokens: number; cost: number }[]
+  byDay?: { day: string; calls: number; cost: number }[]
 }
 
 export interface Diagnostic {

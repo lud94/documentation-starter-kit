@@ -128,7 +128,7 @@ export default function AdminPage() {
               </div>
             ))}
           </div>
-          <p className="text-xs text-gray-400 mb-3">{fmt(usage.cached)} tokens lus depuis le cache (prompt caching).</p>
+          <p className="text-xs text-gray-400 mb-3">Consommation IA <strong>réelle</strong> (cumulée), mesurée sur les tokens renvoyés par l'API — 0 tant qu'aucun appel n'a eu lieu.</p>
           {pappersCalls !== null && (
             <div className="card p-4 mb-4 flex items-center gap-2 text-sm">
               <span className="w-2 h-2 rounded-full bg-blue-500" />
@@ -141,6 +141,7 @@ export default function AdminPage() {
             <div className="card p-5">
               <h2 className="text-sm font-semibold text-gray-700 mb-3">Par agent</h2>
               <div className="space-y-2.5">
+                {usage.byAgent.length === 0 && <p className="text-xs text-gray-400">Aucun appel pour l'instant.</p>}
                 {usage.byAgent.map((a) => (
                   <div key={a.agent} className="flex items-center gap-3 text-sm">
                     <span className="text-gray-600 flex-1 truncate">{a.agent}</span>
@@ -153,6 +154,7 @@ export default function AdminPage() {
             <div className="card p-5">
               <h2 className="text-sm font-semibold text-gray-700 mb-3">Par modèle</h2>
               <div className="space-y-2.5">
+                {usage.byModel.length === 0 && <p className="text-xs text-gray-400">Aucun appel pour l'instant.</p>}
                 {usage.byModel.map((m) => (
                   <div key={m.model} className="flex items-center gap-3 text-sm">
                     <span className="text-gray-600 flex-1 truncate">{m.model}</span>
@@ -162,6 +164,28 @@ export default function AdminPage() {
                 ))}
               </div>
             </div>
+          </div>
+
+          {/* Journalier — combien je dépense par jour (14 derniers jours) */}
+          <div className="card p-5 mt-4">
+            <h2 className="text-sm font-semibold text-gray-700 mb-3">Journalier <span className="font-normal text-gray-400">— dépense IA par jour (14 j)</span></h2>
+            {(!usage.byDay || usage.byDay.length === 0) ? (
+              <p className="text-xs text-gray-400">Aucune dépense enregistrée. Les jours apparaîtront dès le premier appel IA.</p>
+            ) : (
+              <div className="space-y-2">
+                {usage.byDay.map((d) => {
+                  const max = Math.max(...usage.byDay!.map((x) => x.cost), 0.01)
+                  return (
+                    <div key={d.day} className="flex items-center gap-3 text-sm">
+                      <span className="text-xs text-gray-500 w-24">{d.day}</span>
+                      <div className="flex-1 bg-gray-50 rounded-full h-1.5"><div className="h-1.5 rounded-full gradient-brand" style={{ width: `${(d.cost / max) * 100}%` }} /></div>
+                      <span className="text-xs text-gray-400 w-16 text-right">{d.calls} appels</span>
+                      <span className="text-xs font-semibold text-gray-600 w-14 text-right">${d.cost.toFixed(2)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         </>
       )}

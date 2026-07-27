@@ -50,9 +50,9 @@ const LEADS: Record<string, Lead> = {}
 let ACTIONS: Action[] = []
 
 const QUOTAS: Record<Quota['type'], Quota> = {
-  invitation: { type: 'invitation', used: 6, max: 18 },
-  message: { type: 'message', used: 9, max: 25 },
-  visit: { type: 'visit', used: 34, max: 80 },
+  invitation: { type: 'invitation', used: 0, max: 18 },
+  message: { type: 'message', used: 0, max: 25 },
+  visit: { type: 'visit', used: 0, max: 80 },
 }
 
 function delay<T>(value: T): Promise<T> {
@@ -658,25 +658,24 @@ export function getKnowledgeBlocks(): Promise<KnowledgeBlock[]> {
   ])
 }
 
-export function getUsage(period: Period = 'month'): Promise<UsageSummary> {
-  const f = period === 'week' ? 0.25 : period === 'month' ? 1 : period === 'quarter' ? 3 : 12
-  const r = (n: number) => Math.round(n * f)
-  const c = (n: number) => Math.round(n * f * 100) / 100
-  return delay({
-    calls: r(142), tokensIn: r(1_620_000), tokensOut: r(22_400), cost: c(2.1), cached: r(67_000),
-    byAgent: [
-      { agent: 'Enrichissement', calls: r(62), tokens: r(1_146_000), cost: c(1.15) },
-      { agent: 'Scoring', calls: r(48), tokens: r(236_000), cost: c(0.32) },
-      { agent: "Dossier d'attaque", calls: r(18), tokens: r(180_000), cost: c(0.44) },
-      { agent: 'Rédaction', calls: r(10), tokens: r(62_000), cost: c(0.15) },
-      { agent: 'Conversationnel', calls: r(4), tokens: r(18_000), cost: c(0.04) },
-    ],
-    byModel: [
-      { model: 'Claude Haiku 4.5', calls: r(96), tokens: r(472_000), cost: c(0.48) },
-      { model: 'Claude Sonnet 5', calls: r(32), tokens: r(260_000), cost: c(0.62) },
-      { model: 'Perplexity sonar-pro', calls: r(14), tokens: r(910_000), cost: c(1.00) },
-    ],
-  })
+// Usage RÉEL (aucune simulation) : agrégé côté serveur depuis les compteurs.
+// Zéro tant qu'aucun appel IA réel n'a eu lieu ; se met à jour à chaque action.
+export async function getUsage(_period: Period = 'month'): Promise<UsageSummary> {
+  const empty: UsageSummary = { calls: 0, tokensIn: 0, tokensOut: 0, cost: 0, cached: 0, byAgent: [], byModel: [], byDay: [] }
+  try {
+    const d = await fetch('/api/config/usage').then((r) => r.json())
+    const ai = d.ai || {}
+    return {
+      calls: ai.calls || 0,
+      tokensIn: ai.tokensIn || 0,
+      tokensOut: ai.tokensOut || 0,
+      cost: ai.cost || 0,
+      cached: 0,
+      byAgent: ai.byAgent || [],
+      byModel: ai.byModel || [],
+      byDay: ai.byDay || [],
+    }
+  } catch { return empty }
 }
 
 export function getDiagnostics(): Promise<Diagnostic[]> {

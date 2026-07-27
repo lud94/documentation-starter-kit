@@ -48,3 +48,15 @@ export async function getUsage(key: string): Promise<number> {
     return (data?.count as number) || 0
   } catch { return memUsage[key] || 0 }
 }
+
+// Renvoie TOUS les compteurs d'usage (clé → total) pour agréger côté endpoint.
+export async function getUsageAll(): Promise<Record<string, number>> {
+  const sb = supabase()
+  if (!sb) return { ...memUsage }
+  try {
+    const { data } = await sb.from(USAGE).select('key,count')
+    const m: Record<string, number> = {}
+    ;(data || []).forEach((r: any) => { m[r.key] = r.count })
+    return m
+  } catch { return { ...memUsage } }
+}

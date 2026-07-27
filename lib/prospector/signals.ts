@@ -7,6 +7,9 @@ import type { SignalHit } from '../../types/prospector'
 import { reconcileByName } from './datagouv'
 import { searchExa, exaConfigured, type ExaDoc } from './exa'
 import { getKey } from './keystore'
+import { recordAiUsage } from './usage'
+
+const SIGNAL_AGENT = 'Recherche signal'
 
 export function signalsConfigured(): boolean {
   return !!getKey('ANTHROPIC_API_KEY')
@@ -52,6 +55,7 @@ async function callClaude(thesis: string, max: number): Promise<SignalHit[]> {
   })
   if (!res.ok) throw new Error(`Anthropic ${res.status} — ${(await res.text()).slice(0, 150)}`)
   const data = await res.json()
+  await recordAiUsage(SIGNAL_AGENT, model, data.usage?.input_tokens, data.usage?.output_tokens)
   const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
   return parseHits(text)
 }
@@ -79,6 +83,7 @@ async function extractWithClaude(thesis: string, docs: ExaDoc[], max: number): P
   })
   if (!res.ok) throw new Error(`Anthropic ${res.status} — ${(await res.text()).slice(0, 150)}`)
   const data = await res.json()
+  await recordAiUsage(SIGNAL_AGENT, model, data.usage?.input_tokens, data.usage?.output_tokens)
   const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
   return parseHits(text)
 }

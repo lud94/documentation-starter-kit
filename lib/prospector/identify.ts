@@ -10,6 +10,7 @@
 
 import { getKey } from './keystore'
 import { reconcileByName } from './datagouv'
+import { recordAiUsage } from './usage'
 
 export interface IdentifyInput { name?: string; title?: string; company?: string; url?: string }
 export interface IdentifyResult {
@@ -106,6 +107,7 @@ Réponds UNIQUEMENT en JSON: {"website","sector","summary","ca","effectif"}. sum
     })
     if (!res.ok) throw new Error(`Anthropic ${res.status}`)
     const data = await res.json()
+    await recordAiUsage('Enrichissement web', model, data.usage?.input_tokens, data.usage?.output_tokens)
     const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
     const m = text.match(/\{[\s\S]*\}/)
     if (!m) return { mode: 'claude-web' }
