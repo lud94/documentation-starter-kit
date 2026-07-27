@@ -7,6 +7,7 @@ import { STAGE_META, STATUS_META } from '../../types/prospector'
 import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence } from '../../lib/prospector/capabilities'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
+import AddToListModal from '../../components/AddToListModal'
 
 const CH_META: Record<ThreadMessage['channel'], { label: string; badge: string; dot: string }> = {
   linkedin: { label: 'LinkedIn', badge: 'in', dot: 'bg-blue-500' },
@@ -76,6 +77,8 @@ export default function LeadDetailPage() {
     setEditOpen(false); reload()
   }
   const [handoffOpen, setHandoffOpen] = useState(false)
+  const [listOpen, setListOpen] = useState(false)
+  const [listMsg, setListMsg] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [iceCopied, setIceCopied] = useState(false)
   const [thread, setThread] = useState<ThreadMessage[]>([])
@@ -233,6 +236,11 @@ export default function LeadDetailPage() {
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
             Ouvrir dans Prospector Lab
           </button>
+          <button onClick={() => setListOpen(true)} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors flex items-center gap-1.5">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h10M4 18h10" /></svg>
+            Ajouter à une liste
+          </button>
+          {listMsg && <span className="text-xs text-emerald-600 self-center">{listMsg}</span>}
           {/* Ajouter à séquence */}
           <div className="relative">
             <button onClick={() => setSeqOpen((v) => !v)} className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors flex items-center gap-1.5">
@@ -570,6 +578,10 @@ export default function LeadDetailPage() {
       </div>
 
       {redactionOpen && <RedactionModal detail={d} onClose={() => setRedactionOpen(false)} onSent={() => { if (typeof id === 'string') getLeadThread(id).then(setThread) }} />}
+
+      {listOpen && typeof id === 'string' && (
+        <AddToListModal leadIds={[id]} label={`${d.lead.firstName} ${d.lead.lastName}`} onClose={() => setListOpen(false)} onDone={(m) => { setListMsg(m); setTimeout(() => setListMsg(null), 3000) }} />
+      )}
 
       {handoffOpen && (() => {
         const dispositif = `# DISPOSITIF DE RÉDACTION — ${lead.company} / ${lead.firstName} ${lead.lastName}
