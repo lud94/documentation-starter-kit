@@ -3,9 +3,10 @@ import { getLists, createList, addToList, type LeadList } from '../lib/prospecto
 
 // Modale « Ajouter à une liste » : cocher des listes existantes et/ou en créer une.
 // Réutilisable (fiche contact, sélection pipeline…). `leadIds` = leads à ajouter.
-export default function AddToListModal({ leadIds, label, onClose, onDone }: {
+export default function AddToListModal({ leadIds, label, suggestName, onClose, onDone }: {
   leadIds: string[]
   label?: string
+  suggestName?: string // ex: persona du contact → nom de liste suggéré
   onClose: () => void
   onDone?: (msg: string) => void
 }) {
@@ -57,8 +58,13 @@ export default function AddToListModal({ leadIds, label, onClose, onDone }: {
           </div>
         )}
 
-        <div className="flex items-center gap-2 mb-4">
-          <input value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && confirm()} placeholder="Ou nouvelle liste…" className="flex-1 px-3 py-2 text-sm rounded-xl bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400" />
+        <div className="space-y-2 mb-4">
+          <div className="flex items-center gap-2">
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && confirm()} placeholder="Ou nouvelle liste…" className="flex-1 px-3 py-2 text-sm rounded-xl bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400" />
+          </div>
+          {suggestName && !newName && (
+            <button onClick={() => setNewName(suggestName)} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg hover:bg-indigo-100">+ Créer la liste « {suggestName} » (persona)</button>
+          )}
         </div>
 
         <div className="flex justify-end gap-2">

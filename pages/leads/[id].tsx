@@ -580,7 +580,7 @@ export default function LeadDetailPage() {
       {redactionOpen && <RedactionModal detail={d} onClose={() => setRedactionOpen(false)} onSent={() => { if (typeof id === 'string') getLeadThread(id).then(setThread) }} />}
 
       {listOpen && typeof id === 'string' && (
-        <AddToListModal leadIds={[id]} label={`${d.lead.firstName} ${d.lead.lastName}`} onClose={() => setListOpen(false)} onDone={(m) => { setListMsg(m); setTimeout(() => setListMsg(null), 3000) }} />
+        <AddToListModal leadIds={[id]} label={`${d.lead.firstName} ${d.lead.lastName}`} suggestName={d.lead.persona || d.lead.title} onClose={() => setListOpen(false)} onDone={(m) => { setListMsg(m); setTimeout(() => setListMsg(null), 3000) }} />
       )}
 
       {handoffOpen && (() => {

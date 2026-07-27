@@ -125,7 +125,10 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
   }
   const getWebsite = async () => {
     if (!account) return
-    setBusy(true); const r = await enrichCompanyWebsite(account.id); setBusy(false)
+    setBusy(true); const r = await enrichCompanyWebsite(account.id)
+    // Recharge la fiche data.gouv pour NE PAS perdre les dirigeants après enrichissement.
+    if (meta?.siren) { const dd = await getAccountDetail(meta.siren); setDetail(dd) }
+    setBusy(false)
     flash(
       r.mode === 'off' ? 'Agent web non configuré — pose ANTHROPIC_API_KEY dans Admin → Connexions.'
       : (r.website || r.summary) ? `Enrichi via le web${r.website ? ` · ${r.website}` : ''}.`
@@ -306,6 +309,14 @@ export default function PipelinePage() {
     if (router.query.tab === 'comptes') setMainView('comptes')
     if (typeof router.query.q === 'string') setQuery(router.query.q)
   }, [router.isReady, router.query.tab, router.query.q])
+  // Auto-actualisation : au retour sur l'onglet (après un import via l'extension
+  // Chrome), on recharge les leads sans avoir à cliquer « rafraîchir ».
+  useEffect(() => {
+    const onFocus = () => { if (document.visibilityState !== 'hidden') refresh() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus) }
+  }, [])
 
   const toggle = (set: Set<string>, setter: (s: Set<string>) => void, v: string) => {
     const n = new Set(set); n.has(v) ? n.delete(v) : n.add(v); setter(n)
