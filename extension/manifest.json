@@ -1,12 +1,19 @@
 {
   "manifest_version": 3,
-  "name": "Prospector — Ajouter un lead",
-  "version": "1.0.0",
-  "description": "Ajoute le profil LinkedIn courant dans Prospector en un clic.",
+  "name": "Prospector — Jarvis",
+  "version": "1.1.0",
+  "description": "Ajoute un lead en 1 clic ET une barre Jarvis flottante pour piloter Prospector depuis n'importe quelle page.",
   "permissions": ["activeTab", "storage", "scripting"],
   "host_permissions": ["https://*/*"],
   "action": {
     "default_popup": "popup.html",
     "default_title": "Ajouter à Prospector"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
 }

@@ -22,6 +22,7 @@ export default function SequencesPage() {
   const [dirty, setDirty] = useState(false)
   const [enrolledLeads, setEnrolledLeads] = useState<Lead[]>([])
   const [showEnrolled, setShowEnrolled] = useState(false)
+  const [discardTarget, setDiscardTarget] = useState<Sequence | null>(null)
 
   const load = () => getSequences().then((s) => { setSequences([...s]); if (!selectedId && s[0]) { setSelectedId(s[0].id); setDraft(clone(s[0])) } })
   useEffect(() => { reconcileCollections().then(load); getChannels().then(setChannels) /* eslint-disable-next-line */ }, [])
@@ -31,10 +32,8 @@ export default function SequencesPage() {
     if (seq) getSequenceLeads(seq).then(setEnrolledLeads); else setEnrolledLeads([])
   }, [selectedId, sequences])
 
-  const select = (s: Sequence) => {
-    if (dirty && !window.confirm('Modifications non enregistrées. Continuer et les perdre ?')) return
-    setSelectedId(s.id); setDraft(clone(s)); setSaved(false); setDirty(false); setEditMode(false)
-  }
+  const doSelect = (s: Sequence) => { setSelectedId(s.id); setDraft(clone(s)); setSaved(false); setDirty(false); setEditMode(false) }
+  const select = (s: Sequence) => { if (dirty) setDiscardTarget(s); else doSelect(s) }
 
   const newSequence = () => {
     const s: Sequence = { id: nextSequenceId(), name: 'Nouvelle séquence', status: 'paused', enrolled: 0, responseRate: 0, steps: [{ id: 'st1', channel: 'linkedin', type: 'invitation', condition: 'always', delayDays: 0 }] }
@@ -248,6 +247,20 @@ export default function SequencesPage() {
           )}
         </div>
       </div>
+
+      {discardTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setDiscardTarget(null)} />
+          <div className="relative card p-6 max-w-sm w-full">
+            <h2 className="text-base font-bold text-gray-900 mb-1">Modifications non enregistrées</h2>
+            <p className="text-sm text-gray-500 mb-4">Tu as des changements non sauvegardés sur cette séquence. Continuer et les perdre ?</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setDiscardTarget(null)} className="text-sm text-gray-500 px-3 py-2">Annuler</button>
+              <button onClick={() => { const t = discardTarget; setDiscardTarget(null); if (t) doSelect(t) }} className="bg-red-500 text-white text-sm font-semibold px-4 py-2 rounded-xl hover:bg-red-600">Perdre et continuer</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pickerOpen && draft && <LeadPicker onClose={() => setPickerOpen(false)} onEnroll={async (ids) => {
         for (const id of ids) { await enrollLead(id) }
