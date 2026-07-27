@@ -114,7 +114,11 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
   const getWebsite = async () => {
     if (!account) return
     setBusy(true); const r = await enrichCompanyWebsite(account.id); setBusy(false)
-    flash(r.website ? `Site trouvé : ${r.website}` : (r.mode === 'off' ? 'Agent web non configuré — pose ANTHROPIC_API_KEY dans Admin → Connexions.' : 'Aucun site web prouvé — rien n\'a été inventé.'))
+    flash(
+      r.mode === 'off' ? 'Agent web non configuré — pose ANTHROPIC_API_KEY dans Admin → Connexions.'
+      : (r.website || r.summary) ? `Enrichi via le web${r.website ? ` · ${r.website}` : ''}.`
+      : 'Aucune info prouvée sur le web — rien n\'a été inventé.',
+    )
   }
   const addContact = async () => {
     if (!account || (!cf.firstName.trim() && !cf.lastName.trim())) return
@@ -167,7 +171,13 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
               ))}
             </div>
           )}
-          <p className="text-[11px] text-gray-400">Site web / email ne sont pas exposés par data.gouv (SIRENE). {meta?.website ? <>Site : <a href={`https://${meta.website}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{meta.website}</a></> : 'À compléter via Unipile/web (manuel).'}</p>
+          {meta?.summary && (
+            <div className="bg-white rounded-lg border border-indigo-100 p-2.5">
+              <p className="text-[10px] font-semibold text-indigo-500 mb-1">Résumé web (agent Claude · hors data.gouv)</p>
+              <p className="text-xs text-gray-600 leading-relaxed">{meta.summary}</p>
+            </div>
+          )}
+          <p className="text-[11px] text-gray-400">Site web / secteur détaillé ne sont pas dans data.gouv (SIRENE) → « Enrichir via le web ». {meta?.website && <>Site : <a href={`https://${meta.website}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{meta.website}</a></>}</p>
 
           {/* Actions compte */}
           {account && (
@@ -176,7 +186,7 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                 {meta?.siren ? 'Revérifier l\'entreprise' : 'Vérifier l\'entreprise'}
               </button>
-              {!meta?.website && <button onClick={getWebsite} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">🌐 Trouver le site (agent web)</button>}
+              <button onClick={getWebsite} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">🌐 {meta?.summary ? 'Réenrichir via le web' : 'Enrichir via le web (site + résumé)'}</button>
               {meta?.dirigeant && !hasDirigeantContact && <button onClick={promote} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">+ Dirigeant en contact</button>}
               <button onClick={() => setAddOpen((v) => !v)} className="text-xs font-semibold gradient-brand text-white px-2.5 py-1.5 rounded-lg">+ Renseigner un contact / persona</button>
             </div>

@@ -9,7 +9,6 @@
 //   4) heuristique + réconciliation data.gouv (sans clé, sans invention).
 
 import { getKey } from './keystore'
-import { searchExaWeb, exaConfigured, type ExaDoc } from './exa'
 import { reconcileByName } from './datagouv'
 
 export interface IdentifyInput { name?: string; title?: string; company?: string; url?: string }
@@ -24,11 +23,6 @@ export interface IdentifyResult {
   mode: 'exa+claude' | 'claude-web' | 'heuristic' | 'url'
 }
 
-export function identifyMode(): 'exa+claude' | 'claude-web' | 'heuristic' {
-  if (getKey('ANTHROPIC_API_KEY') && exaConfigured()) return 'exa+claude'
-  if (getKey('ANTHROPIC_API_KEY')) return 'claude-web'
-  return 'heuristic'
-}
 
 const COMPANY_HINTS = /\b(sas|sasu|sarl|sa|eurl|sci|selarl|scop|group|groupe|conseil|consulting|technolog\w*|solutions?|labs?|studio|agence|partners|associ[ée]s|holding|company|inc|ltd|llc|gmbh|corp)\b/i
 
@@ -50,61 +44,6 @@ function cleanWebsite(raw?: string): string | undefined {
   const s = String(raw || '').trim()
   if (!s || !/\./.test(s)) return undefined
   return s.replace(/^https?:\/\//i, '').replace(/\/.*$/, '')
-}
-
-// ── Agent web : classe l'entité et retrouve site web + société. ────────────────
-// Un SEUL fournisseur par appel : Claude (avec son outil web) par défaut. Exa
-// n'est utilisé QUE si on l'active explicitement (forceClaudeWeb=false) — jamais
-// les deux « en plus » l'un de l'autre.
-async function agentIdentify(input: IdentifyInput, opts: { forceClaudeWeb?: boolean } = {}): Promise<IdentifyResult | null> {
-  const key = getKey('ANTHROPIC_API_KEY')
-  if (!key) return null
-  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
-  const q = [input.name, input.company, input.title].filter(Boolean).join(' ')
-
-  let docs: ExaDoc[] = []
-  const useExa = exaConfigured() && !opts.forceClaudeWeb
-  if (useExa) { try { docs = await searchExaWeb(q) } catch { docs = [] } }
-
-  const corpus = docs.map((d, i) => `[${i + 1}] ${d.title}\nURL: ${d.url}\n${d.text}`).join('\n\n')
-  const system = `Tu classifies une entité importée par un commercial B2B.
-Détermine si l'élément désigne une PERSONNE (un individu, futur contact) ou une ENTREPRISE (un compte).
-${useExa ? "On te fournit des extraits web. N'invente RIEN au-delà de ces extraits." : 'Utilise la recherche web pour vérifier.'}
-Retrouve, si tu en as la preuve, le site web officiel de l'entreprise et le nom exact de la société.
-Ne devine JAMAIS un site web ou une donnée absente : laisse le champ vide si tu n'as pas la preuve.
-Réponds UNIQUEMENT en JSON: {"kind":"person"|"company","firstName","lastName","title","company","website"}.`
-
-  const body: any = {
-    model,
-    max_tokens: 600,
-    system,
-    messages: [{ role: 'user', content: `Élément importé:\nnom: ${input.name || ''}\ntitre: ${input.title || ''}\nsociété: ${input.company || ''}\nurl: ${input.url || ''}\n\n${useExa ? `Extraits web:\n${corpus}\n\n` : ''}Classe et enrichis.` }],
-  }
-  if (!useExa) body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]
-
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) throw new Error(`Anthropic ${res.status}`)
-  const data = await res.json()
-  const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-  const m = text.match(/\{[\s\S]*\}/)
-  if (!m) return null
-  let p: any
-  try { p = JSON.parse(m[0]) } catch { return null }
-  const kind = p.kind === 'person' ? 'person' : 'company'
-  return {
-    kind,
-    firstName: p.firstName || undefined,
-    lastName: p.lastName || undefined,
-    title: p.title || input.title || undefined,
-    company: p.company || input.company || undefined,
-    website: cleanWebsite(p.website),
-    confidence: 'high',
-    mode: useExa ? 'exa+claude' : 'claude-web',
-  }
 }
 
 // ── Heuristique (sans clé) : URL + forme du nom + réconciliation data.gouv. ─────
@@ -144,13 +83,46 @@ export async function identifyLead(input: IdentifyInput): Promise<IdentifyResult
 
 // Complète le site web d'une entreprise déjà connue (Comptes) via l'agent web.
 // Renvoie undefined si aucune preuve — jamais deviné.
-export async function findCompanyWebsite(company: string, city?: string): Promise<{ website?: string; mode: string }> {
-  // Un seul fournisseur : Claude web. (Pas d'Exa en plus → pas de double conso.)
-  if (!getKey('ANTHROPIC_API_KEY')) return { website: undefined, mode: 'off' }
+// Enrichissement COMPTE via le web (Claude seul) : trouve le site officiel, le
+// PARCOURT et résume ce que data.gouv ne donne pas — secteur réel, activité,
+// proposition de valeur, cible/clients, actus. N'invente rien (champ vide sinon).
+export interface CompanyWeb { website?: string; summary?: string; sector?: string; mode: string }
+
+export async function enrichCompanyWeb(company: string, city?: string): Promise<CompanyWeb> {
+  const key = getKey('ANTHROPIC_API_KEY')
+  if (!key) return { mode: 'off' }
+  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
+  const system = `Tu es analyste commercial B2B. On te donne une entreprise française.
+1) Trouve son SITE OFFICIEL via la recherche web. 2) Parcours-le. 3) Résume en FRANÇAIS,
+factuellement, ce qu'une fiche légale (SIREN/NAF) ne dit pas : secteur réel, activité concrète
+(ce qu'elle vend), proposition de valeur, cible/clients, taille/implantation et actualités
+visibles. N'INVENTE RIEN : si une info n'est pas trouvée, ne l'inclus pas et laisse le champ vide.
+Réponds UNIQUEMENT en JSON: {"website","sector","summary"}. summary = 3 à 5 phrases max.`
   try {
-    const r = await agentIdentify({ name: company, company, title: city }, { forceClaudeWeb: true })
-    return { website: r?.website, mode: 'claude-web' }
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        max_tokens: 900,
+        system,
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }],
+        messages: [{ role: 'user', content: `Entreprise: ${company}${city ? ` (${city})` : ''}. Trouve le site, parcours-le, et renvoie le JSON demandé.` }],
+      }),
+    })
+    if (!res.ok) throw new Error(`Anthropic ${res.status}`)
+    const data = await res.json()
+    const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
+    const m = text.match(/\{[\s\S]*\}/)
+    if (!m) return { mode: 'claude-web' }
+    let p: any; try { p = JSON.parse(m[0]) } catch { return { mode: 'claude-web' } }
+    return {
+      website: cleanWebsite(p.website),
+      sector: (p.sector && String(p.sector).trim()) || undefined,
+      summary: (p.summary && String(p.summary).trim()) || undefined,
+      mode: 'claude-web',
+    }
   } catch {
-    return { website: undefined, mode: 'error' }
+    return { mode: 'error' }
   }
 }

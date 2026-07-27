@@ -201,17 +201,19 @@ export async function convertToContact(id: string, person: { firstName?: string;
   await persistLead(l); return l
 }
 
-// Retrouve le site web d'un compte via l'agent web (Claude web) et le persiste.
-// Renvoie { website, mode }. website undefined si aucune preuve (jamais deviné).
-export async function enrichCompanyWebsite(accountId: string): Promise<{ website?: string; mode: string }> {
+// Enrichit un compte via l'agent web (Claude seul) : site + résumé secteur/activité
+// (ce que data.gouv ne donne pas). Persiste. Rien n'est deviné (champ vide sinon).
+export async function enrichCompanyWebsite(accountId: string): Promise<{ website?: string; summary?: string; sector?: string; mode: string }> {
   const acc = LEADS[accountId]
   if (!acc) return { mode: 'none' }
   const params = new URLSearchParams({ company: acc.company })
   if (acc.city) params.set('city', acc.city)
   try {
     const r = await fetch(`/api/enrich/company-web?${params.toString()}`).then((x) => x.json())
-    if (r.website) { acc.website = r.website; await persistLead(acc) }
-    return { website: r.website, mode: r.mode }
+    if (r.website) acc.website = r.website
+    if (r.summary) acc.summary = r.summary
+    if (r.website || r.summary) await persistLead(acc)
+    return { website: r.website, summary: r.summary, sector: r.sector, mode: r.mode }
   } catch { return { mode: 'error' } }
 }
 
