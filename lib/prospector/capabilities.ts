@@ -409,6 +409,50 @@ function buildDetail(lead: Lead): LeadDetail {
 export async function deleteLead(id: string): Promise<void> {
   delete LEADS[id]
   try { await fetch('/api/leads', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) }) } catch { /* mémoire */ }
+  // Cascade : un lead supprimé ne doit plus figurer dans les listes ni les séquences.
+  await purgeLeadFromCollections([id])
+}
+
+// Auto-réparation : resynchronise les leads avec le serveur puis retire des listes
+// et séquences tout id qui ne correspond plus à un lead existant (fantômes).
+export async function reconcileCollections(): Promise<void> {
+  await hydrateLeads(true)
+  const existing = new Set(Object.keys(LEADS))
+  try {
+    const lists = await getLists()
+    for (const l of lists) {
+      const kept = l.leadIds.filter((x) => existing.has(x))
+      if (kept.length !== l.leadIds.length) { l.leadIds = kept; await storeSave('list', l) }
+    }
+  } catch { /* best-effort */ }
+  try {
+    const seqs = await getSequences()
+    for (const s of seqs) {
+      if (!s.leadIds?.length) continue
+      const kept = s.leadIds.filter((x) => existing.has(x))
+      if (kept.length !== s.leadIds.length) { s.leadIds = kept; s.enrolled = kept.length; await storeSave('sequence', s) }
+    }
+  } catch { /* best-effort */ }
+}
+
+// Retire des ids supprimés de TOUTES les listes et séquences (+ recale les compteurs).
+export async function purgeLeadFromCollections(ids: string[]): Promise<void> {
+  const set = new Set(ids)
+  try {
+    const lists = await getLists()
+    for (const l of lists) {
+      const kept = l.leadIds.filter((x) => !set.has(x))
+      if (kept.length !== l.leadIds.length) { l.leadIds = kept; await storeSave('list', l) }
+    }
+  } catch { /* best-effort */ }
+  try {
+    const seqs = await getSequences()
+    for (const s of seqs) {
+      if (!s.leadIds?.length) continue
+      const kept = s.leadIds.filter((x) => !set.has(x))
+      if (kept.length !== s.leadIds.length) { s.leadIds = kept; s.enrolled = kept.length; await storeSave('sequence', s) }
+    }
+  } catch { /* best-effort */ }
 }
 
 // Vérifie l'entreprise du lead via data.gouv → SIREN + actif + dirigeant (gratuit, sans token).

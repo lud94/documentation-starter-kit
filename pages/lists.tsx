@@ -5,7 +5,7 @@ import type { Lead, Sequence } from '../types/prospector'
 import { STATUS_META } from '../types/prospector'
 import {
   getLists, createList, deleteList, renameList, getListLeads, removeFromList,
-  buildCsv, CSV_PRESETS, deployListToSequence, getSequences, isAccountLead,
+  buildCsv, CSV_PRESETS, deployListToSequence, getSequences, isAccountLead, reconcileCollections,
   type LeadList, type CsvColumn,
 } from '../lib/prospector/capabilities'
 
@@ -64,7 +64,7 @@ export default function ListsPage() {
   const [msg, setMsg] = useState<string | null>(null)
 
   const refresh = () => getLists().then((l) => { setLists(l); setLoading(false) })
-  useEffect(() => { refresh(); getSequences().then(setSequences) }, [])
+  useEffect(() => { reconcileCollections().then(refresh); getSequences().then(setSequences) }, [])
 
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(null), 3000) }
   const create = async () => { if (!newName.trim()) return; await createList(newName); setNewName(''); refresh() }

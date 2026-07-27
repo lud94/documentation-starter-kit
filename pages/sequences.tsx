@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { Sequence, SequenceStep, ActionType, Channel as ChannelType, StepCondition, Lead } from '../types/prospector'
 import { CONDITION_LABEL, ACTION_META, CHANNEL_META, STAGE_META } from '../types/prospector'
-import { getSequences, saveSequence, deleteSequence, nextSequenceId, enrollLeadsInSequence, enrollLead, getChannels, toggleChannel, getLeads, getSequenceLeads, isAccountLead } from '../lib/prospector/capabilities'
+import { getSequences, saveSequence, deleteSequence, nextSequenceId, enrollLeadsInSequence, enrollLead, getChannels, toggleChannel, getLeads, getSequenceLeads, reconcileCollections, isAccountLead } from '../lib/prospector/capabilities'
 import Link from 'next/link'
 import type { Channel } from '../lib/prospector/capabilities'
 
@@ -24,7 +24,7 @@ export default function SequencesPage() {
   const [showEnrolled, setShowEnrolled] = useState(false)
 
   const load = () => getSequences().then((s) => { setSequences([...s]); if (!selectedId && s[0]) { setSelectedId(s[0].id); setDraft(clone(s[0])) } })
-  useEffect(() => { load(); getChannels().then(setChannels) /* eslint-disable-next-line */ }, [])
+  useEffect(() => { reconcileCollections().then(load); getChannels().then(setChannels) /* eslint-disable-next-line */ }, [])
   // Charge les leads réellement enrôlés de la séquence sélectionnée.
   useEffect(() => {
     const seq = sequences.find((s) => s.id === selectedId)
