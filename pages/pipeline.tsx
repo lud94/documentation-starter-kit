@@ -3,10 +3,11 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, createList, flipToContact, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
+import AddToListModal from '../components/AddToListModal'
 
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
 const STATUS_ORDER: LeadStatus[] = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
@@ -355,15 +356,14 @@ export default function PipelinePage() {
     setEnrichOpen(false); refresh()
   }
 
-  const makeList = async () => {
+  const [listModalIds, setListModalIds] = useState<string[] | null>(null)
+  const [listMsg, setListMsg] = useState<string | null>(null)
+  const makeList = () => {
     const src = mainView === 'comptes' ? filtered : contactLeads
     if (src.length === 0) return
-    const suggested = personaF.size === 1 ? `${Array.from(personaF)[0]} · ${src.length}` : `Liste · ${src.length} leads`
-    const name = prompt(`Créer une liste depuis ${src.length} lead(s) affichés`, suggested)
-    if (!name) return
-    await createList(name, src.map((l) => l.id), hasFilter ? 'depuis filtre pipeline' : 'pipeline')
-    if (confirm('Liste créée. Ouvrir la page Listes ?')) router.push('/lists')
+    setListModalIds(src.map((l) => l.id))
   }
+  const suggestedListName = personaF.size === 1 ? String(Array.from(personaF)[0]) : ''
   const exportCsv = () => {
     const rows = [['Nom', 'Titre', 'Entreprise', 'Statut', 'Stage', 'Score', 'Email', 'Téléphone'],
       ...filtered.map((l) => [`${l.firstName} ${l.lastName}`, l.title, l.company, STATUS_META[l.status].label, STAGE_META[l.stage].label, l.score, l.email ?? '', l.phone ?? ''])]
@@ -504,6 +504,11 @@ export default function PipelinePage() {
       )}
 
       {enrichOpen && <EnrichModal leads={filtered} onClose={() => setEnrichOpen(false)} onConfirm={doEnrich} />}
+
+      {listModalIds && (
+        <AddToListModal leadIds={listModalIds} label={`${listModalIds.length} lead(s) affiché(s)`} suggestName={suggestedListName} onClose={() => setListModalIds(null)} onDone={(m) => { setListMsg(m); setTimeout(() => setListMsg(null), 3500) }} />
+      )}
+      {listMsg && <div className="fixed bottom-4 right-4 z-50 bg-emerald-600 text-white text-sm px-4 py-2 rounded-xl shadow-lg">{listMsg} · <Link href="/lists" className="underline">Voir</Link></div>}
 
       {/* Import modal */}
       {importOpen && (
