@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../types/prospector'
-import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { useRouter } from 'next/router'
 import type { PersonHit } from '../lib/prospector/capabilities'
 
 const INDUSTRIES = [
@@ -182,6 +183,18 @@ export default function SourcingPage() {
   const importSignal = async (h: SignalHit) => {
     await importSignalToPipeline(h)
     setSigImported((s) => new Set(s).add(h.company))
+  }
+
+  const router = useRouter()
+  const makeSignalList = async () => {
+    if (sigHits.length === 0) return
+    const name = prompt('Nom de la liste (signaux)', sigThesis.slice(0, 60) || 'Signaux')
+    if (!name) return
+    const ids: string[] = []
+    for (const h of sigHits) { const r = await importSignalToPipeline(h); if (r?.id) ids.push(r.id) }
+    setSigImported((s) => { const n = new Set(s); sigHits.forEach((h) => n.add(h.company)); return n })
+    await createList(name, ids, 'signaux Exa/Claude')
+    if (confirm('Liste créée depuis les signaux. Ouvrir la page Listes ?')) router.push('/lists')
   }
 
   const copyIce = (h: SignalHit) => { navigator.clipboard?.writeText(h.icebreaker); setCopied(h.company); setTimeout(() => setCopied(null), 1500) }
@@ -373,7 +386,10 @@ export default function SourcingPage() {
 
           {sigHits.length > 0 && (
             <div className="card p-5 max-w-3xl">
-              <h2 className="text-sm font-semibold text-gray-700 mb-1">Entreprises détectées ({sigHits.filter((h) => h.verified).length} vérifiées)</h2>
+              <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
+                <h2 className="text-sm font-semibold text-gray-700">Entreprises détectées ({sigHits.filter((h) => h.verified).length} vérifiées)</h2>
+                <button onClick={makeSignalList} className="text-xs font-semibold text-indigo-600 border border-indigo-200 bg-indigo-50/50 px-2.5 py-1 rounded-lg hover:bg-indigo-50">+ Créer une liste depuis ces signaux</button>
+              </div>
               <p className="text-xs text-gray-400 mb-4">Chaque entreprise citée par l'agent est réconciliée sur un SIREN réel. Les non-vérifiées sont à contrôler manuellement (lien de recherche).</p>
               <div className="space-y-2">
                 {sigHits.map((h) => (

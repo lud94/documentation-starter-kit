@@ -3,7 +3,7 @@
 // par Jarvis. Aujourd'hui : mock en mémoire. Demain : appels API vers le back.
 
 import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, SequenceStep, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../../types/prospector'
-import { ACTION_META } from '../../types/prospector'
+import { ACTION_META, STATUS_META, STAGE_META } from '../../types/prospector'
 
 export type Period = 'week' | 'month' | 'quarter' | 'year'
 
@@ -688,6 +688,88 @@ export interface Notification { id: string; type: 'reply' | 'meeting' | 'task' |
 const NOTIFS: Notification[] = []
 export function getNotifications(): Promise<Notification[]> { return delay([...NOTIFS]) }
 export function markNotificationsRead(): Promise<Notification[]> { NOTIFS.forEach((n) => (n.unread = false)); return delay([...NOTIFS]) }
+
+// ── Listes (export CSV paramétrable + déploiement en séquence) ─────────────────
+export interface LeadList { id: string; name: string; leadIds: string[]; source?: string; createdAt: number }
+
+export async function getLists(): Promise<LeadList[]> {
+  const l = await storeList<LeadList>('list')
+  return l.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+}
+export async function createList(name: string, leadIds: string[] = [], source?: string): Promise<LeadList> {
+  const list: LeadList = { id: `ls_${Math.random().toString(36).slice(2, 9)}`, name: name.trim() || 'Liste', leadIds: Array.from(new Set(leadIds)), source, createdAt: Date.now() }
+  await storeSave('list', list)
+  return list
+}
+export async function addToList(listId: string, leadIds: string[]): Promise<LeadList | undefined> {
+  const lists = await getLists(); const list = lists.find((l) => l.id === listId)
+  if (!list) return undefined
+  list.leadIds = Array.from(new Set([...list.leadIds, ...leadIds]))
+  await storeSave('list', list); return list
+}
+export async function removeFromList(listId: string, leadId: string): Promise<void> {
+  const lists = await getLists(); const list = lists.find((l) => l.id === listId)
+  if (!list) return
+  list.leadIds = list.leadIds.filter((id) => id !== leadId)
+  await storeSave('list', list)
+}
+export async function renameList(listId: string, name: string): Promise<void> {
+  const lists = await getLists(); const list = lists.find((l) => l.id === listId)
+  if (list) { list.name = name.trim() || list.name; await storeSave('list', list) }
+}
+export async function deleteList(listId: string): Promise<void> { await storeDelete('list', listId) }
+
+// Résout les leads d'une liste (contacts + comptes), dans l'ordre de la liste.
+export async function getListLeads(list: LeadList): Promise<Lead[]> {
+  await hydrateLeads()
+  return list.leadIds.map((id) => LEADS[id]).filter(Boolean)
+}
+
+// Formats CSV paramétrables. Chaque preset = un jeu de colonnes (en-tête + champ).
+export type CsvField = keyof Lead | 'fullName' | 'statusLabel' | 'stageLabel'
+export interface CsvColumn { header: string; field: CsvField }
+export const CSV_PRESETS: { key: string; label: string; desc: string; columns: CsvColumn[] }[] = [
+  { key: 'crm', label: 'CRM générique', desc: 'Colonnes standard pour import CRM (HubSpot, Pipedrive…)', columns: [
+    { header: 'Prénom', field: 'firstName' }, { header: 'Nom', field: 'lastName' }, { header: 'Email', field: 'email' },
+    { header: 'Téléphone', field: 'phone' }, { header: 'Société', field: 'company' }, { header: 'Titre', field: 'title' },
+    { header: 'LinkedIn', field: 'linkedinUrl' }, { header: 'Ville', field: 'city' }, { header: 'SIREN', field: 'siren' }, { header: 'Statut', field: 'statusLabel' },
+  ] },
+  { key: 'outreach', label: 'Outreach (Lemlist/La Growth)', desc: 'En-têtes anglais + icebreaker pour outils de séquence', columns: [
+    { header: 'firstName', field: 'firstName' }, { header: 'lastName', field: 'lastName' }, { header: 'email', field: 'email' },
+    { header: 'companyName', field: 'company' }, { header: 'linkedinUrl', field: 'linkedinUrl' }, { header: 'jobTitle', field: 'title' }, { header: 'icebreaker', field: 'icebreaker' },
+  ] },
+  { key: 'complet', label: 'Complet', desc: 'Toutes les données disponibles', columns: [
+    { header: 'Prénom', field: 'firstName' }, { header: 'Nom', field: 'lastName' }, { header: 'Société', field: 'company' },
+    { header: 'Titre', field: 'title' }, { header: 'Persona', field: 'persona' }, { header: 'Email', field: 'email' }, { header: 'Téléphone', field: 'phone' },
+    { header: 'LinkedIn', field: 'linkedinUrl' }, { header: 'SIREN', field: 'siren' }, { header: 'NAF', field: 'naf' }, { header: 'Ville', field: 'city' },
+    { header: 'Effectif', field: 'effectif' }, { header: 'CA', field: 'ca' }, { header: 'Site', field: 'website' }, { header: 'Signal', field: 'signal' },
+    { header: 'Icebreaker', field: 'icebreaker' }, { header: 'Statut', field: 'statusLabel' }, { header: 'Étape', field: 'stageLabel' },
+  ] },
+]
+
+function csvValue(lead: Lead, field: CsvField): string {
+  if (field === 'fullName') return `${lead.firstName} ${lead.lastName}`.trim()
+  if (field === 'statusLabel') return STATUS_META[lead.status]?.label || lead.status
+  if (field === 'stageLabel') return STAGE_META[lead.stage]?.label || lead.stage
+  const v = (lead as any)[field]
+  return v === null || v === undefined ? '' : String(v)
+}
+
+// Génère le CSV (BOM Excel + échappement) à partir de colonnes choisies.
+export function buildCsv(leads: Lead[], columns: CsvColumn[]): string {
+  const rows = [columns.map((c) => c.header), ...leads.map((l) => columns.map((c) => csvValue(l, c.field)))]
+  return '﻿' + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+}
+
+// Déploie une liste dans une séquence : enrôle chaque CONTACT individuellement.
+export async function deployListToSequence(list: LeadList, sequenceId: string): Promise<{ enrolled: number }> {
+  const leads = await getListLeads(list)
+  const contacts = leads.filter((l) => !isAccountLead(l))
+  let enrolled = 0
+  for (const c of contacts) { const l = await enrollLead(c.id); if (l) enrolled++ }
+  if (enrolled) await enrollLeadsInSequence(sequenceId, enrolled)
+  return { enrolled }
+}
 
 // ── Planificateur de tâches / rappels ──
 export interface Task { id: string; title: string; due: string; done: boolean; leadId?: string; leadName?: string; channel?: 'linkedin' | 'email' | 'whatsapp' | null }

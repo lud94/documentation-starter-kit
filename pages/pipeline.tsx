@@ -3,7 +3,8 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, createList, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
+import { useRouter } from 'next/router'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 
@@ -290,6 +291,7 @@ export default function PipelinePage() {
   const [importOpen, setImportOpen] = useState(false)
   const [enrichOpen, setEnrichOpen] = useState(false)
 
+  const router = useRouter()
   const refresh = () => getLeads().then((l) => { setLeads(l); setLoading(false) })
   useEffect(() => { refresh() }, [])
 
@@ -319,6 +321,15 @@ export default function PipelinePage() {
     setEnrichOpen(false); refresh()
   }
 
+  const makeList = async () => {
+    const src = mainView === 'comptes' ? filtered : contactLeads
+    if (src.length === 0) return
+    const suggested = personaF.size === 1 ? `${Array.from(personaF)[0]} · ${src.length}` : `Liste · ${src.length} leads`
+    const name = prompt(`Créer une liste depuis ${src.length} lead(s) affichés`, suggested)
+    if (!name) return
+    await createList(name, src.map((l) => l.id), hasFilter ? 'depuis filtre pipeline' : 'pipeline')
+    if (confirm('Liste créée. Ouvrir la page Listes ?')) router.push('/lists')
+  }
   const exportCsv = () => {
     const rows = [['Nom', 'Titre', 'Entreprise', 'Statut', 'Stage', 'Score', 'Email', 'Téléphone'],
       ...filtered.map((l) => [`${l.firstName} ${l.lastName}`, l.title, l.company, STATUS_META[l.status].label, STAGE_META[l.stage].label, l.score, l.email ?? '', l.phone ?? ''])]
@@ -351,6 +362,10 @@ export default function PipelinePage() {
           <button onClick={() => setEnrichOpen(true)} className={btn}>
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
             Enrichir un lot
+          </button>
+          <button onClick={makeList} className={btn}>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h10M4 18h10" /></svg>
+            Créer une liste
           </button>
           <button onClick={() => setImportOpen(true)} className={btn}>
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
