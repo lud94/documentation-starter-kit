@@ -488,10 +488,20 @@ export async function deleteSequence(id: string) {
   return true
 }
 
-export async function enrollLeadsInSequence(id: string, count: number) {
+export async function enrollLeadsInSequence(id: string, count: number, leadIds?: string[]) {
   const s = SEQUENCES.find((x) => x.id === id)
-  if (s) { s.enrolled += count; await storeSave('sequence', s) }
+  if (s) {
+    if (leadIds?.length) { s.leadIds = Array.from(new Set([...(s.leadIds || []), ...leadIds])); s.enrolled = s.leadIds.length }
+    else s.enrolled += count
+    await storeSave('sequence', s)
+  }
   return s
+}
+
+// Leads réellement enrôlés dans une séquence (résolus depuis leadIds).
+export async function getSequenceLeads(seq: Sequence): Promise<Lead[]> {
+  await hydrateLeads()
+  return (seq.leadIds || []).map((id) => LEADS[id]).filter(Boolean)
 }
 
 export interface ChannelConfig {
@@ -782,10 +792,10 @@ export function buildCsv(leads: Lead[], columns: CsvColumn[]): string {
 export async function deployListToSequence(list: LeadList, sequenceId: string): Promise<{ enrolled: number }> {
   const leads = await getListLeads(list)
   const contacts = leads.filter((l) => !isAccountLead(l))
-  let enrolled = 0
-  for (const c of contacts) { const l = await enrollLead(c.id); if (l) enrolled++ }
-  if (enrolled) await enrollLeadsInSequence(sequenceId, enrolled)
-  return { enrolled }
+  const enrolledIds: string[] = []
+  for (const c of contacts) { const l = await enrollLead(c.id); if (l) enrolledIds.push(c.id) }
+  if (enrolledIds.length) await enrollLeadsInSequence(sequenceId, enrolledIds.length, enrolledIds)
+  return { enrolled: enrolledIds.length }
 }
 
 // ── Planificateur de tâches / rappels ──
@@ -987,12 +997,19 @@ export async function addAccountContact(accountId: string, input: AccountContact
 
 // Charge un ou plusieurs dirigeants identifiés (data.gouv) comme CONTACTS.
 export async function addDirigeantsAsContacts(accountId: string, names: string[]): Promise<{ added: number }> {
+  const acc = LEADS[accountId]
+  // Dédoublonnage : on n'ajoute pas un dirigeant déjà présent comme contact.
+  const existing = new Set(
+    Object.values(LEADS).filter((x) => !isAccountLead(x) && acc && x.company === acc.company)
+      .map((x) => `${x.firstName} ${x.lastName}`.toLowerCase().trim()),
+  )
   let added = 0
   for (const name of names) {
-    const [firstName, ...rest] = (name || '').trim().split(/\s+/)
-    if (!firstName) continue
+    const clean = (name || '').trim()
+    if (!clean || existing.has(clean.toLowerCase())) continue
+    const [firstName, ...rest] = clean.split(/\s+/)
     const l = await addAccountContact(accountId, { firstName, lastName: rest.join(' '), title: 'Dirigeant', persona: 'Founder/CEO' })
-    if (l) added++
+    if (l) { added++; existing.add(clean.toLowerCase()) }
   }
   return { added }
 }
@@ -1121,7 +1138,7 @@ export async function addContactsToPipeline(company: SourcedCompany, contacts: R
     LEADS[lead.id] = lead; created.push(lead)
   })
   if (created.length) { try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ } }
-  return { added: created.length }
+  return { added: created.length, ids: created.map((l) => l.id) }
 }
 
 // Orchestration : compte → personas (Unipile/mock) → contacts créés → séquence + enrôlement.
@@ -1145,8 +1162,8 @@ export async function generateAccountSequence(
   // 1) Personas via Unipile si connecté — sinon SEUL le dirigeant réel (data.gouv). Aucun contact inventé.
   const res = await resolveOne(comp, personas)
   // 2) Crée les contacts dans le pipe (persistés + cloisonnés)
-  await addContactsToPipeline(comp, res.contacts)
-  // 3) Crée la séquence + enrôle
+  const { ids } = await addContactsToPipeline(comp, res.contacts)
+  // 3) Crée la séquence + enrôle (on garde la liste des leads enrôlés)
   const seq: Sequence = {
     id: nextSequenceId(),
     name: `Compte ${company.name} · personas`,
@@ -1154,6 +1171,7 @@ export async function generateAccountSequence(
     enrolled: res.contacts.length,
     responseRate: 0,
     steps: ACCOUNT_SEQ_TEMPLATE(),
+    leadIds: ids,
   }
   await saveSequence(seq)
   return { sequenceId: seq.id, contacts: res.contacts.length, mockPersonas: res.mock, connected: res.connected }

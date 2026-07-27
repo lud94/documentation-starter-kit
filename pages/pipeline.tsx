@@ -106,7 +106,17 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
   const loadDetail = async () => { if (!detail && meta?.siren) { setLoadingDetail(true); const d = await getAccountDetail(meta.siren); setDetail(d); setLoadingDetail(false) } }
   const expand = async () => { const next = !open; setOpen(next); if (next) loadDetail() }
   const flash = (m: string) => { setMsg(m); onChanged(); setTimeout(() => setMsg(null), 3000) }
-  const promote = async () => { if (!account) return; setBusy(true); await promoteDirigeant(account.id); setBusy(false); flash('Dirigeant ajouté comme contact.') }
+  // « + Dirigeants en contact » : ajoute TOUS les dirigeants physiques data.gouv
+  // (pas seulement le premier). Charge la fiche détail si besoin.
+  const promote = async () => {
+    if (!account) return
+    setBusy(true)
+    let names: string[] = []
+    if (meta?.siren) { const d = detail || await getAccountDetail(meta.siren); if (!detail) setDetail(d); names = (d?.dirigeants || []).filter((x) => x.type === 'physique').map((x) => x.name) }
+    if (names.length === 0 && meta?.dirigeant) names = [meta.dirigeant]
+    const r = await addDirigeantsAsContacts(account.id, names)
+    setBusy(false); flash(`${r.added} dirigeant(s) ajouté(s) en contact.`)
+  }
   const addDirs = async (names: string[]) => { if (!account || !names.length) return; setBusy(true); const r = await addDirigeantsAsContacts(account.id, names); setBusy(false); flash(`${r.added} dirigeant(s) ajouté(s) en contact.`) }
   const removeAccount = async () => {
     if (!account) return
@@ -216,7 +226,7 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
                 {meta?.siren ? 'Revérifier l\'entreprise' : 'Vérifier l\'entreprise'}
               </button>
               <button onClick={getWebsite} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">🌐 {meta?.summary ? 'Réenrichir via le web' : 'Enrichir via le web (site + résumé)'}</button>
-              {meta?.dirigeant && !hasDirigeantContact && <button onClick={promote} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">+ Dirigeant en contact</button>}
+              {meta?.dirigeant && !hasDirigeantContact && <button onClick={promote} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">+ Dirigeants en contact</button>}
               <button onClick={() => setAddOpen((v) => !v)} className="text-xs font-semibold gradient-brand text-white px-2.5 py-1.5 rounded-lg">+ Renseigner un contact / persona</button>
               <button onClick={flip} disabled={busy} title="Ce compte est en réalité une personne" className="text-xs font-medium text-gray-500 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">C'est un contact</button>
             </div>

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { Sequence, SequenceStep, ActionType, Channel as ChannelType, StepCondition, Lead } from '../types/prospector'
-import { CONDITION_LABEL, ACTION_META, CHANNEL_META } from '../types/prospector'
-import { getSequences, saveSequence, deleteSequence, nextSequenceId, enrollLeadsInSequence, getChannels, toggleChannel, getLeads, isAccountLead } from '../lib/prospector/capabilities'
+import { CONDITION_LABEL, ACTION_META, CHANNEL_META, STAGE_META } from '../types/prospector'
+import { getSequences, saveSequence, deleteSequence, nextSequenceId, enrollLeadsInSequence, enrollLead, getChannels, toggleChannel, getLeads, getSequenceLeads, isAccountLead } from '../lib/prospector/capabilities'
+import Link from 'next/link'
 import type { Channel } from '../lib/prospector/capabilities'
 
 const CHANNELS: ChannelType[] = ['linkedin', 'email', 'whatsapp']
@@ -19,9 +20,16 @@ export default function SequencesPage() {
   const [saved, setSaved] = useState(false)
   const [editMode, setEditMode] = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [enrolledLeads, setEnrolledLeads] = useState<Lead[]>([])
+  const [showEnrolled, setShowEnrolled] = useState(false)
 
   const load = () => getSequences().then((s) => { setSequences([...s]); if (!selectedId && s[0]) { setSelectedId(s[0].id); setDraft(clone(s[0])) } })
   useEffect(() => { load(); getChannels().then(setChannels) /* eslint-disable-next-line */ }, [])
+  // Charge les leads réellement enrôlés de la séquence sélectionnée.
+  useEffect(() => {
+    const seq = sequences.find((s) => s.id === selectedId)
+    if (seq) getSequenceLeads(seq).then(setEnrolledLeads); else setEnrolledLeads([])
+  }, [selectedId, sequences])
 
   const select = (s: Sequence) => {
     if (dirty && !window.confirm('Modifications non enregistrées. Continuer et les perdre ?')) return
@@ -134,14 +142,30 @@ export default function SequencesPage() {
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-3 mb-4 flex-wrap bg-gray-50 rounded-xl px-3 py-2.5">
-                    <p className="text-xs text-gray-500">
-                      <span className="font-semibold text-gray-700">{draft.enrolled}</span> leads enrôlés · {draft.responseRate}% de réponses · s'étale sur <span className="font-medium text-gray-600">{totalDays} jour{totalDays > 1 ? 's' : ''}</span>
-                    </p>
-                    <button onClick={() => setPickerOpen(true)} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity flex items-center gap-1.5 flex-shrink-0">
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v6m3-3h-6M13 7a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3z" /></svg>
-                      Ajouter des leads
-                    </button>
+                  <div className="bg-gray-50 rounded-xl px-3 py-2.5 mb-4">
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <button onClick={() => setShowEnrolled((v) => !v)} className="text-xs text-gray-500 flex items-center gap-1.5 hover:text-gray-700">
+                        <span className="font-semibold text-gray-700">{draft.enrolled}</span> leads enrôlés · {draft.responseRate}% de réponses · s'étale sur <span className="font-medium text-gray-600">{totalDays} jour{totalDays > 1 ? 's' : ''}</span>
+                        {enrolledLeads.length > 0 && <svg className={`w-3.5 h-3.5 transition-transform ${showEnrolled ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>}
+                      </button>
+                      <button onClick={() => setPickerOpen(true)} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity flex items-center gap-1.5 flex-shrink-0">
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v6m3-3h-6M13 7a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3z" /></svg>
+                        Ajouter des leads
+                      </button>
+                    </div>
+                    {showEnrolled && (
+                      <div className="mt-2.5 pt-2.5 border-t border-gray-200 space-y-1.5">
+                        {enrolledLeads.length === 0 ? (
+                          <p className="text-xs text-gray-400">Aucun lead tracé sur cette séquence. Utilise « Ajouter des leads » pour les rattacher.</p>
+                        ) : enrolledLeads.map((l) => (
+                          <Link key={l.id} href={`/leads/${l.id}`} className="flex items-center gap-2.5 bg-white rounded-lg border border-gray-100 px-2.5 py-1.5 hover:border-gray-200">
+                            <span className="w-6 h-6 rounded-md gradient-brand flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0">{`${l.firstName[0] || ''}${l.lastName[0] || ''}`.toUpperCase()}</span>
+                            <span className="min-w-0 flex-1"><span className="block text-xs font-medium text-gray-800 truncate">{l.firstName} {l.lastName}</span><span className="block text-[11px] text-gray-400 truncate">{l.title} · {l.company}</span></span>
+                            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full text-white flex-shrink-0" style={{ backgroundColor: STAGE_META[l.stage].color }}>{STAGE_META[l.stage].label}</span>
+                          </Link>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* Validation */}
@@ -225,14 +249,20 @@ export default function SequencesPage() {
         </div>
       </div>
 
-      {pickerOpen && draft && <LeadPicker onClose={() => setPickerOpen(false)} onEnroll={async (n) => { await enrollLeadsInSequence(draft.id, n); await load(); setDraft((dd) => dd ? { ...dd, enrolled: dd.enrolled + n } : dd); setPickerOpen(false) }} />}
+      {pickerOpen && draft && <LeadPicker onClose={() => setPickerOpen(false)} onEnroll={async (ids) => {
+        for (const id of ids) { await enrollLead(id) }
+        const s = await enrollLeadsInSequence(draft.id, ids.length, ids)
+        await load()
+        if (s) { setDraft(clone(s)); getSequenceLeads(s).then(setEnrolledLeads); setShowEnrolled(true) }
+        setPickerOpen(false)
+      }} />}
     </>
   )
 }
 
 const PICKER_PERSONAS = ['Founder/CEO', 'Sales', 'Marketing', 'Ops']
 
-function LeadPicker({ onClose, onEnroll }: { onClose: () => void; onEnroll: (n: number) => void }) {
+function LeadPicker({ onClose, onEnroll }: { onClose: () => void; onEnroll: (ids: string[]) => void }) {
   const [leads, setLeads] = useState<Lead[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [q, setQ] = useState('')
@@ -288,7 +318,7 @@ function LeadPicker({ onClose, onEnroll }: { onClose: () => void; onEnroll: (n: 
         </div>
         <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
           <span className="text-xs text-gray-400">{selected.size} sélectionné(s)</span>
-          <button onClick={() => onEnroll(selected.size)} disabled={selected.size === 0} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">Enrôler {selected.size} lead{selected.size !== 1 ? 's' : ''}</button>
+          <button onClick={() => onEnroll(Array.from(selected))} disabled={selected.size === 0} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">Enrôler {selected.size} lead{selected.size !== 1 ? 's' : ''}</button>
         </div>
       </div>
     </div>

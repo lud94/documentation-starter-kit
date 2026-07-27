@@ -314,6 +314,7 @@ export interface Sequence {
   enrolled: number
   responseRate: number // %
   steps: SequenceStep[]
+  leadIds?: string[] // leads réellement enrôlés (pour afficher qui est dans la séquence)
 }
 
 export interface Message {
