@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { useEffect, useState } from 'react'
 import CreateLeadModal from './CreateLeadModal'
+import Jarvis from './Jarvis'
 import { getNotifications, markNotificationsRead } from '../lib/prospector/capabilities'
 import type { Notification } from '../lib/prospector/capabilities'
 
@@ -57,6 +58,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const { pathname } = router
   const [createOpen, setCreateOpen] = useState(false)
+  const [jarvisOpen, setJarvisOpen] = useState(false)
   const [modal, setModal] = useState<CreateAction | null>(null)
   const [email, setEmail] = useState<string | null>(null)
   const [role, setRole] = useState<'admin' | 'client'>('admin')
@@ -84,6 +86,12 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     fetch('/api/auth/me').then((r) => r.json()).then((d) => { setEmail(d.email); setRole(d.role || 'admin'); setPerms(d.permissions || null); setWsName(d.workspaceName || null) }).catch(() => {})
   }, [])
   useEffect(() => { getNotifications().then(setNotifs) }, [])
+  // Raccourci ⌘K / Ctrl+K → ouvre Jarvis.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setJarvisOpen((v) => !v) } }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   const unreadCount = notifs.filter((n) => n.unread).length
   const openNotifs = () => { setNotifOpen((v) => !v); if (!notifOpen && unreadCount) markNotificationsRead().then(setNotifs) }
 
@@ -198,10 +206,10 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       <div className="flex-1 ml-60 flex flex-col min-h-screen">
         {/* Barre Jarvis (omniprésente, inerte pour l'instant) */}
         <header className="h-14 bg-white/80 backdrop-blur border-b border-gray-100 sticky top-0 z-30 flex items-center px-6 gap-4">
-          <button className="flex-1 max-w-xl flex items-center gap-3 px-4 py-2 rounded-xl bg-gray-50 border border-gray-100 text-sm text-gray-400 hover:bg-gray-100 transition-colors text-left">
+          <button onClick={() => setJarvisOpen(true)} className="flex-1 max-w-xl flex items-center gap-3 px-4 py-2 rounded-xl bg-gray-50 border border-gray-100 text-sm text-gray-400 hover:bg-gray-100 transition-colors text-left">
             <span className="gradient-text font-semibold">✦</span>
             Demandez à Jarvis…
-            <span className="ml-auto text-[10px] font-semibold text-gray-400 bg-white border border-gray-200 px-1.5 py-0.5 rounded">⌘K · bientôt</span>
+            <span className="ml-auto text-[10px] font-semibold text-gray-400 bg-white border border-gray-200 px-1.5 py-0.5 rounded">⌘K</span>
           </button>
 
           {/* Horloge date + heure (planification) */}
@@ -287,6 +295,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       </div>
 
       {modal && modal !== 'sourcing' && <CreateLeadModal mode={modal} onClose={() => setModal(null)} />}
+      <Jarvis open={jarvisOpen} onClose={() => setJarvisOpen(false)} />
     </div>
   )
 }
