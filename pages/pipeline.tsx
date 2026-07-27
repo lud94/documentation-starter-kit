@@ -311,7 +311,8 @@ export default function PipelinePage() {
   const [enrichOpen, setEnrichOpen] = useState(false)
 
   const router = useRouter()
-  const refresh = () => getLeads().then((l) => { setLeads(l); setLoading(false) })
+  // force=true → resynchronise avec le serveur (import via l'extension, etc.).
+  const refresh = (force = false) => getLeads(force).then((l) => { setLeads(l); setLoading(false) })
   useEffect(() => { refresh() }, [])
   // Ouverture ciblée depuis une fiche contact : ?tab=comptes&q=<entreprise>.
   useEffect(() => {
@@ -322,7 +323,7 @@ export default function PipelinePage() {
   // Auto-actualisation : au retour sur l'onglet (après un import via l'extension
   // Chrome), on recharge les leads sans avoir à cliquer « rafraîchir ».
   useEffect(() => {
-    const onFocus = () => { if (document.visibilityState !== 'hidden') refresh() }
+    const onFocus = () => { if (document.visibilityState !== 'hidden') refresh(true) }
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onFocus)
     return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus) }

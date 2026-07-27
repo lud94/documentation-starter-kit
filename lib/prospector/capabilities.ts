@@ -98,20 +98,29 @@ async function persistLead(lead: Lead) {
   try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead }) }) } catch { /* offline → mémoire */ }
 }
 let leadsHydrated: Promise<void> | null = null
-async function hydrateLeads(): Promise<void> {
-  if (leadsHydrated) return leadsHydrated
+async function hydrateLeads(force = false): Promise<void> {
+  if (leadsHydrated && !force) return leadsHydrated
   leadsHydrated = (async () => {
     try {
       const d = await fetch('/api/leads').then((r) => r.json())
+      // force = re-synchronise avec le serveur (retire les leads supprimés ailleurs).
+      if (force) for (const k of Object.keys(LEADS)) delete LEADS[k]
       for (const l of (d.leads || [])) if (l?.id) LEADS[l.id] = l
     } catch { /* garde la mémoire */ }
   })()
   return leadsHydrated
 }
 
-export async function getLeads(): Promise<Lead[]> {
-  await hydrateLeads()
+// force=true → rappel serveur (nouvel import via l'extension, MAJ ailleurs…).
+export async function getLeads(force = false): Promise<Lead[]> {
+  await hydrateLeads(force)
   return Object.values(LEADS).map((l) => ({ ...l, persona: personaFromTitle(l.title) }))
+}
+
+// Séquences contenant ce lead (pour l'afficher sur la fiche contact).
+export async function getSequencesForLead(leadId: string): Promise<Sequence[]> {
+  const seqs = await getSequences()
+  return seqs.filter((s) => (s.leadIds || []).includes(leadId))
 }
 
 // Magasin générique cloisonné (séquences, tâches, conversations) via /api/store.

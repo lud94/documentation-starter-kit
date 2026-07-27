@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence } from '../../lib/prospector/capabilities'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 import AddToListModal from '../../components/AddToListModal'
@@ -83,7 +83,9 @@ export default function LeadDetailPage() {
   const [iceCopied, setIceCopied] = useState(false)
   const [thread, setThread] = useState<ThreadMessage[]>([])
 
-  const reload = () => { if (typeof id === 'string') getLeadDetail(id).then(setD) }
+  const [leadSeqs, setLeadSeqs] = useState<Sequence[]>([])
+  const loadLeadSeqs = () => { if (typeof id === 'string') getSequencesForLead(id).then(setLeadSeqs) }
+  const reload = () => { if (typeof id === 'string') { getLeadDetail(id).then(setD); loadLeadSeqs() } }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
 
   useEffect(() => { getSequences().then(setSequences) }, [])
@@ -142,7 +144,12 @@ export default function LeadDetailPage() {
   const changeStatus = async (s: LeadStatus) => { if (typeof id === 'string') { await setLeadStatus(id, s); reload() } }
   const changeStage = async (s: Stage) => { if (typeof id === 'string') { await setLeadStage(id, s); reload() } }
   const enroll = async (seq: Sequence) => {
-    if (typeof id === 'string') { await enrollInSequence(id); reload() }
+    if (typeof id === 'string') {
+      await enrollLead(id)
+      await enrollLeadsInSequence(seq.id, 1, [id]) // trace le lead SUR la séquence
+      setEnrolledMsg(`Ajouté à « ${seq.name} »`)
+      reload()
+    }
     setSeqOpen(false); setEnrolledMsg(`Ajouté à « ${seq.name} »`)
   }
   const addTag = async () => { if (typeof id === 'string' && newTag.trim()) { await addLeadTag(id, newTag); setNewTag(''); reload() } }
@@ -284,6 +291,17 @@ export default function LeadDetailPage() {
           <div className="mt-3 flex items-center gap-2 text-sm text-emerald-600 bg-emerald-50 px-3 py-2 rounded-xl">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
             {enrolledMsg}
+          </div>
+        )}
+        {leadSeqs.length > 0 && (
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold text-gray-400">Dans les séquences :</span>
+            {leadSeqs.map((s) => (
+              <Link key={s.id} href="/sequences" className="text-xs font-medium px-2.5 py-1 rounded-full bg-violet-50 text-violet-600 hover:bg-violet-100 flex items-center gap-1.5">
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h10M4 18h7" /></svg>
+                {s.name}
+              </Link>
+            ))}
           </div>
         )}
       </div>
