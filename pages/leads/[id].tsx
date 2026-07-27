@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, convertToAccount } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollInSequence, getSequences, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence } from '../../lib/prospector/capabilities'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 
@@ -129,11 +129,6 @@ export default function LeadDetailPage() {
     setAccountBusy(false)
   }
   const [reminderMsg, setReminderMsg] = useState<string | null>(null)
-  const toAccount = async () => {
-    if (typeof id !== 'string') return
-    if (!confirm('Convertir ce contact en compte (entreprise) ? La personne sera retirée, l\'entreprise conservée.')) return
-    await convertToAccount(id); router.push('/pipeline')
-  }
   const planReminder = async () => {
     if (!d) return
     await addTask({ title: `Relancer ${d.lead.firstName} ${d.lead.lastName}`, due: 'Demain', leadId: d.lead.id, leadName: `${d.lead.firstName} ${d.lead.lastName}` })
@@ -225,7 +220,12 @@ export default function LeadDetailPage() {
             Envoyer un message
           </button>
           <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">LinkedIn</button>
-          <button onClick={toAccount} title="Mauvaise détection : c'est une entreprise, pas une personne" className="text-sm font-medium text-gray-500 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">C'est un compte</button>
+          {lead.company && lead.company !== '—' && (
+            <button onClick={() => router.push(`/pipeline?tab=comptes&q=${encodeURIComponent(lead.company)}`)} title="Voir la fiche du compte" className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors flex items-center gap-1.5">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>
+              Voir le compte
+            </button>
+          )}
           <button onClick={genAccountSeq} disabled={accountBusy} className="text-sm font-semibold gradient-brand text-white px-3 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-1.5">
             <span className="font-bold">✦</span>{accountBusy ? 'Génération…' : 'Personas + séquence (compte)'}
           </button>
@@ -406,6 +406,13 @@ export default function LeadDetailPage() {
                   ? <a href={d.linkedinUrl.startsWith('http') ? d.linkedinUrl : `https://${d.linkedinUrl}`} target="_blank" rel="noreferrer" className="text-indigo-500 hover:underline break-all">{d.linkedinUrl.replace(/^https?:\/\//, '')}</a>
                   : <span className="text-gray-300 italic">LinkedIn à renseigner</span>}
               </div>
+              {/* Site web (hérité du compte) */}
+              <div className="flex items-center gap-2 text-sm">
+                <svg className="w-4 h-4 text-gray-300 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0zM3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 010 18M12 3a15 15 0 000 18" /></svg>
+                {lead.website
+                  ? <a href={`https://${lead.website}`} target="_blank" rel="noreferrer" className="text-indigo-500 hover:underline break-all">{lead.website}</a>
+                  : <span className="text-gray-300 italic">Site web à enrichir (compte → « Enrichir via le web »)</span>}
+              </div>
             </div>
           </div>
 
@@ -420,7 +427,7 @@ export default function LeadDetailPage() {
             </div>
             <p className="font-semibold text-gray-800 text-sm">{company.name}</p>
             <p className="text-xs text-gray-500 mt-1">{company.size} · {company.location}</p>
-            <a href={`https://${company.website}`} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 hover:underline">{company.website}</a>
+            {company.website && <a href={`https://${company.website}`} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 hover:underline">{company.website}</a>}
             <div className="grid grid-cols-2 gap-2 mt-3">
               <div className="bg-gray-50 rounded-xl p-2.5">
                 <p className="text-xs text-gray-400">Secteur</p>

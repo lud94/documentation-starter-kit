@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, createList, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, createList, flipToContact, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
@@ -113,6 +113,11 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
     if (!confirm(`Supprimer le compte « ${company} » ?${contacts.length ? ` (ses ${contacts.length} contact(s) sont conservés)` : ''}`)) return
     setBusy(true); await deleteLead(account.id); setBusy(false); onChanged()
   }
+  const flip = async () => {
+    if (!account) return
+    if (!confirm(`« ${company} » est en réalité une personne (contact) ? Le compte bascule en contact.`)) return
+    setBusy(true); await flipToContact(account.id); setBusy(false); onChanged()
+  }
   const verify = async () => {
     if (!account) return
     setBusy(true); const r = await verifyLeadCompany(account.id); setBusy(false); setDetail(null); await loadDetail()
@@ -210,6 +215,7 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
               <button onClick={getWebsite} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">🌐 {meta?.summary ? 'Réenrichir via le web' : 'Enrichir via le web (site + résumé)'}</button>
               {meta?.dirigeant && !hasDirigeantContact && <button onClick={promote} disabled={busy} className="text-xs font-medium text-gray-600 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">+ Dirigeant en contact</button>}
               <button onClick={() => setAddOpen((v) => !v)} className="text-xs font-semibold gradient-brand text-white px-2.5 py-1.5 rounded-lg">+ Renseigner un contact / persona</button>
+              <button onClick={flip} disabled={busy} title="Ce compte est en réalité une personne" className="text-xs font-medium text-gray-500 border border-gray-200 px-2.5 py-1.5 rounded-lg hover:bg-white disabled:opacity-40">C'est un contact</button>
             </div>
           )}
 
@@ -294,6 +300,12 @@ export default function PipelinePage() {
   const router = useRouter()
   const refresh = () => getLeads().then((l) => { setLeads(l); setLoading(false) })
   useEffect(() => { refresh() }, [])
+  // Ouverture ciblée depuis une fiche contact : ?tab=comptes&q=<entreprise>.
+  useEffect(() => {
+    if (!router.isReady) return
+    if (router.query.tab === 'comptes') setMainView('comptes')
+    if (typeof router.query.q === 'string') setQuery(router.query.q)
+  }, [router.isReady, router.query.tab, router.query.q])
 
   const toggle = (set: Set<string>, setter: (s: Set<string>) => void, v: string) => {
     const n = new Set(set); n.has(v) ? n.delete(v) : n.add(v); setter(n)

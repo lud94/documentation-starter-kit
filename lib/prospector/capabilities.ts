@@ -208,6 +208,19 @@ export async function convertToContact(id: string, person: { firstName?: string;
   await persistLead(l); return l
 }
 
+// Bascule un COMPTE en CONTACT en place (« C'est un contact »), et supprime donc
+// le lead-compte (c'est le même lead qui devient une personne). Le nom vient du
+// libellé importé (raison sociale) ou du dirigeant connu.
+export async function flipToContact(id: string): Promise<Lead | undefined> {
+  const l = LEADS[id]; if (!l) return undefined
+  const src = (l.dirigeant || l.company || '').replace(/\b(siren|siret|rcs|tva|naf)\b/gi, '').replace(/\s+/g, ' ').trim()
+  if (!src) return undefined
+  const [firstName, ...rest] = src.split(/\s+/)
+  l.kind = 'contact'; l.firstName = firstName; l.lastName = rest.join(' ')
+  l.title = l.title || 'À qualifier'; l.stage = 'to_invite'
+  await persistLead(l); return l
+}
+
 // Enrichit un compte via l'agent web (Claude seul) : site + résumé secteur/activité
 // (ce que data.gouv ne donne pas). Persiste. Rien n'est deviné (champ vide sinon).
 export async function enrichCompanyWebsite(accountId: string): Promise<{ website?: string; summary?: string; sector?: string; ca?: string; effectif?: string; mode: string }> {

@@ -24,17 +24,6 @@ export interface IdentifyResult {
 }
 
 
-const COMPANY_HINTS = /\b(sas|sasu|sarl|sa|eurl|sci|selarl|scop|siren|siret|rcs|tva|naf|group|groupe|conseil|consulting|technolog\w*|solutions?|labs?|studio|agence|partners|associ[ée]s|holding|company|inc|ltd|llc|gmbh|corp)\b/i
-
-// « Prénom Nom » : 2-3 tokens alphabétiques, sans indice d'entreprise.
-function looksLikePerson(name: string): boolean {
-  const n = (name || '').trim()
-  const toks = n.split(/\s+/).filter(Boolean)
-  if (toks.length < 2 || toks.length > 3) return false
-  if (COMPANY_HINTS.test(n)) return false
-  return toks.every((t) => /^[a-zà-ÿ][a-zà-ÿ'’-]*$/i.test(t))
-}
-
 // Nettoie un nom d'entreprise des libellés parasites récupérés d'une page
 // (« siren redsen » → « redsen », « SIRET 123 Acme » → « Acme »).
 function cleanCompanyName(s: string): string {
@@ -63,15 +52,10 @@ function cleanWebsite(raw?: string): string | undefined {
 // fournis (cas « X, dirigeant de la société Y » d'un article). Sinon → compte,
 // corrigeable en 1 clic (« C'est un compte » / « Renseigner un contact »).
 async function heuristicIdentify(input: IdentifyInput): Promise<IdentifyResult> {
-  const name = (input.name || '').trim()
-  const hasCompany = !!(input.company || '').trim()
-
-  if (hasCompany && looksLikePerson(name)) {
-    const { firstName, lastName } = splitName(name)
-    return { kind: 'person', firstName, lastName, title: input.title || undefined, company: input.company, confidence: 'medium', mode: 'heuristic' }
-  }
-  // Sinon : entreprise. On confirme (best-effort) via data.gouv.
-  const companyName = cleanCompanyName(input.company || name)
+  // Défaut UNIQUE : COMPTE. On ne crée jamais de contact « deviné » à l'import.
+  // (Le seul cas contact est un profil LinkedIn /in/, traité dans identifyLead.)
+  // Si l'import est en réalité une personne → bouton « C'est un contact » sur le compte.
+  const companyName = cleanCompanyName(input.company || input.name || '')
   let confidence: IdentifyResult['confidence'] = 'medium'
   try { const r = await reconcileByName(companyName); if (r) confidence = 'high' } catch { /* best-effort */ }
   return { kind: 'company', company: companyName, confidence, mode: 'heuristic' }
@@ -81,18 +65,11 @@ export async function identifyLead(input: IdentifyInput): Promise<IdentifyResult
   const url = (input.url || '').toLowerCase()
   const name = (input.name || '').trim()
 
-  // 1) Signaux d'URL — les plus fiables, gratuits.
+  // SEUL un profil LinkedIn /in/ crée un CONTACT. Tout le reste → COMPTE.
   if (/linkedin\.com\/in\//.test(url)) {
     const { firstName, lastName } = splitName(name)
     return { kind: 'person', firstName, lastName, title: input.title || undefined, company: input.company || undefined, confidence: 'high', mode: 'url' }
   }
-  if (/linkedin\.com\/company\//.test(url)) {
-    return { kind: 'company', company: input.company || name, confidence: 'high', mode: 'url' }
-  }
-
-  // 2) Cas non tranché par l'URL → heuristique GRATUITE (URL + forme du nom +
-  //    data.gouv). PAS d'appel IA à l'import : détection simple, corrigeable en
-  //    1 clic dans l'UI. L'agent web reste réservé à l'enrichissement (opt-in).
   return heuristicIdentify(input)
 }
 
