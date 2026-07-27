@@ -191,6 +191,11 @@ export async function promoteDirigeant(accountId: string): Promise<Lead | undefi
 // Contact → Compte : on garde l'entreprise, on retire la personne.
 export async function convertToAccount(id: string): Promise<Lead | undefined> {
   const l = LEADS[id]; if (!l) return undefined
+  // Si l'entreprise est vide, on récupère l'ancien nom (nettoyé) comme raison sociale.
+  if (!l.company || l.company === '—') {
+    const guess = `${l.firstName} ${l.lastName}`.replace(/\b(siren|siret|rcs|tva|naf)\b/gi, '').replace(/\s+/g, ' ').trim()
+    if (guess) l.company = guess
+  }
   l.kind = 'account'; l.firstName = ''; l.lastName = ''; l.title = ''; l.persona = undefined; l.email = null; l.stage = 'to_invite'
   await persistLead(l); return l
 }

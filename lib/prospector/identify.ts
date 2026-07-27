@@ -24,7 +24,7 @@ export interface IdentifyResult {
 }
 
 
-const COMPANY_HINTS = /\b(sas|sasu|sarl|sa|eurl|sci|selarl|scop|group|groupe|conseil|consulting|technolog\w*|solutions?|labs?|studio|agence|partners|associ[ée]s|holding|company|inc|ltd|llc|gmbh|corp)\b/i
+const COMPANY_HINTS = /\b(sas|sasu|sarl|sa|eurl|sci|selarl|scop|siren|siret|rcs|tva|naf|group|groupe|conseil|consulting|technolog\w*|solutions?|labs?|studio|agence|partners|associ[ée]s|holding|company|inc|ltd|llc|gmbh|corp)\b/i
 
 // « Prénom Nom » : 2-3 tokens alphabétiques, sans indice d'entreprise.
 function looksLikePerson(name: string): boolean {
@@ -33,6 +33,17 @@ function looksLikePerson(name: string): boolean {
   if (toks.length < 2 || toks.length > 3) return false
   if (COMPANY_HINTS.test(n)) return false
   return toks.every((t) => /^[a-zà-ÿ][a-zà-ÿ'’-]*$/i.test(t))
+}
+
+// Nettoie un nom d'entreprise des libellés parasites récupérés d'une page
+// (« siren redsen » → « redsen », « SIRET 123 Acme » → « Acme »).
+function cleanCompanyName(s: string): string {
+  const cleaned = (s || '')
+    .replace(/\b(siren|siret|rcs|tva|naf|entreprise|soci[ée]t[ée]|ste)\b/gi, '')
+    .replace(/\b\d{9,14}\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned || (s || '').trim()
 }
 
 function splitName(name: string): { firstName: string; lastName: string } {
@@ -47,16 +58,20 @@ function cleanWebsite(raw?: string): string | undefined {
 }
 
 // ── Heuristique (sans clé) : URL + forme du nom + réconciliation data.gouv. ─────
+// Défaut PRUDENT : sans signal fort de personne (URL /in/), un import est un COMPTE.
+// On ne classe en PERSONNE que si un nom plausible ET une société DISTINCTE sont
+// fournis (cas « X, dirigeant de la société Y » d'un article). Sinon → compte,
+// corrigeable en 1 clic (« C'est un compte » / « Renseigner un contact »).
 async function heuristicIdentify(input: IdentifyInput): Promise<IdentifyResult> {
   const name = (input.name || '').trim()
-  const person = looksLikePerson(name)
-  // Un nom de personne + une société explicite = contact (cas de l'article).
-  if (person) {
+  const hasCompany = !!(input.company || '').trim()
+
+  if (hasCompany && looksLikePerson(name)) {
     const { firstName, lastName } = splitName(name)
-    return { kind: 'person', firstName, lastName, title: input.title || undefined, company: input.company || undefined, confidence: input.company ? 'medium' : 'low', mode: 'heuristic' }
+    return { kind: 'person', firstName, lastName, title: input.title || undefined, company: input.company, confidence: 'medium', mode: 'heuristic' }
   }
   // Sinon : entreprise. On confirme (best-effort) via data.gouv.
-  const companyName = input.company || name
+  const companyName = cleanCompanyName(input.company || name)
   let confidence: IdentifyResult['confidence'] = 'medium'
   try { const r = await reconcileByName(companyName); if (r) confidence = 'high' } catch { /* best-effort */ }
   return { kind: 'company', company: companyName, confidence, mode: 'heuristic' }
