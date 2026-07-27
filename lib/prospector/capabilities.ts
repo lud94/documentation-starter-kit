@@ -178,7 +178,9 @@ export async function promoteDirigeant(accountId: string): Promise<Lead | undefi
     id: newLeadId(), kind: 'contact', firstName: firstName || acc.dirigeant, lastName: rest.join(' '),
     title: 'Dirigeant', company: acc.company, persona: 'Founder/CEO',
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
-    siren: acc.siren, signal: acc.signal, icebreaker: acc.icebreaker,
+    siren: acc.siren, active: acc.active, naf: acc.naf, city: acc.city,
+    effectif: acc.effectif, website: acc.website, summary: acc.summary,
+    dirigeant: acc.dirigeant, signal: acc.signal, icebreaker: acc.icebreaker,
   }
   LEADS[lead.id] = lead
   await persistLead(lead)
@@ -203,17 +205,20 @@ export async function convertToContact(id: string, person: { firstName?: string;
 
 // Enrichit un compte via l'agent web (Claude seul) : site + résumé secteur/activité
 // (ce que data.gouv ne donne pas). Persiste. Rien n'est deviné (champ vide sinon).
-export async function enrichCompanyWebsite(accountId: string): Promise<{ website?: string; summary?: string; sector?: string; mode: string }> {
+export async function enrichCompanyWebsite(accountId: string): Promise<{ website?: string; summary?: string; sector?: string; ca?: string; effectif?: string; mode: string }> {
   const acc = LEADS[accountId]
   if (!acc) return { mode: 'none' }
   const params = new URLSearchParams({ company: acc.company })
   if (acc.city) params.set('city', acc.city)
+  if (acc.siren) params.set('siren', acc.siren)
   try {
     const r = await fetch(`/api/enrich/company-web?${params.toString()}`).then((x) => x.json())
     if (r.website) acc.website = r.website
     if (r.summary) acc.summary = r.summary
-    if (r.website || r.summary) await persistLead(acc)
-    return { website: r.website, summary: r.summary, sector: r.sector, mode: r.mode }
+    if (r.ca && !acc.ca) acc.ca = r.ca
+    if (r.effectif && !acc.effectif) acc.effectif = r.effectif
+    if (r.website || r.summary || r.ca || r.effectif) await persistLead(acc)
+    return { website: r.website, summary: r.summary, sector: r.sector, ca: r.ca, effectif: r.effectif, mode: r.mode }
   } catch { return { mode: 'error' } }
 }
 
@@ -267,10 +272,12 @@ function emptyDetail(lead: Lead): LeadDetail {
     company: {
       name: lead.company, size: lead.effectif || '—', location: lead.city || '—',
       website: lead.website || '',
-      sector: lead.naf || '—', funding: '—',
-      description: lead.siren
-        ? `Entreprise vérifiée data.gouv — SIREN ${lead.siren}${lead.active === false ? ' (radiée)' : ' (active)'}${lead.dirigeant ? ` · dirigeant : ${lead.dirigeant}` : ''}.`
-        : 'Informations entreprise à enrichir (clique « Vérifier l\'entreprise »).',
+      sector: lead.naf || '—', funding: lead.ca || '—',
+      description: lead.summary
+        ? lead.summary
+        : lead.siren
+          ? `Entreprise vérifiée data.gouv — SIREN ${lead.siren}${lead.active === false ? ' (radiée)' : ' (active)'}${lead.dirigeant ? ` · dirigeant : ${lead.dirigeant}` : ''}.`
+          : 'Informations entreprise à enrichir (clique « Vérifier l\'entreprise »).',
     },
     dossier: {
       status: 'faible', ageLabel: 'à enrichir', ageDays: 0, stale: false,
@@ -869,11 +876,26 @@ export async function addAccountContact(accountId: string, input: AccountContact
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
     email: input.email?.trim() || null, phone: null,
     linkedinUrl: input.linkedinUrl?.trim() || undefined,
-    siren: acc.siren, signal: acc.signal, icebreaker: acc.icebreaker,
+    // Le contact HÉRITE des infos du compte (fiche contact complète d'office).
+    siren: acc.siren, active: acc.active, naf: acc.naf, city: acc.city,
+    effectif: acc.effectif, website: acc.website, summary: acc.summary,
+    dirigeant: acc.dirigeant, signal: acc.signal, icebreaker: acc.icebreaker,
   }
   LEADS[lead.id] = lead
   await persistLead(lead)
   return lead
+}
+
+// Charge un ou plusieurs dirigeants identifiés (data.gouv) comme CONTACTS.
+export async function addDirigeantsAsContacts(accountId: string, names: string[]): Promise<{ added: number }> {
+  let added = 0
+  for (const name of names) {
+    const [firstName, ...rest] = (name || '').trim().split(/\s+/)
+    if (!firstName) continue
+    const l = await addAccountContact(accountId, { firstName, lastName: rest.join(' '), title: 'Dirigeant', persona: 'Founder/CEO' })
+    if (l) added++
+  }
+  return { added }
 }
 
 // Importe des entreprises sourcées dans le pipeline comme cartes « à enrichir »

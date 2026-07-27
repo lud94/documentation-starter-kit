@@ -86,28 +86,30 @@ export async function identifyLead(input: IdentifyInput): Promise<IdentifyResult
 // Enrichissement COMPTE via le web (Claude seul) : trouve le site officiel, le
 // PARCOURT et résume ce que data.gouv ne donne pas — secteur réel, activité,
 // proposition de valeur, cible/clients, actus. N'invente rien (champ vide sinon).
-export interface CompanyWeb { website?: string; summary?: string; sector?: string; mode: string }
+export interface CompanyWeb { website?: string; summary?: string; sector?: string; effectif?: string; ca?: string; mode: string }
 
-export async function enrichCompanyWeb(company: string, city?: string): Promise<CompanyWeb> {
+export async function enrichCompanyWeb(company: string, city?: string, siren?: string): Promise<CompanyWeb> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return { mode: 'off' }
   const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
+  const pappers = siren ? `Consulte aussi la fiche PUBLIQUE Pappers (https://www.pappers.fr/entreprise/${siren}) pour le chiffre d'affaires, l'effectif et les infos légales.` : ''
   const system = `Tu es analyste commercial B2B. On te donne une entreprise française.
-1) Trouve son SITE OFFICIEL via la recherche web. 2) Parcours-le. 3) Résume en FRANÇAIS,
-factuellement, ce qu'une fiche légale (SIREN/NAF) ne dit pas : secteur réel, activité concrète
-(ce qu'elle vend), proposition de valeur, cible/clients, taille/implantation et actualités
-visibles. N'INVENTE RIEN : si une info n'est pas trouvée, ne l'inclus pas et laisse le champ vide.
-Réponds UNIQUEMENT en JSON: {"website","sector","summary"}. summary = 3 à 5 phrases max.`
+1) Trouve son SITE OFFICIEL via la recherche web et parcours-le. ${pappers}
+2) Résume FACTUELLEMENT en FRANÇAIS ce qu'une fiche SIREN/NAF ne dit pas : secteur réel,
+activité concrète (ce qu'elle vend), proposition de valeur, cible/clients, actualités visibles.
+3) Relève, si publiquement disponibles, le chiffre d'affaires (avec l'année) et l'effectif.
+N'INVENTE RIEN : laisse un champ vide si l'info n'est pas trouvée. Ne donne pas de fourchette inventée.
+Réponds UNIQUEMENT en JSON: {"website","sector","summary","ca","effectif"}. summary = 3 à 5 phrases max.`
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model,
-        max_tokens: 900,
+        max_tokens: 1100,
         system,
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }],
-        messages: [{ role: 'user', content: `Entreprise: ${company}${city ? ` (${city})` : ''}. Trouve le site, parcours-le, et renvoie le JSON demandé.` }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
+        messages: [{ role: 'user', content: `Entreprise: ${company}${city ? ` (${city})` : ''}${siren ? ` · SIREN ${siren}` : ''}. Trouve le site, parcours-le, et renvoie le JSON demandé.` }],
       }),
     })
     if (!res.ok) throw new Error(`Anthropic ${res.status}`)
@@ -120,6 +122,8 @@ Réponds UNIQUEMENT en JSON: {"website","sector","summary"}. summary = 3 à 5 ph
       website: cleanWebsite(p.website),
       sector: (p.sector && String(p.sector).trim()) || undefined,
       summary: (p.summary && String(p.summary).trim()) || undefined,
+      ca: (p.ca && String(p.ca).trim()) || undefined,
+      effectif: (p.effectif && String(p.effectif).trim()) || undefined,
       mode: 'claude-web',
     }
   } catch {

@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, verifyLeadCompany, enrichCompanyWebsite, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 
@@ -106,6 +106,12 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
   const expand = async () => { const next = !open; setOpen(next); if (next) loadDetail() }
   const flash = (m: string) => { setMsg(m); onChanged(); setTimeout(() => setMsg(null), 3000) }
   const promote = async () => { if (!account) return; setBusy(true); await promoteDirigeant(account.id); setBusy(false); flash('Dirigeant ajouté comme contact.') }
+  const addDirs = async (names: string[]) => { if (!account || !names.length) return; setBusy(true); const r = await addDirigeantsAsContacts(account.id, names); setBusy(false); flash(`${r.added} dirigeant(s) ajouté(s) en contact.`) }
+  const removeAccount = async () => {
+    if (!account) return
+    if (!confirm(`Supprimer le compte « ${company} » ?${contacts.length ? ` (ses ${contacts.length} contact(s) sont conservés)` : ''}`)) return
+    setBusy(true); await deleteLead(account.id); setBusy(false); onChanged()
+  }
   const verify = async () => {
     if (!account) return
     setBusy(true); const r = await verifyLeadCompany(account.id); setBusy(false); setDetail(null); await loadDetail()
@@ -144,6 +150,7 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
           </p>
         </div>
         <span className="text-xs font-semibold text-gray-500 bg-gray-100 rounded-full px-2.5 py-1 flex-shrink-0">{contacts.length} contact{contacts.length > 1 ? 's' : ''}</span>
+        {account && <button onClick={(e) => { e.stopPropagation(); removeAccount() }} disabled={busy} title="Supprimer le compte" className="text-gray-300 hover:text-red-500 flex-shrink-0 disabled:opacity-40"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>}
         <svg className={`w-4 h-4 text-gray-400 transition-transform flex-shrink-0 ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
       </div>
       {open && (
@@ -152,7 +159,7 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {[
               { k: 'Effectif', v: (detail?.effectif || meta?.effectif) ? `${detail?.effectif || meta?.effectif} sal.` : '—' },
-              { k: 'Chiffre d\'affaires', v: (detail?.finances && fmtEuro(detail.finances.ca)) ? `${fmtEuro(detail!.finances!.ca)} (${detail!.finances!.year})` : (loadingDetail ? '…' : 'non publié') },
+              { k: 'Chiffre d\'affaires', v: (detail?.finances && fmtEuro(detail.finances.ca)) ? `${fmtEuro(detail!.finances!.ca)} (${detail!.finances!.year})` : (meta?.ca || (loadingDetail ? '…' : 'non publié')) },
               { k: 'Dirigeants', v: detail ? String(detail.dirigeants.length || (meta?.dirigeant ? 1 : 0)) : (loadingDetail ? '…' : (meta?.dirigeant ? '1' : '—')) },
               { k: 'Secteur (NAF)', v: detail?.naf || meta?.naf || '—' },
             ].map((s) => (
@@ -163,12 +170,21 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
             ))}
           </div>
           {detail && detail.dirigeants.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {detail.dirigeants.map((d, i) => (
-                <span key={i} className="text-[11px] px-2 py-0.5 rounded-full bg-white border border-gray-200 text-gray-600">
-                  {d.name}{d.role ? ` · ${d.role}` : ''}{d.type === 'morale' ? ' (pers. morale)' : ''}
-                </span>
-              ))}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-semibold text-gray-400">Dirigeants identifiés (data.gouv)</p>
+                {account && detail.dirigeants.some((d) => d.type === 'physique') && (
+                  <button onClick={() => addDirs(detail.dirigeants.filter((d) => d.type === 'physique').map((d) => d.name))} disabled={busy} className="text-[11px] font-medium text-indigo-600 hover:underline disabled:opacity-40">Tous en contacts</button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {detail.dirigeants.map((d, i) => (
+                  <span key={i} className="text-[11px] pl-2 pr-1 py-0.5 rounded-full bg-white border border-gray-200 text-gray-600 inline-flex items-center gap-1">
+                    {d.name}{d.role ? ` · ${d.role}` : ''}{d.type === 'morale' ? ' (pers. morale)' : ''}
+                    {account && d.type === 'physique' && <button onClick={() => addDirs([d.name])} disabled={busy} title="Ajouter en contact" className="w-4 h-4 rounded-full gradient-brand text-white text-[10px] leading-none flex items-center justify-center disabled:opacity-40">+</button>}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
           {meta?.summary && (
@@ -177,7 +193,11 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
               <p className="text-xs text-gray-600 leading-relaxed">{meta.summary}</p>
             </div>
           )}
-          <p className="text-[11px] text-gray-400">Site web / secteur détaillé ne sont pas dans data.gouv (SIRENE) → « Enrichir via le web ». {meta?.website && <>Site : <a href={`https://${meta.website}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{meta.website}</a></>}</p>
+          <p className="text-[11px] text-gray-400">
+            Site web / secteur détaillé ne sont pas dans data.gouv (SIRENE) → « Enrichir via le web ».
+            {meta?.website && <> · Site : <a href={`https://${meta.website}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{meta.website}</a></>}
+            {meta?.siren && <> · <a href={`https://www.pappers.fr/entreprise/${meta.siren}`} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Fiche Pappers</a></>}
+          </p>
 
           {/* Actions compte */}
           {account && (
