@@ -1,9 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { getUsageAll } from '../../../lib/supabase/pappersCache'
+import { getKey, hydrateKeystore } from '../../../lib/prospector/keystore'
 
 // Conso RÉELLE (aucune simulation) : Pappers + IA (appels/tokens/coût), agrégée
 // depuis les compteurs, avec un détail par modèle, par agent et par jour.
 export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
+  await hydrateKeystore()
   const all = await getUsageAll()
   const g = (k: string) => all[k] || 0
 
@@ -21,13 +23,21 @@ export default async function handler(_req: NextApiRequest, res: NextApiResponse
   }
   const days = Object.keys(byDay).sort().reverse().slice(0, 14).map((d) => ({ day: d, ...byDay[d] }))
 
+  const spent = g('ai:cents') / 100
+  const budget = parseFloat(getKey('ANTHROPIC_BUDGET') || '') || 0
+
   res.status(200).json({
     pappersCalls: g('pappers_calls'),
+    budget: {
+      anthropic: budget,                         // montant chargé (saisi manuellement)
+      spent,                                      // coût IA réel cumulé
+      remaining: budget > 0 ? Math.max(0, budget - spent) : null,
+    },
     ai: {
       calls: g('ai:calls'),
       tokensIn: g('ai:in'),
       tokensOut: g('ai:out'),
-      cost: g('ai:cents') / 100,
+      cost: spent,
       byModel: byModel.sort((a, b) => b.cost - a.cost),
       byAgent: byAgent.sort((a, b) => b.cost - a.cost),
       byDay: days,

@@ -48,6 +48,15 @@ export default function AdminPage() {
   const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [usagePeriod, setUsagePeriod] = useState<Period>('month')
   const [pappersCalls, setPappersCalls] = useState<number | null>(null)
+  const [budget, setBudget] = useState<{ anthropic: number; spent: number; remaining: number | null } | null>(null)
+  const [budgetInput, setBudgetInput] = useState('')
+  const [budgetSaving, setBudgetSaving] = useState(false)
+  const loadUsageMeta = () => fetch('/api/config/usage').then((r) => r.json()).then((d) => { setPappersCalls(d.pappersCalls ?? null); setBudget(d.budget ?? null); if (d.budget?.anthropic) setBudgetInput(String(d.budget.anthropic)) }).catch(() => {})
+  const saveBudget = async () => {
+    setBudgetSaving(true)
+    await fetch('/api/config/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ANTHROPIC_BUDGET: budgetInput.trim() }) })
+    await loadUsageMeta(); getUsage(usagePeriod).then(setUsage); setBudgetSaving(false)
+  }
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [diags, setDiags] = useState<Diagnostic[]>([])
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
@@ -77,7 +86,7 @@ export default function AdminPage() {
     getChannels().then(setChannels)
   }, [])
   useEffect(() => { getUsage(usagePeriod).then(setUsage) }, [usagePeriod])
-  useEffect(() => { fetch('/api/config/usage').then((r) => r.json()).then((d) => setPappersCalls(d.pappersCalls ?? null)).catch(() => {}) }, [])
+  useEffect(() => { loadUsageMeta() }, [])
 
   const TABS: { key: Tab; label: string }[] = [
     { key: 'usage', label: 'Usage & coûts' },
@@ -129,6 +138,33 @@ export default function AdminPage() {
             ))}
           </div>
           <p className="text-xs text-gray-400 mb-3">Consommation IA <strong>réelle</strong> (cumulée), mesurée sur les tokens renvoyés par l'API — 0 tant qu'aucun appel n'a eu lieu.</p>
+
+          {/* Budget Anthropic manuel → restant = budget − dépensé réel */}
+          <div className="card p-5 mb-4">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <h2 className="text-sm font-semibold text-gray-700">Crédit Anthropic <span className="font-normal text-gray-400">— saisis le montant chargé sur ta clé, on décompte le coût réel</span></h2>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-400">$</span>
+                <input value={budgetInput} onChange={(e) => setBudgetInput(e.target.value.replace(/[^0-9.]/g, ''))} placeholder="ex: 20" className="w-24 px-2.5 py-1.5 text-sm rounded-lg bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400" />
+                <button onClick={saveBudget} disabled={budgetSaving} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-40">{budgetSaving ? '…' : 'Enregistrer'}</button>
+              </div>
+            </div>
+            {budget && budget.anthropic > 0 ? (
+              <>
+                <div className="grid grid-cols-3 gap-3 mb-3">
+                  <div><p className="text-xs text-gray-400">Chargé</p><p className="text-lg font-bold text-gray-700">${budget.anthropic.toFixed(2)}</p></div>
+                  <div><p className="text-xs text-gray-400">Dépensé (réel)</p><p className="text-lg font-bold text-gray-700">${budget.spent.toFixed(2)}</p></div>
+                  <div><p className="text-xs text-gray-400">Restant estimé</p><p className={`text-lg font-bold ${(budget.remaining ?? 0) < budget.anthropic * 0.15 ? 'text-red-600' : 'gradient-text'}`}>${(budget.remaining ?? 0).toFixed(2)}</p></div>
+                </div>
+                <div className="bg-gray-100 rounded-full h-2 overflow-hidden">
+                  <div className="h-2 rounded-full gradient-brand" style={{ width: `${Math.min(100, (budget.spent / budget.anthropic) * 100)}%` }} />
+                </div>
+                <p className="text-[11px] text-gray-400 mt-2">Estimation basée sur les tokens réels × tarifs indicatifs. Anthropic n'exposant pas de solde, mets à jour le montant chargé quand tu recharges.</p>
+              </>
+            ) : (
+              <p className="text-xs text-gray-400">Saisis le montant chargé sur ta clé Anthropic pour suivre le crédit restant.</p>
+            )}
+          </div>
           {pappersCalls !== null && (
             <div className="card p-4 mb-4 flex items-center gap-2 text-sm">
               <span className="w-2 h-2 rounded-full bg-blue-500" />
