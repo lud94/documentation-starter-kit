@@ -53,32 +53,31 @@
   const $ = (id) => root.getElementById(id)
   const wrap = $('wrap'), panel = $('panel'), msgs = $('msgs'), fab = $('fab')
 
-  // ── Déplacement (bulle + entête du panneau) ──
-  let drag = null, moved = false
-  function startDrag(e) {
-    const p = e.touches ? e.touches[0] : e
+  // ── Déplacement (bulle + entête du panneau) via Pointer Events + capture ──
+  // setPointerCapture garantit qu'on reçoit les mouvements même si la page interfère.
+  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false, moved = false
+  function down(e) {
     const r = wrap.getBoundingClientRect()
-    drag = { dx: p.clientX - r.left, dy: p.clientY - r.top }; moved = false
-    document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', endDrag)
-    document.addEventListener('touchmove', onMove, { passive: false }); document.addEventListener('touchend', endDrag)
+    ox = r.left; oy = r.top; sx = e.clientX; sy = e.clientY; dragging = true; moved = false
+    try { e.target.setPointerCapture(e.pointerId) } catch (_) {}
+    e.preventDefault()
   }
-  function onMove(e) {
-    if (!drag) return
-    const p = e.touches ? e.touches[0] : e
-    if (e.cancelable) e.preventDefault()
-    moved = true
-    let left = p.clientX - drag.dx, top = p.clientY - drag.dy
-    left = Math.max(6, Math.min(window.innerWidth - 58, left))
-    top = Math.max(6, Math.min(window.innerHeight - 58, top))
+  function move(e) {
+    if (!dragging) return
+    const dx = e.clientX - sx, dy = e.clientY - sy
+    if (Math.abs(dx) + Math.abs(dy) > 4) moved = true
+    const left = Math.max(6, Math.min(window.innerWidth - 58, ox + dx))
+    const top = Math.max(6, Math.min(window.innerHeight - 58, oy + dy))
     wrap.style.left = left + 'px'; wrap.style.top = top + 'px'; wrap.style.right = 'auto'; wrap.style.bottom = 'auto'
   }
-  function endDrag() {
-    drag = null
-    document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', endDrag)
-    document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', endDrag)
-  }
-  fab.addEventListener('mousedown', startDrag); fab.addEventListener('touchstart', startDrag, { passive: true })
-  $('hd').addEventListener('mousedown', startDrag)
+  function up() { dragging = false }
+  ;[fab, $('hd')].forEach((el) => {
+    el.style.touchAction = 'none'
+    el.addEventListener('pointerdown', down)
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', up)
+  })
   fab.addEventListener('click', () => { if (!moved) panel.classList.toggle('open') })
   $('cls').onclick = () => panel.classList.remove('open')
 
