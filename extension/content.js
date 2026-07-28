@@ -8,9 +8,10 @@
   window.__prospectorJarvis = true
 
   let base = '', token = '', pending = null
-  chrome.storage.local.get(['base', 'token'], (s) => {
+  chrome.storage.local.get(['base', 'token', 'brand'], (s) => {
     base = (s.base || '').replace(/\/$/, ''); token = s.token || ''
     if (base && location.href.indexOf(base) === 0) { host.remove(); return } // pas sur l'app elle-même
+    if (s.brand) { const el = root.getElementById('brand'); if (el) el.textContent = s.brand } // white-label
   })
 
   const host = document.createElement('div')
@@ -42,7 +43,7 @@
     </style>
     <div id="wrap">
       <div id="panel">
-        <div id="hd">✦ Jarvis <small>· déplace-moi</small><span style="flex:1"></span><span id="cls" style="cursor:pointer">✕</span></div>
+        <div id="hd">✦ <span id="brand">Jarvis</span> <small>· déplace-moi</small><span style="flex:1"></span><span id="cls" style="cursor:pointer">✕</span></div>
         <div id="msgs"><div class="hint">Ex : « explique-moi cette société », « crée le compte + les contacts », « charge cette personne », « ajoute à la liste ESN », « mets en séquence X ».</div></div>
         <div id="ft"><input id="in" placeholder="Directive à Jarvis…" /><button id="snd">➤</button></div>
       </div>

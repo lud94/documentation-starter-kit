@@ -783,6 +783,7 @@ function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose
   const [busy, setBusy] = useState(false)
   const [wsToken, setWsToken] = useState<string | null>(null)
   const [tokCopied, setTokCopied] = useState(false)
+  const [confirmRegen, setConfirmRegen] = useState(false)
   useEffect(() => { fetch(`/api/workspaces/token?id=${ws.id}`).then((r) => r.json()).then((d) => setWsToken(d.token || null)).catch(() => {}) }, [ws.id])
 
   const save = async () => {
@@ -832,8 +833,9 @@ function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose
             <div className="flex items-center gap-2">
               <input readOnly value={wsToken || 'Génération…'} className={`${fieldCls} font-mono text-[11px]`} onFocus={(e) => e.target.select()} />
               <button onClick={() => { if (wsToken) { navigator.clipboard?.writeText(wsToken); setTokCopied(true); setTimeout(() => setTokCopied(false), 1500) } }} className="text-xs font-semibold text-gray-600 border border-gray-200 px-3 py-2 rounded-xl hover:bg-gray-50 flex-shrink-0">{tokCopied ? '✓ Copié' : 'Copier'}</button>
+              <button onClick={async () => { if (!confirmRegen) { setConfirmRegen(true); return } setConfirmRegen(false); setWsToken(null); const d = await fetch('/api/workspaces/token', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: ws.id }) }).then((r) => r.json()); setWsToken(d.token || null) }} className={`text-xs font-semibold px-3 py-2 rounded-xl flex-shrink-0 ${confirmRegen ? 'bg-red-500 text-white' : 'text-red-500 border border-red-200 hover:bg-red-50'}`}>{confirmRegen ? 'Confirmer' : 'Régénérer'}</button>
             </div>
-            <p className="text-[11px] text-gray-400 mt-1">Le client colle ce jeton + l'URL Prospector dans les réglages de l'extension. Ses imports/actions Jarvis atterrissent dans son espace, jamais le tien.</p>
+            <p className="text-[11px] text-gray-400 mt-1">Le client colle ce jeton + l'URL Prospector dans les réglages de l'extension. « Régénérer » <strong>révoque l'ancien jeton de CE client uniquement</strong> (les autres ne sont pas touchés) — il devra remettre le nouveau.</p>
           </div>
         </div>
 

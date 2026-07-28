@@ -3,9 +3,10 @@ const $ = (id) => document.getElementById(id)
 let currentUrl = ''
 
 // Charge les réglages sauvegardés.
-chrome.storage.local.get(['base', 'token'], (s) => {
+chrome.storage.local.get(['base', 'token', 'brand'], (s) => {
   if (s.base) $('base').value = s.base
   if (s.token) $('token').value = s.token
+  if (s.brand) $('brand').value = s.brand
 })
 
 // Récupère l'onglet actif + devine le nom depuis le titre de la page.
@@ -19,7 +20,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
 })
 
 $('save').addEventListener('click', () => {
-  chrome.storage.local.set({ base: $('base').value.trim().replace(/\/$/, ''), token: $('token').value.trim() }, () => {
+  chrome.storage.local.set({ base: $('base').value.trim().replace(/\/$/, ''), token: $('token').value.trim(), brand: $('brand').value.trim() }, () => {
     show('Réglages enregistrés.', 'ok')
   })
 })
