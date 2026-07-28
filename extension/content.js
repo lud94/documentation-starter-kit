@@ -1,4 +1,4 @@
-/* Prospector — Jarvis flottant (Phase 2).
+/* Prospector — Jarvis flottant (Phase 2), bulle DÉPLAÇABLE.
    Injecte une bulle + un mini-chat sur toutes les pages web. L'utilisateur donne
    une directive (« explique Redsen et crée les contacts », « charge cette personne »).
    La directive + l'URL/titre de la page partent vers /api/jarvis/agent (jeton INGEST).
@@ -10,8 +10,7 @@
   let base = '', token = '', pending = null
   chrome.storage.local.get(['base', 'token'], (s) => {
     base = (s.base || '').replace(/\/$/, ''); token = s.token || ''
-    // Ne pas s'injecter sur l'app Prospector elle-même (elle a déjà son Jarvis).
-    if (base && location.href.indexOf(base) === 0) { host.remove(); return }
+    if (base && location.href.indexOf(base) === 0) { host.remove(); return } // pas sur l'app elle-même
   })
 
   const host = document.createElement('div')
@@ -21,14 +20,14 @@
   root.innerHTML = `
     <style>
       :host { all: initial; }
-      #fab { position: fixed; bottom: 20px; right: 20px; width: 52px; height: 52px; border-radius: 50%;
-        background: linear-gradient(135deg,#667eea,#764ba2); color:#fff; font-size:22px; border:none; cursor:pointer;
-        box-shadow:0 6px 20px rgba(102,126,234,.5); z-index:2147483647; display:flex; align-items:center; justify-content:center; }
-      #panel { position: fixed; bottom: 84px; right: 20px; width: 340px; max-height: 70vh; background:#fff; border-radius:16px;
-        box-shadow:0 12px 40px rgba(0,0,0,.25); z-index:2147483647; display:none; flex-direction:column; overflow:hidden;
-        font-family: -apple-system,Segoe UI,Roboto,sans-serif; }
+      #wrap { position: fixed; right: 20px; bottom: 20px; z-index: 2147483647; font-family: -apple-system,Segoe UI,Roboto,sans-serif; }
+      #fab { width: 52px; height: 52px; border-radius: 50%; background: linear-gradient(135deg,#667eea,#764ba2); color:#fff; font-size:22px;
+        border:none; cursor: grab; box-shadow:0 6px 20px rgba(102,126,234,.5); display:flex; align-items:center; justify-content:center; touch-action:none; }
+      #fab:active { cursor: grabbing; }
+      #panel { position: absolute; bottom: 64px; right: 0; width: 340px; max-height: 70vh; background:#fff; border-radius:16px;
+        box-shadow:0 12px 40px rgba(0,0,0,.25); display:none; flex-direction:column; overflow:hidden; }
       #panel.open { display:flex; }
-      #hd { padding:12px 14px; background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; }
+      #hd { padding:12px 14px; background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; cursor:grab; }
       #hd small { font-weight:400; opacity:.85; font-size:11px; }
       #msgs { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; background:#f7f8fc; }
       .m { font-size:13px; line-height:1.4; padding:8px 11px; border-radius:12px; max-width:85%; white-space:pre-wrap; }
@@ -39,18 +38,47 @@
       #ft { display:flex; gap:6px; padding:10px; border-top:1px solid #eee; }
       #in { flex:1; font-size:13px; padding:8px 10px; border:1px solid #ddd; border-radius:10px; outline:none; }
       #snd { background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; border:none; border-radius:10px; padding:0 12px; font-weight:600; cursor:pointer; font-size:13px; }
-      .hint { font-size:11px; color:#888; padding:2px 2px; }
+      .hint { font-size:11px; color:#888; }
     </style>
-    <button id="fab" title="Jarvis">✦</button>
-    <div id="panel">
-      <div id="hd">✦ Jarvis <small>· pilote Prospector</small><span style="flex:1"></span><span id="cls" style="cursor:pointer">✕</span></div>
-      <div id="msgs"><div class="hint">Ex : « explique Redsen et crée les contacts », « charge cette personne dans Prospector ».</div></div>
-      <div id="ft"><input id="in" placeholder="Directive à Jarvis…" /><button id="snd">➤</button></div>
+    <div id="wrap">
+      <div id="panel">
+        <div id="hd">✦ Jarvis <small>· déplace-moi</small><span style="flex:1"></span><span id="cls" style="cursor:pointer">✕</span></div>
+        <div id="msgs"><div class="hint">Ex : « explique-moi cette société et crée les contacts », « charge cette personne dans Prospector ».</div></div>
+        <div id="ft"><input id="in" placeholder="Directive à Jarvis…" /><button id="snd">➤</button></div>
+      </div>
+      <button id="fab" title="Jarvis (glisser pour déplacer)">✦</button>
     </div>`
 
   const $ = (id) => root.getElementById(id)
-  const panel = $('panel'), msgs = $('msgs')
-  $('fab').onclick = () => panel.classList.toggle('open')
+  const wrap = $('wrap'), panel = $('panel'), msgs = $('msgs'), fab = $('fab')
+
+  // ── Déplacement (bulle + entête du panneau) ──
+  let drag = null, moved = false
+  function startDrag(e) {
+    const p = e.touches ? e.touches[0] : e
+    const r = wrap.getBoundingClientRect()
+    drag = { dx: p.clientX - r.left, dy: p.clientY - r.top }; moved = false
+    document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', endDrag)
+    document.addEventListener('touchmove', onMove, { passive: false }); document.addEventListener('touchend', endDrag)
+  }
+  function onMove(e) {
+    if (!drag) return
+    const p = e.touches ? e.touches[0] : e
+    if (e.cancelable) e.preventDefault()
+    moved = true
+    let left = p.clientX - drag.dx, top = p.clientY - drag.dy
+    left = Math.max(6, Math.min(window.innerWidth - 58, left))
+    top = Math.max(6, Math.min(window.innerHeight - 58, top))
+    wrap.style.left = left + 'px'; wrap.style.top = top + 'px'; wrap.style.right = 'auto'; wrap.style.bottom = 'auto'
+  }
+  function endDrag() {
+    drag = null
+    document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', endDrag)
+    document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', endDrag)
+  }
+  fab.addEventListener('mousedown', startDrag); fab.addEventListener('touchstart', startDrag, { passive: true })
+  $('hd').addEventListener('mousedown', startDrag)
+  fab.addEventListener('click', () => { if (!moved) panel.classList.toggle('open') })
   $('cls').onclick = () => panel.classList.remove('open')
 
   function add(text, cls) { const d = document.createElement('div'); d.className = 'm ' + cls; d.textContent = text; msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight; return d }

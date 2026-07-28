@@ -3,6 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Sequence } from '../types/prospector'
 import { STATUS_META } from '../types/prospector'
+import { ConfirmDialog, PromptDialog } from '../components/Dialog'
 import {
   getLists, createList, deleteList, renameList, getListLeads, removeFromList,
   buildCsv, CSV_PRESETS, deployListToSequence, getSequences, isAccountLead, reconcileCollections,
@@ -80,8 +81,10 @@ export default function ListsPage() {
     flash(`${r.enrolled} contact(s) déployé(s) dans la séquence.`)
     getSequences().then(setSequences)
   }
-  const remove = async (list: LeadList) => { if (confirm(`Supprimer la liste « ${list.name} » ? (les leads ne sont pas supprimés)`)) { await deleteList(list.id); refresh() } }
-  const rename = async (list: LeadList) => { const n = prompt('Renommer la liste', list.name); if (n) { await renameList(list.id, n); refresh() } }
+  const [toDelete, setToDelete] = useState<LeadList | null>(null)
+  const [toRename, setToRename] = useState<LeadList | null>(null)
+  const remove = (list: LeadList) => setToDelete(list)
+  const rename = (list: LeadList) => setToRename(list)
   const unlink = async (list: LeadList, leadId: string) => { await removeFromList(list.id, leadId); setLeadsCache((m) => { const n = { ...m }; delete n[list.id]; return n }); await loadLeads(list); refresh() }
 
   return (
@@ -158,6 +161,8 @@ export default function ListsPage() {
       )}
 
       {exportFor && <ExportPanel leads={exportFor.leads} listName={exportFor.name} onClose={() => setExportFor(null)} />}
+      {toDelete && <ConfirmDialog title="Supprimer la liste" message={`« ${toDelete.name} » — les leads ne sont pas supprimés.`} confirmLabel="Supprimer" danger onConfirm={async () => { await deleteList(toDelete.id); setToDelete(null); refresh() }} onCancel={() => setToDelete(null)} />}
+      {toRename && <PromptDialog title="Renommer la liste" defaultValue={toRename.name} onSubmit={async (n) => { await renameList(toRename.id, n); setToRename(null); refresh() }} onCancel={() => setToRename(null)} />}
     </>
   )
 }

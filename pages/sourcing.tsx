@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../types/prospector'
+import { PromptDialog } from '../components/Dialog'
 import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { PersonHit } from '../lib/prospector/capabilities'
@@ -186,15 +187,16 @@ export default function SourcingPage() {
   }
 
   const router = useRouter()
-  const makeSignalList = async () => {
-    if (sigHits.length === 0) return
-    const name = prompt('Nom de la liste (signaux)', sigThesis.slice(0, 60) || 'Signaux')
-    if (!name) return
+  const [signalListOpen, setSignalListOpen] = useState(false)
+  const [signalListMsg, setSignalListMsg] = useState<string | null>(null)
+  const makeSignalList = () => { if (sigHits.length > 0) setSignalListOpen(true) }
+  const createSignalList = async (name: string) => {
+    setSignalListOpen(false)
     const ids: string[] = []
     for (const h of sigHits) { const r = await importSignalToPipeline(h); if (r?.id) ids.push(r.id) }
     setSigImported((s) => { const n = new Set(s); sigHits.forEach((h) => n.add(h.company)); return n })
     await createList(name, ids, 'signaux Exa/Claude')
-    if (confirm('Liste créée depuis les signaux. Ouvrir la page Listes ?')) router.push('/lists')
+    setSignalListMsg(`Liste « ${name} » créée depuis les signaux.`); setTimeout(() => setSignalListMsg(null), 4000)
   }
 
   const copyIce = (h: SignalHit) => { navigator.clipboard?.writeText(h.icebreaker); setCopied(h.company); setTimeout(() => setCopied(null), 1500) }
@@ -612,6 +614,11 @@ export default function SourcingPage() {
           </div>
         </div>
       )}
+
+      {signalListOpen && (
+        <PromptDialog title="Créer une liste depuis les signaux" message={`${sigHits.length} entreprise(s) détectée(s) seront importées et regroupées.`} defaultValue={sigThesis.slice(0, 60) || 'Signaux'} submitLabel="Créer la liste" onSubmit={createSignalList} onCancel={() => setSignalListOpen(false)} />
+      )}
+      {signalListMsg && <div className="fixed bottom-4 right-4 z-50 bg-emerald-600 text-white text-sm px-4 py-2 rounded-xl shadow-lg">{signalListMsg} · <a href="/lists" className="underline">Voir</a></div>}
     </>
   )
 }

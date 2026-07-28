@@ -8,6 +8,7 @@ import { useRouter } from 'next/router'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 import AddToListModal from '../components/AddToListModal'
+import { ConfirmDialog } from '../components/Dialog'
 
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
 const STATUS_ORDER: LeadStatus[] = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
@@ -119,16 +120,11 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
     setBusy(false); flash(`${r.added} dirigeant(s) ajouté(s) en contact.`)
   }
   const addDirs = async (names: string[]) => { if (!account || !names.length) return; setBusy(true); const r = await addDirigeantsAsContacts(account.id, names); setBusy(false); flash(`${r.added} dirigeant(s) ajouté(s) en contact.`) }
-  const removeAccount = async () => {
-    if (!account) return
-    if (!confirm(`Supprimer le compte « ${company} » ?${contacts.length ? ` (ses ${contacts.length} contact(s) sont conservés)` : ''}`)) return
-    setBusy(true); await deleteLead(account.id); setBusy(false); onChanged()
-  }
-  const flip = async () => {
-    if (!account) return
-    if (!confirm(`« ${company} » est en réalité une personne (contact) ? Le compte bascule en contact.`)) return
-    setBusy(true); await flipToContact(account.id); setBusy(false); onChanged()
-  }
+  const [confirmKind, setConfirmKind] = useState<'delete' | 'flip' | null>(null)
+  const removeAccount = () => setConfirmKind('delete')
+  const flip = () => setConfirmKind('flip')
+  const doDelete = async () => { if (!account) return; setConfirmKind(null); setBusy(true); await deleteLead(account.id); setBusy(false); onChanged() }
+  const doFlip = async () => { if (!account) return; setConfirmKind(null); setBusy(true); await flipToContact(account.id); setBusy(false); onChanged() }
   const verify = async () => {
     if (!account) return
     setBusy(true); const r = await verifyLeadCompany(account.id); setBusy(false); setDetail(null); await loadDetail()
@@ -276,6 +272,8 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
           {msg && <p className="text-[11px] text-emerald-600">{msg}</p>}
         </div>
       )}
+      {confirmKind === 'delete' && <ConfirmDialog title="Supprimer le compte" message={`« ${company} »${contacts.length ? ` — ses ${contacts.length} contact(s) sont conservés.` : ''}`} confirmLabel="Supprimer" danger onConfirm={doDelete} onCancel={() => setConfirmKind(null)} />}
+      {confirmKind === 'flip' && <ConfirmDialog title="Basculer en contact" message={`« ${company} » est en réalité une personne ? Le compte devient un contact.`} confirmLabel="Basculer" onConfirm={doFlip} onCancel={() => setConfirmKind(null)} />}
     </div>
   )
 }
