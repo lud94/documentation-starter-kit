@@ -282,6 +282,54 @@ export interface Workspace {
 
 export const DEFAULT_PERMISSIONS: WorkspacePermissions = { messaging: true, leads: true, sequences: true, validate: true }
 
+// ── Missions (agentique) : contrat structuré → plan validé → exécution pas-à-pas ──
+export type MissionStatus = 'draft' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled'
+export type MissionStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+// Outils autorisés : périmètre FERMÉ (l'IA ne peut rien exécuter d'autre).
+export type MissionTool =
+  | 'source_companies'    // chercher des entreprises (data.gouv)
+  | 'import_companies'    // créer les comptes dans le pipe
+  | 'resolve_dirigeants'  // ajouter les dirigeants réels en contacts
+  | 'enrich_companies'    // enrichissement web (site/CA/résumé) — coûte des tokens
+  | 'create_list'         // regrouper en liste
+  | 'create_sequence'     // créer la séquence + enrôler les contacts
+
+export const MISSION_TOOL_META: Record<MissionTool, { label: string; write: boolean; costly?: boolean }> = {
+  source_companies: { label: 'Sourcer des entreprises', write: false },
+  import_companies: { label: 'Importer les comptes', write: true },
+  resolve_dirigeants: { label: 'Résoudre les dirigeants', write: true },
+  enrich_companies: { label: 'Enrichir via le web', write: true, costly: true },
+  create_list: { label: 'Créer la liste', write: true },
+  create_sequence: { label: 'Créer la séquence', write: true },
+}
+
+export interface MissionStep {
+  id: string
+  tool: MissionTool
+  label: string
+  params: Record<string, any>
+  status: MissionStepStatus
+  result?: string           // preuve lisible de ce qui a été fait
+  needsApproval?: boolean   // pause avant exécution (action sensible/coûteuse)
+  endedAt?: number
+}
+
+export interface Mission {
+  id: string
+  title: string
+  request: string                 // la demande libre d'origine
+  objective: string
+  status: MissionStatus
+  autonomy: 'read_only' | 'create'
+  steps: MissionStep[]
+  assumptions: string[]           // hypothèses prises par le planificateur
+  missing: string[]               // informations manquantes
+  context: Record<string, any>    // état partagé entre étapes (companies, leadIds…)
+  log: { at: number; text: string }[]
+  cursor: number                  // index de l'étape courante
+  createdAt: number
+}
+
 export type StepCondition = 'always' | 'if_connected' | 'if_no_response' | 'if_responded'
 
 export const CONDITION_LABEL: Record<StepCondition, string> = {
