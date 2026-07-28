@@ -3,6 +3,7 @@ import { getKey, hydrateKeystore } from '../../../lib/prospector/keystore'
 import { upsertLead } from '../../../lib/supabase/leads'
 import { lookupByName } from '../../../lib/prospector/datagouv'
 import { identifyLead } from '../../../lib/prospector/identify'
+import { resolveWorkspaceByToken } from '../../../lib/prospector/wstoken'
 import type { Lead } from '../../../types/prospector'
 
 // Point d'entrée pour l'extension navigateur (Jarvis web).
@@ -21,7 +22,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const token = String(req.headers['x-ingest-token'] || (typeof req.body === 'object' ? req.body?.token : '') || '')
   if (!ref) return res.status(401).json({ error: 'Aucun jeton configuré côté Prospector (Admin → Connexions → INGEST_TOKEN, puis Enregistrer).' })
   if (!token) return res.status(401).json({ error: 'Jeton absent dans l\'extension (champ Réglages vide).' })
-  if (token.trim() !== ref.trim()) return res.status(401).json({ error: 'Jeton différent de celui enregistré dans Prospector.' })
+  // Multi-tenant : le jeton détermine l'espace de destination (admin ou client).
+  const ws = await resolveWorkspaceByToken(token)
+  if (!ws) return res.status(401).json({ error: 'Jeton invalide (ni admin, ni client connu).' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const name = String(body?.name || '').trim()
@@ -66,7 +69,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     } catch { /* vérif best-effort */ }
   }
 
-  const ok = await upsertLead(lead, 'admin')
+  const ok = await upsertLead(lead, ws)
   res.status(ok ? 200 : 502).json({ ok, id: lead.id })
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

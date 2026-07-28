@@ -781,6 +781,9 @@ function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose
   const [perms, setPerms] = useState<WorkspacePermissions>(ws.permissions || { ...DEFAULT_PERMISSIONS })
   const [clientPw, setClientPw] = useState('')
   const [busy, setBusy] = useState(false)
+  const [wsToken, setWsToken] = useState<string | null>(null)
+  const [tokCopied, setTokCopied] = useState(false)
+  useEffect(() => { fetch(`/api/workspaces/token?id=${ws.id}`).then((r) => r.json()).then((d) => setWsToken(d.token || null)).catch(() => {}) }, [ws.id])
 
   const save = async () => {
     setBusy(true)
@@ -823,6 +826,14 @@ function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Mot de passe d'accès client {ws.hasClientAccess && <span className="text-emerald-600 font-normal">· défini</span>}</label>
             <input type="password" value={clientPw} onChange={(e) => setClientPw(e.target.value)} className={fieldCls} placeholder={ws.hasClientAccess ? '•••••••• (laisser vide pour garder)' : 'Min. 8 caractères'} />
             <p className="text-[11px] text-gray-400 mt-1">Le client se connecte sur la même page que toi, avec cet email + ce mot de passe. Il obtient une vue limitée à ses permissions ci-dessous.</p>
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Jeton extension Jarvis <span className="font-normal text-gray-400">— à remettre au client pour son extension (écrit dans SON espace)</span></label>
+            <div className="flex items-center gap-2">
+              <input readOnly value={wsToken || 'Génération…'} className={`${fieldCls} font-mono text-[11px]`} onFocus={(e) => e.target.select()} />
+              <button onClick={() => { if (wsToken) { navigator.clipboard?.writeText(wsToken); setTokCopied(true); setTimeout(() => setTokCopied(false), 1500) } }} className="text-xs font-semibold text-gray-600 border border-gray-200 px-3 py-2 rounded-xl hover:bg-gray-50 flex-shrink-0">{tokCopied ? '✓ Copié' : 'Copier'}</button>
+            </div>
+            <p className="text-[11px] text-gray-400 mt-1">Le client colle ce jeton + l'URL Prospector dans les réglages de l'extension. Ses imports/actions Jarvis atterrissent dans son espace, jamais le tien.</p>
           </div>
         </div>
 
