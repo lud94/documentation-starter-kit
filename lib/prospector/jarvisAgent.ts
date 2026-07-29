@@ -26,6 +26,10 @@ ACTION (au plus une) :
   location = ville ou département (ex: Paris, Lyon, 75). limit ≤ 25.
   "import": true si l'utilisateur veut aussi les AJOUTER au pipe, false s'il veut juste voir la liste.
 - { "type":"research_person", "name":"...", "company"? } → ACTUALITÉ & PRESSE d'une personne, HORS LinkedIn (le profil LinkedIn est couvert ailleurs). LECTURE (coûte des tokens).
+- { "type":"web_answer", "question":"...", "attachTo"? } → RECHERCHE WEB LIBRE sur une question de prospection B2B
+  (marché, concurrents, acteurs d'un secteur, tendances). LECTURE (coûte des tokens). Utilise-la seulement si aucune
+  autre action ne convient ET si la question relève du contexte commercial. "attachTo" = nom d'un lead auquel
+  rattacher la réponse en note, si l'utilisateur le demande.
 - { "type":"stats" } → chiffres du pipe (comptes, contacts, étapes). LECTURE.
 - { "type":"find_lead", "query":"..." } → retrouver des leads DÉJÀ dans le pipe. LECTURE.
 - { "type":"explain_company", "company":"..." } → fiche + résumé d'une entreprise. LECTURE.
@@ -149,6 +153,47 @@ Français, 4 phrases maximum, ton factuel.`,
       })
       if (r.blocked) return r.error || 'Budget IA épuisé.'
       return r.text.trim() || `Aucune information publique trouvée sur ${who}.`
+    }
+
+    // Recherche web LIBRE, mais cadrée métier (pas un chatbot généraliste).
+    case 'web_answer': {
+      const question = String(action.question || '').trim()
+      if (!question) return 'Précise ta question.'
+      const r = await callClaude({
+        task: 'extract', agent: 'Jarvis · recherche web',
+        system: `Tu es analyste de marché B2B pour une agence de prospection française.
+Tu réponds UNIQUEMENT à des questions utiles à la prospection : marchés, secteurs, concurrents,
+acteurs, tendances, appels d'offres, actualité économique, organisation d'une entreprise.
+Si la question sort de ce cadre professionnel, réponds : "Question hors du cadre prospection."
+
+RÈGLES : appuie-toi sur des sources web récentes ; DATE et CITE tes sources ;
+n'invente aucun chiffre ni nom d'entreprise ; dis clairement ce que tu n'as pas trouvé.
+Contexte : marché français. Réponds en français, 6 phrases maximum, ton factuel et dense.
+Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la forme :
+"Pistes : Nom1, Nom2, Nom3" (uniquement des entreprises réellement citées par les sources).`,
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3, user_location: { type: 'approximate', country: 'FR' } }],
+        messages: [{ role: 'user', content: question }],
+        cache: cacheKey(['web-answer', question]),
+      })
+      if (r.blocked) return r.error || 'Budget IA épuisé.'
+      const answer = r.text.trim() || 'Aucune information trouvée.'
+
+      // Capitalisation : on peut rattacher la réponse à un lead (note persistée).
+      if (action.attachTo) {
+        const hits = await findExisting(ws, String(action.attachTo))
+        const target = hits[0]
+        if (target) {
+          const t = {
+            id: `tk_${Math.random().toString(36).slice(2, 9)}`,
+            title: `Veille : ${question}`.slice(0, 200), due: "Aujourd'hui", done: false,
+            leadId: target.id, leadName: `${target.firstName} ${target.lastName}`.trim() || target.company,
+            note: answer.slice(0, 2000),
+          }
+          await upsertItem('task', t.id, t, ws)
+          return `${answer}\n\n📌 Rattaché à ${t.leadName}.`
+        }
+      }
+      return answer
     }
 
     case 'stats': {
