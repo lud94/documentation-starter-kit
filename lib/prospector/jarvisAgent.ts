@@ -1,9 +1,9 @@
 // CERVEAU JARVIS PARTAGÉ — un seul cerveau, plusieurs canaux (extension, Telegram,
 // WhatsApp plus tard). Le canal ne fait que transporter du texte : toute la
 // compréhension et l'exécution vivent ici, côté serveur, dans l'espace du client.
-import { callClaude, parseJson } from './llm'
+import { callClaude, parseJson, cacheKey } from './llm'
 import { getKey } from './keystore'
-import { lookupByName, fetchCompanyDetail } from './datagouv'
+import { lookupByName, fetchCompanyDetail, fetchCompanies } from './datagouv'
 import { identifyLead, enrichCompanyWeb } from './identify'
 import { upsertLead, listLeads } from '../supabase/leads'
 import { listItems, upsertItem } from '../supabase/store'
@@ -18,8 +18,16 @@ Tu ne pilotes QUE Prospector — jamais LinkedIn directement. Réponds UNIQUEMEN
 { "reply": "phrase courte en français", "action": ACTION | null }
 
 ACTION (au plus une) :
+- { "type":"source_companies", "sector"?, "location"?, "size"?, "limit"?, "import": true|false } → SOURCER des entreprises sur data.gouv.
+  Utilise-la dès que l'utilisateur veut "trouver/sourcer/chercher des entreprises/sociétés/ESN/cabinets" selon des critères.
+  sector ∈ [Technology, SaaS B2B, IA / ML, Cybersécurité, Fintech, Finance, Consulting, Marketing, Media, Healthcare, Retail, Logistics, Construction, Education, Manufacturing, Legal, Energy, Real Estate, Hospitality]
+  (une ESN / société de conseil IT → sector "Consulting" ; éditeur de logiciel → "Technology")
+  size ∈ [1-10, 11-20, 21-50, 51-100, 101-250, 251-500, 501-1000, 1000+]  (50 à 100 salariés → "51-100")
+  location = ville ou département (ex: Paris, Lyon, 75). limit ≤ 25.
+  "import": true si l'utilisateur veut aussi les AJOUTER au pipe, false s'il veut juste voir la liste.
+- { "type":"research_person", "name":"...", "company"? } → chercher sur le WEB des infos sur une PERSONNE (poste, actualité). LECTURE (coûte des tokens).
 - { "type":"stats" } → chiffres du pipe (comptes, contacts, étapes). LECTURE.
-- { "type":"find_lead", "query":"..." } → retrouver des leads par nom/société. LECTURE.
+- { "type":"find_lead", "query":"..." } → retrouver des leads DÉJÀ dans le pipe. LECTURE.
 - { "type":"explain_company", "company":"..." } → fiche + résumé d'une entreprise. LECTURE.
 - { "type":"add_company", "company":"...", "withContacts": true|false } → créer le COMPTE (+ dirigeants réels en contacts).
 - { "type":"add_person", "name":"...", "url":"..." } → créer un CONTACT.
@@ -47,7 +55,8 @@ export async function planJarvis(message: string, ctx: { url?: string; title?: s
 
 // Les actions de LECTURE s'exécutent sans confirmation ; les ÉCRITURES en demandent une.
 export const WRITE_ACTIONS = ['add_company', 'add_person', 'add_to_list', 'add_to_sequence', 'set_status', 'add_note']
-export const isWrite = (a: any) => !!a && WRITE_ACTIONS.includes(a.type)
+// Le sourcing n'est une écriture QUE s'il importe les résultats.
+export const isWrite = (a: any) => !!a && (WRITE_ACTIONS.includes(a.type) || (a.type === 'source_companies' && a.import))
 
 async function accountLeadFrom(company: string): Promise<Lead> {
   const v = await lookupByName(company)
@@ -84,6 +93,56 @@ export async function executeJarvis(action: any, ws: string, ctxUrl = ''): Promi
   if (!action?.type) return 'Rien à exécuter.'
 
   switch (action.type) {
+    // SOURCING : cherche sur data.gouv, avec import optionnel dans le pipe.
+    case 'source_companies': {
+      const limit = Math.min(Number(action.limit) || 15, 25)
+      const found: any[] = []
+      let page = 1
+      while (found.length < limit && page <= 3) {
+        const r = await fetchCompanies({ sector: action.sector, location: action.location, size: action.size, page, activeOnly: true })
+        if (!r.results.length) break
+        found.push(...r.results)
+        if (page >= (r.totalPages || 1)) break
+        page++
+      }
+      const list = found.slice(0, limit)
+      if (!list.length) return `Aucune entreprise trouvée pour ces critères${action.sector ? ` (${action.sector}` : ''}${action.location ? ` · ${action.location}` : ''}${action.size ? ` · ${action.size} sal.` : ''}${action.sector ? ')' : ''}. Élargis le secteur, la taille ou la ville.`
+
+      const lines = list.slice(0, 10).map((c: any) => `🏢 ${c.name}${c.city ? ` · ${c.city}` : ''}${c.effectif ? ` · ${c.effectif} sal.` : ''}${c.dirigeant ? ` · ${c.dirigeant}` : ''}`)
+      if (!action.import) {
+        return `${list.length} entreprise(s) trouvée(s) :\n${lines.join('\n')}${list.length > 10 ? `\n… +${list.length - 10} autres` : ''}\n\nDis-moi « importe-les » pour les ajouter au pipe.`
+      }
+      let n = 0
+      for (const c of list) {
+        await upsertLead({
+          id: newId(), kind: 'account', firstName: '', lastName: '', title: '', company: c.name,
+          score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
+          siren: /^\d{9}$/.test(c.id) ? c.id : undefined, active: true,
+          naf: c.naf || undefined, city: c.city || undefined, dirigeant: c.dirigeant || undefined,
+          effectif: c.effectif || undefined, website: c.website || undefined,
+        }, ws)
+        n++
+      }
+      return `✅ ${n} compte(s) importé(s) dans le pipe :\n${lines.join('\n')}${list.length > 10 ? `\n… +${list.length - 10} autres` : ''}`
+    }
+
+    // Recherche web sur une PERSONNE (poste, actualité) — coûte des tokens.
+    case 'research_person': {
+      const who = [action.name, action.company].filter(Boolean).join(' · ')
+      if (!action.name) return 'Précise le nom de la personne.'
+      const r = await callClaude({
+        task: 'extract', agent: 'Jarvis · recherche personne',
+        system: `Tu es analyste commercial B2B. Recherche sur le web des informations PUBLIQUES et FACTUELLES sur une personne dans un contexte professionnel : poste actuel, entreprise, parcours visible, actualités/publications récentes.
+N'INVENTE RIEN : si tu ne trouves pas, dis-le. Pas de données personnelles sensibles (vie privée, coordonnées personnelles).
+Réponds en français, 4 phrases maximum, en citant la source quand tu l'as.`,
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+        messages: [{ role: 'user', content: `Personne : ${who}. Que sait-on d'elle professionnellement ?` }],
+        cache: cacheKey(['person', action.name, action.company || '']),
+      })
+      if (r.blocked) return r.error || 'Budget IA épuisé.'
+      return r.text.trim() || `Aucune information publique trouvée sur ${who}.`
+    }
+
     case 'stats': {
       const all = await listLeads(ws)
       const contacts = all.filter((l) => !isAccount(l))
