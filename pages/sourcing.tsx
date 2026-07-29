@@ -99,6 +99,16 @@ export default function SourcingPage() {
   const [sigMode, setSigMode] = useState('')
   const [sigError, setSigError] = useState<string | null>(null)
   const [sigImported, setSigImported] = useState<Set<string>>(new Set())
+  // Critères structurés de la recherche par signal
+  const [sigTypes, setSigTypes] = useState<Set<string>>(new Set())
+  const [sigSector, setSigSector] = useState('')
+  const [sigLocation, setSigLocation] = useState('')
+  const [sigMonths, setSigMonths] = useState(6)
+  const [sigKeywords, setSigKeywords] = useState('')
+  const [sigBuilt, setSigBuilt] = useState('')
+  const [sigCatalog, setSigCatalog] = useState<{ key: string; label: string; group: string }[]>([])
+  useEffect(() => { fetch('/api/signals/search?catalog=1').then((r) => r.json()).then((d) => setSigCatalog(d.types || [])).catch(() => {}) }, [])
+  const toggleSigType = (k: string) => setSigTypes((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
   const [copied, setCopied] = useState<string | null>(null)
   const [pickedSignals, setPickedSignals] = useState<Set<string>>(new Set())
   const [running, setRunning] = useState(false)
@@ -167,15 +177,23 @@ export default function SourcingPage() {
     } finally { setRunning(false) }
   }
 
+  // Recherche par signal — thèse libre OU critères cochés (types, secteur, période).
   const runSignal = async (thesis?: string) => {
     const q = (thesis ?? sigThesis).trim()
-    if (!q) return
-    setSigThesis(q); setSigRunning(true); setSigError(null); setSigHits([])
+    const usingTypes = !thesis && sigTypes.size > 0
+    if (!q && !usingTypes) return
+    if (thesis) setSigThesis(thesis)
+    setSigRunning(true); setSigError(null); setSigHits([])
     try {
-      const res = await fetch(`/api/signals/search?thesis=${encodeURIComponent(q)}`)
+      const res = await fetch('/api/signals/search', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(usingTypes
+          ? { types: Array.from(sigTypes), sector: sigSector, location: sigLocation, months: sigMonths, keywords: sigKeywords }
+          : { thesis: q }),
+      })
       const d = await res.json()
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
-      setSigHits(d.hits); setSigMock(!!d.mock); setSigMode(d.mode || '')
+      setSigHits(d.hits); setSigMock(!!d.mock); setSigMode(d.mode || ''); setSigBuilt(d.thesis || '')
     } catch (e: any) {
       setSigError(e.message || 'Agent indisponible')
     } finally { setSigRunning(false) }
@@ -362,8 +380,60 @@ export default function SourcingPage() {
         </div>
       ) : tab === 'signal' ? (
         <div className="space-y-4">
+          {/* Recherche ciblée par critères */}
           <div className="card p-6 max-w-3xl">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Thèse de prospection <span className="font-normal text-gray-400">— l'agent cherche sur le web les entreprises qui émettent ce signal, puis vérifie leur existence (SIREN)</span></label>
+            <p className="text-xs font-semibold text-gray-500 mb-2">Type de signal <span className="font-normal text-gray-400">— coche ce que tu cherches, l'agent va sur les bonnes sources</span></p>
+            {['financement', 'croissance', 'direction'].map((g) => {
+              const items = sigCatalog.filter((t) => t.group === g)
+              if (!items.length) return null
+              const gl: Record<string, string> = { financement: '💰 Financement', croissance: '📈 Croissance', direction: '👔 Direction & produit' }
+              return (
+                <div key={g} className="mb-2.5">
+                  <p className="text-[11px] text-gray-400 mb-1">{gl[g]}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {items.map((t) => {
+                      const on = sigTypes.has(t.key)
+                      return <button key={t.key} onClick={() => toggleSigType(t.key)} className={`text-xs font-medium px-2.5 py-1 rounded-full border transition-colors ${on ? 'gradient-brand text-white border-transparent' : 'text-gray-500 bg-gray-50 border-gray-200 hover:border-indigo-300'}`}>{t.label}</button>
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4 mb-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Secteur</label>
+                <select value={sigSector} onChange={(e) => setSigSector(e.target.value)} className={inputClass}><option value="">Tous</option>{INDUSTRIES.map((i) => <option key={i} value={i}>{i}</option>)}</select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Localisation</label>
+                <input value={sigLocation} onChange={(e) => setSigLocation(e.target.value)} className={inputClass} placeholder="ex: Paris" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Fraîcheur</label>
+                <select value={sigMonths} onChange={(e) => setSigMonths(Number(e.target.value))} className={inputClass}>
+                  {[1, 3, 6, 12, 18].map((m) => <option key={m} value={m}>{m} mois</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Mots-clés</label>
+                <input value={sigKeywords} onChange={(e) => setSigKeywords(e.target.value)} className={inputClass} placeholder="optionnel" />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <button onClick={() => runSignal()} disabled={sigRunning || (sigTypes.size === 0 && !sigThesis.trim())} className="gradient-brand text-white text-sm font-semibold px-4 py-2.5 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">
+                {sigRunning ? 'Recherche…' : 'Lancer la veille'}
+              </button>
+              {sigTypes.size > 0 && <span className="text-xs text-gray-400">{sigTypes.size} type(s) · {sigMonths} mois{sigSector ? ` · ${sigSector}` : ''}{sigLocation ? ` · ${sigLocation}` : ''}</span>}
+              {sigTypes.size > 0 && <button onClick={() => setSigTypes(new Set())} className="text-xs text-gray-400 hover:text-gray-600">Effacer</button>}
+            </div>
+            {sigBuilt && <p className="text-[11px] text-gray-400 mt-2 italic">Requête envoyée : « {sigBuilt} »</p>}
+          </div>
+
+          {/* Mode expert : thèse libre */}
+          <div className="card p-6 max-w-3xl">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Ou thèse libre <span className="font-normal text-gray-400">— mode expert : décris toi-même ce que tu cherches</span></label>
             <div className="flex gap-2 mb-3">
               <input value={sigThesis} onChange={(e) => setSigThesis(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && runSignal()} className={inputClass} placeholder="ex: sociétés de conseil en cybersécurité qui recrutent des sales" />
               <button onClick={() => runSignal()} disabled={sigRunning || !sigThesis.trim()} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 flex-shrink-0">

@@ -22,24 +22,87 @@ export function signalsMode(): 'exa+claude' | 'claude-web' | 'mock' {
   return 'mock'
 }
 
-const SYSTEM = `Tu es un agent de veille commerciale B2B pour une agence française.
-On te donne une thèse de prospection (ex: "startups fintech qui recrutent des sales", "sociétés de conseil en cybersécurité en levée de fonds").
-Utilise la recherche web pour trouver des ENTREPRISES FRANÇAISES réelles qui émettent ce signal MAINTENANT
-(annonces d'emploi sur Welcome to the Jungle / LinkedIn / Indeed, actualités de levée, presse).
-Pour chacune, renvoie un signal précis et exploitable et une accroche (icebreaker) personnalisée, courte, sans blabla commercial.
-Ne renvoie que des entreprises réelles et nommées. Réponds UNIQUEMENT en JSON valide.`
+// ── Catalogue de signaux : chaque type a son vocabulaire et ses sources ──────────
+// Permet une recherche CIBLÉE (ex: uniquement les Série A des 6 derniers mois)
+// au lieu d'une thèse en texte libre.
+export interface SignalTypeDef { key: string; label: string; group: 'financement' | 'croissance' | 'direction'; terms: string; domains: string[] }
 
-function jsonInstruction(max: number) {
-  return `Renvoie un objet JSON: {"hits":[{"company","signalType","detail","icebreaker","sector","city","sourceUrl"}]} avec au plus ${max} entrées. signalType ∈ ["recrutement","levée","actu","autre"].`
+const PRESS = ['maddyness.com', 'frenchweb.fr', 'lesechos.fr', 'usine-digitale.fr', 'eu-startups.com', 'journaldunet.com', 'lejournaldesentreprises.com', 'bfmtv.com', 'latribune.fr']
+const JOBS = ['welcometothejungle.com', 'indeed.fr', 'hellowork.com', 'apec.fr', 'linkedin.com']
+
+export const SIGNAL_TYPES: SignalTypeDef[] = [
+  { key: 'preseed', label: 'Pré-seed', group: 'financement', terms: 'levée pré-seed, pre-seed round, amorçage', domains: PRESS },
+  { key: 'seed', label: 'Seed', group: 'financement', terms: 'levée seed, tour d\'amorçage', domains: PRESS },
+  { key: 'serie_a', label: 'Série A', group: 'financement', terms: 'levée de fonds Série A, Series A round', domains: PRESS },
+  { key: 'serie_b', label: 'Série B', group: 'financement', terms: 'levée de fonds Série B, Series B round', domains: PRESS },
+  { key: 'serie_c', label: 'Série C+', group: 'financement', terms: 'levée de fonds Série C, Série D, late stage', domains: PRESS },
+  { key: 'rachat', label: 'Rachat / M&A', group: 'financement', terms: 'acquisition, rachat, fusion, M&A', domains: PRESS },
+  { key: 'recrutement_sales', label: 'Recrute des sales', group: 'croissance', terms: 'recrute Head of Sales, Account Executive, SDR, business developer', domains: JOBS },
+  { key: 'recrutement_tech', label: 'Recrute de la tech', group: 'croissance', terms: 'recrute développeurs, CTO, ingénieurs', domains: JOBS },
+  { key: 'ouverture', label: 'Ouverture de bureau', group: 'croissance', terms: 'ouvre un bureau, nouvelle implantation, expansion', domains: PRESS },
+  { key: 'international', label: 'Expansion internationale', group: 'croissance', terms: 'expansion internationale, se lance à l\'étranger', domains: PRESS },
+  { key: 'nomination', label: 'Nomination dirigeant', group: 'direction', terms: 'nomination, nouveau directeur, arrive en tant que, rejoint le comité', domains: PRESS },
+  { key: 'lancement', label: 'Lancement produit', group: 'direction', terms: 'lance un nouveau produit, nouvelle offre', domains: PRESS },
+]
+
+export interface SignalQuery {
+  thesis?: string          // thèse libre (mode expert)
+  types?: string[]         // clés de SIGNAL_TYPES
+  sector?: string
+  location?: string
+  months?: number          // fenêtre de fraîcheur (défaut 6)
+  keywords?: string        // mots-clés additionnels
 }
 
-async function callClaude(thesis: string, max: number): Promise<SignalHit[]> {
+// Construit une thèse précise à partir des critères cochés.
+export function buildThesis(q: SignalQuery): string {
+  if (q.thesis?.trim()) return q.thesis.trim()
+  const defs = SIGNAL_TYPES.filter((t) => (q.types || []).includes(t.key))
+  const parts: string[] = []
+  if (defs.length) parts.push(`Entreprises françaises ayant émis ce signal : ${defs.map((d) => `${d.label} (${d.terms})`).join(' OU ')}`)
+  if (q.sector) parts.push(`secteur ${q.sector}`)
+  if (q.location) parts.push(`en/à ${q.location}`)
+  if (q.keywords?.trim()) parts.push(`mots-clés : ${q.keywords.trim()}`)
+  parts.push(`sur les ${q.months || 6} derniers mois`)
+  return parts.join(' · ')
+}
+
+// Domaines à privilégier selon les types cochés.
+export function domainsFor(q: SignalQuery): string[] {
+  const defs = SIGNAL_TYPES.filter((t) => (q.types || []).includes(t.key))
+  if (!defs.length) return Array.from(new Set([...PRESS, ...JOBS]))
+  return Array.from(new Set(defs.flatMap((d) => d.domains)))
+}
+
+const SYSTEM = `Tu es un agent de veille commerciale B2B pour une agence française.
+On te donne une THÈSE DE PROSPECTION précise. Trouve des ENTREPRISES FRANÇAISES RÉELLES qui émettent ce signal.
+
+RÈGLES STRICTES :
+1. Le signal doit être RÉCENT (respecte la fenêtre demandée) et VÉRIFIABLE : donne la source (URL) et la DATE.
+2. Pour une levée de fonds : précise le TOUR (pré-seed/seed/Série A/B/C), le MONTANT et l'INVESTISSEUR si connus.
+3. Pour un recrutement : précise le POSTE ouvert.
+4. N'INVENTE AUCUNE entreprise, aucun montant, aucune date. Si tu n'es pas sûr, n'inclus pas l'entrée.
+5. Entreprises FRANÇAISES uniquement (ou avec une implantation française claire).
+6. L'icebreaker doit s'appuyer sur le FAIT trouvé, être court, sans flatterie ni jargon commercial.
+
+Réponds UNIQUEMENT en JSON valide.`
+
+function jsonInstruction(max: number) {
+  return `Renvoie un objet JSON: {"hits":[{"company","signalType","detail","icebreaker","sector","city","sourceUrl","date","amount"}]} avec au plus ${max} entrées.
+signalType ∈ ["recrutement","levée","actu","autre"]. "detail" = le fait précis et daté. "amount" = montant de la levée si applicable (sinon "").`
+}
+
+async function callClaude(thesis: string, max: number, q?: SignalQuery): Promise<SignalHit[]> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return []
-  // Cache 7 j par thèse : relancer la même recherche ne repaie pas.
+  // Sources ciblées selon le type de signal (presse pour les levées, jobboards
+  // pour les recrutements) → moins de bruit, résultats plus fiables.
+  const allowed = q ? domainsFor(q) : []
+  const tool: any = { type: 'web_search_20250305', name: 'web_search', max_uses: 4, user_location: { type: 'approximate', country: 'FR' } }
+  if (allowed.length) tool.allowed_domains = allowed
   const r = await llmCall({
     task: 'research', agent: SIGNAL_AGENT, system: SYSTEM,
-    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+    tools: [tool],
     messages: [{ role: 'user', content: `Thèse: ${thesis}\n\n${jsonInstruction(max)}` }],
     cache: cacheKey(['signal-web', thesis, String(max)]),
   })
@@ -93,16 +156,17 @@ function mockHits(thesis: string): SignalHit[] {
   ]
 }
 
-export async function searchSignals(thesis: string, max = 8): Promise<{ mock: boolean; mode: string; hits: SignalHit[] }> {
+// `q` (critères structurés) est optionnel : sans lui, on garde la thèse libre.
+export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): Promise<{ mock: boolean; mode: string; hits: SignalHit[]; thesis: string }> {
   const mode = signalsMode()
   let hits: SignalHit[]
   let mock = false
   try {
     if (mode === 'exa+claude') {
-      const docs = await searchExa(thesis)
-      hits = docs.length ? await extractWithClaude(thesis, docs, max) : await callClaude(thesis, max)
+      const docs = await searchExa(thesis, 12, q ? { domains: domainsFor(q), months: q.months } : undefined)
+      hits = docs.length ? await extractWithClaude(thesis, docs, max) : await callClaude(thesis, max, q)
     } else if (mode === 'claude-web') {
-      hits = await callClaude(thesis, max)
+      hits = await callClaude(thesis, max, q)
     } else {
       hits = mockHits(thesis); mock = true
     }
@@ -119,5 +183,5 @@ export async function searchSignals(thesis: string, max = 8): Promise<{ mock: bo
         : { ...h, verified: false }
     }),
   )
-  return { mock, mode, hits: reconciled }
+  return { mock, mode, hits: reconciled, thesis }
 }

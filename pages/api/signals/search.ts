@@ -1,17 +1,37 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { searchSignals } from '../../../lib/prospector/signals'
+import { searchSignals, buildThesis, SIGNAL_TYPES, type SignalQuery } from '../../../lib/prospector/signals'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
+// Recherche par signal. Deux modes :
+//  • thèse libre (GET ?thesis=…) — mode expert, inchangé
+//  • critères structurés (POST { types, sector, location, months, keywords })
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   await hydrateKeystore()
-  const thesis = str(req.query.thesis).trim()
-  if (!thesis) return res.status(400).json({ error: 'Thèse de recherche manquante.' })
+
+  // Catalogue des types de signaux, pour construire l'UI.
+  if (req.method === 'GET' && str(req.query.catalog) === '1') {
+    return res.status(200).json({ types: SIGNAL_TYPES.map(({ key, label, group }) => ({ key, label, group })) })
+  }
+
+  const body = req.method === 'POST' ? (typeof req.body === 'string' ? safeParse(req.body) : req.body) : null
+  const q: SignalQuery = body ? {
+    thesis: String(body.thesis || ''),
+    types: Array.isArray(body.types) ? body.types.slice(0, 6) : [],
+    sector: String(body.sector || ''),
+    location: String(body.location || ''),
+    months: Math.min(Math.max(Number(body.months) || 6, 1), 18),
+    keywords: String(body.keywords || ''),
+  } : { thesis: str(req.query.thesis).trim(), months: 6 }
+
+  const thesis = buildThesis(q)
+  if (!thesis || thesis.length < 5) return res.status(400).json({ error: 'Précise au moins un type de signal ou une thèse.' })
+
   try {
-    const data = await searchSignals(thesis)
-    res.status(200).json(data)
+    res.status(200).json(await searchSignals(thesis, 8, q))
   } catch (e: any) {
     res.status(502).json({ error: e?.message || 'Erreur agent signaux' })
   }
 }
+function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

@@ -17,10 +17,13 @@ const SIGNAL_DOMAINS = [
   'maddyness.com', 'frenchweb.fr', 'lesechos.fr', 'usine-digitale.fr', 'eu-startups.com',
 ]
 
-export async function searchExa(thesis: string, numResults = 12): Promise<ExaDoc[]> {
+// `opts` permet de cibler les sources et la fenêtre de fraîcheur selon le type de
+// signal recherché (presse pour les levées, jobboards pour les recrutements).
+export async function searchExa(thesis: string, numResults = 12, opts?: { domains?: string[]; months?: number }): Promise<ExaDoc[]> {
   const key = getKey('EXA_API_KEY')
   if (!key || !thesis) return []
 
+  const days = Math.max(30, Math.min((opts?.months || 3) * 30, 540))
   const res = await fetch('https://api.exa.ai/search', {
     method: 'POST',
     headers: { 'x-api-key': key, accept: 'application/json', 'content-type': 'application/json' },
@@ -28,8 +31,8 @@ export async function searchExa(thesis: string, numResults = 12): Promise<ExaDoc
       query: thesis,
       type: 'auto',
       numResults,
-      includeDomains: SIGNAL_DOMAINS,
-      startPublishedDate: recentIso(90), // 90 derniers jours → fraîcheur
+      includeDomains: opts?.domains?.length ? opts.domains : SIGNAL_DOMAINS,
+      startPublishedDate: recentIso(days),
       contents: { text: { maxCharacters: 1200 } },
     }),
   })
