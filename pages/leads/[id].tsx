@@ -4,7 +4,8 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson, saveResearchNotes } from '../../lib/prospector/capabilities'
+import AskExternalAI from '../../components/AskExternalAI'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 import AddToListModal from '../../components/AddToListModal'
@@ -464,6 +465,9 @@ export default function LeadDetailPage() {
               : <p className="text-xs text-gray-400">Ce que LinkedIn ne dit pas : presse, communiqués, levées, nominations, interviews, conférences. <span className="text-gray-300">LinkedIn est volontairement exclu (couvert par Unipile).</span></p>}
             {researchMsg && <p className="text-xs text-red-600 mt-2">{researchMsg}</p>}
           </div>
+
+          {/* Explorer avec MON IA — zéro token Prospector, abonnement du commercial */}
+          <AskExternalAI lead={lead} onSaveNotes={async (t) => { if (typeof id === 'string') { await saveResearchNotes(id, t); reload() } }} />
 
           {/* Entreprise */}
           <div className="card p-5">

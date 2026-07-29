@@ -249,6 +249,13 @@ export async function enrichCompanyWebsite(accountId: string): Promise<{ website
   } catch { return { mode: 'error' } }
 }
 
+// Enregistre des notes de recherche externe (collées depuis Claude/ChatGPT/Perplexity).
+export async function saveResearchNotes(leadId: string, text: string): Promise<void> {
+  const l = LEADS[leadId]; if (!l) return
+  l.researchNotes = (l.researchNotes ? l.researchNotes + '\n\n———\n' : '') + text.trim()
+  await persistLead(l)
+}
+
 // Recherche web sur la PERSONNE d'un contact (poste, actualité) et persiste.
 export async function researchPerson(leadId: string): Promise<{ profile?: string; error?: string }> {
   const l = LEADS[leadId]
