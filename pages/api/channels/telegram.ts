@@ -28,6 +28,78 @@ Envoie-moi une directive en langage naturel :
 
 Commandes : /start · /aide · /delier`
 
+// Traite une mise à jour Telegram de bout en bout (avant de répondre au webhook).
+async function handleUpdate(u: any, token: string): Promise<void> {
+  // ── Clic sur un bouton (confirmation d'écriture) ──
+  if (u?.callback_query) {
+    const cq = u.callback_query
+    const chatId = cq.message?.chat?.id
+    if (!chatId) return
+    const chatKey = `tg:${chatId}`
+    try { await fetch(API(token, 'answerCallbackQuery'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ callback_query_id: cq.id }) }) } catch {}
+    const ws = await resolveChannelWs(chatKey)
+    if (!ws) return
+    const pendings = await listItems<any>(PENDING_KIND, PENDING_NS)
+    const p = pendings.find((x) => x.id === chatKey)
+    await deleteItem(PENDING_KIND, chatKey, PENDING_NS)
+    if (cq.data === 'ok' && p?.action) {
+      const out = await executeJarvis(p.action, ws, p.url || '')
+      await send(token, chatId, out)
+    } else {
+      await send(token, chatId, 'Annulé.')
+    }
+    return
+  }
+
+  const msg = u?.message
+  const chatId = msg?.chat?.id
+  if (!chatId) return
+  const chatKey = `tg:${chatId}`
+  const text = String(msg.text || '').trim()
+  const who = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || msg.from?.username || ''
+
+  if (!text) { await send(token, chatId, "Envoie-moi du texte 🙂 (les messages vocaux arriveront bientôt)."); return }
+
+  // ── Commandes ──
+  if (/^\/start/.test(text)) {
+    const ws = await resolveChannelWs(chatKey)
+    await send(token, chatId, ws
+      ? `Déjà connecté à ton espace Prospector ✅\n\n${HELP}`
+      : `Bienvenue 👋\nPour connecter ce chat à ton espace Prospector, ouvre <b>Admin → Canaux mobiles</b>, génère un code à 6 chiffres et envoie-le-moi ici.`)
+    return
+  }
+  if (/^\/aide|^\/help/.test(text)) { await send(token, chatId, HELP); return }
+  if (/^\/delier/.test(text)) { await unlinkChannel(chatKey); await send(token, chatId, 'Ce chat est délié de Prospector. Envoie un nouveau code pour reconnecter.'); return }
+
+  // ── Appairage : un code à 6 chiffres ──
+  if (/^\d{6}$/.test(text)) {
+    const ws = await redeemPairingCode(text, chatKey, who)
+    await send(token, chatId, ws
+      ? `✅ Connecté à ton espace Prospector.\n\n${HELP}`
+      : '❌ Code invalide ou expiré. Génère-en un nouveau dans Admin → Canaux mobiles.')
+    return
+  }
+
+  // ── Toute autre demande : appairage obligatoire ──
+  const ws = await resolveChannelWs(chatKey)
+  if (!ws) { await send(token, chatId, "Ce chat n'est pas encore connecté. Génère un code dans <b>Admin → Canaux mobiles</b> et envoie-le ici."); return }
+
+  // ── Cerveau Jarvis ──
+  const plan = await planJarvis(text, { channel: 'telegram' })
+  if (plan.action && isWrite(plan.action)) {
+    // Écriture → confirmation par bouton (comme dans l'app).
+    await upsertItem(PENDING_KIND, chatKey, { id: chatKey, action: plan.action, at: Date.now() }, PENDING_NS)
+    await send(token, chatId, `${plan.reply}\n\n<i>Confirmer cette action ?</i>`, true)
+    return
+  }
+  if (plan.action) {
+    const out = await executeJarvis(plan.action, ws)
+    await send(token, chatId, plan.reply ? `${plan.reply}\n\n${out}` : out)
+    return
+  }
+  await send(token, chatId, plan.reply || '…')
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
   await hydrateKeystore()
@@ -39,79 +111,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (secret && req.headers['x-telegram-bot-api-secret-token'] !== secret) return res.status(401).json({ error: 'bad secret' })
 
   const u = typeof req.body === 'string' ? safeParse(req.body) : req.body
-  // Toujours répondre 200 vite : Telegram réessaie sinon.
-  res.status(200).json({ ok: true })
-
+  // ⚠️ Serverless : on TRAITE D'ABORD, on répond ENSUITE. Répondre avant gèlerait
+  // la fonction et le message de réponse ne partirait jamais.
   try {
-    // ── Clic sur un bouton (confirmation d'écriture) ──
-    if (u?.callback_query) {
-      const cq = u.callback_query
-      const chatId = cq.message?.chat?.id
-      const chatKey = `tg:${chatId}`
-      try { await fetch(API(token, 'answerCallbackQuery'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ callback_query_id: cq.id }) }) } catch {}
-      const ws = await resolveChannelWs(chatKey)
-      if (!ws) return
-      const pendings = await listItems<any>(PENDING_KIND, PENDING_NS)
-      const p = pendings.find((x) => x.id === chatKey)
-      await deleteItem(PENDING_KIND, chatKey, PENDING_NS)
-      if (cq.data === 'ok' && p?.action) {
-        const out = await executeJarvis(p.action, ws, p.url || '')
-        await send(token, chatId, out)
-      } else {
-        await send(token, chatId, 'Annulé.')
-      }
-      return
-    }
-
-    const msg = u?.message
-    const chatId = msg?.chat?.id
-    if (!chatId) return
-    const chatKey = `tg:${chatId}`
-    const text = String(msg.text || '').trim()
-    const who = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || msg.from?.username || ''
-
-    if (!text) { await send(token, chatId, "Envoie-moi du texte 🙂 (les messages vocaux arriveront bientôt)."); return }
-
-    // ── Commandes ──
-    if (/^\/start/.test(text)) {
-      const ws = await resolveChannelWs(chatKey)
-      await send(token, chatId, ws
-        ? `Déjà connecté à ton espace Prospector ✅\n\n${HELP}`
-        : `Bienvenue 👋\nPour connecter ce chat à ton espace Prospector, ouvre <b>Admin → Canaux mobiles</b>, génère un code à 6 chiffres et envoie-le-moi ici.`)
-      return
-    }
-    if (/^\/aide|^\/help/.test(text)) { await send(token, chatId, HELP); return }
-    if (/^\/delier/.test(text)) { await unlinkChannel(chatKey); await send(token, chatId, 'Ce chat est délié de Prospector. Envoie un nouveau code pour reconnecter.'); return }
-
-    // ── Appairage : un code à 6 chiffres ──
-    if (/^\d{6}$/.test(text)) {
-      const ws = await redeemPairingCode(text, chatKey, who)
-      await send(token, chatId, ws
-        ? `✅ Connecté à ton espace Prospector.\n\n${HELP}`
-        : '❌ Code invalide ou expiré. Génère-en un nouveau dans Admin → Canaux mobiles.')
-      return
-    }
-
-    // ── Toute autre demande : appairage obligatoire ──
-    const ws = await resolveChannelWs(chatKey)
-    if (!ws) { await send(token, chatId, "Ce chat n'est pas encore connecté. Génère un code dans <b>Admin → Canaux mobiles</b> et envoie-le ici."); return }
-
-    // ── Cerveau Jarvis ──
-    const plan = await planJarvis(text, { channel: 'telegram' })
-    if (plan.action && isWrite(plan.action)) {
-      // Écriture → confirmation par bouton (comme dans l'app).
-      await upsertItem(PENDING_KIND, chatKey, { id: chatKey, action: plan.action, at: Date.now() }, PENDING_NS)
-      await send(token, chatId, `${plan.reply}\n\n<i>Confirmer cette action ?</i>`, true)
-      return
-    }
-    if (plan.action) {
-      const out = await executeJarvis(plan.action, ws)
-      await send(token, chatId, plan.reply ? `${plan.reply}\n\n${out}` : out)
-      return
-    }
-    await send(token, chatId, plan.reply || '…')
+    await handleUpdate(u, token)
   } catch (e: any) {
-    // On a déjà répondu 200 ; on évite juste de crasher la fonction.
+    // On tente d'informer l'utilisateur plutôt que de rester muet.
+    const chatId = u?.message?.chat?.id || u?.callback_query?.message?.chat?.id
+    if (chatId) await send(token, chatId, `⚠️ Erreur : ${String(e?.message || e).slice(0, 200)}`)
   }
+  res.status(200).json({ ok: true })
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }
