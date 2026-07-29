@@ -5,6 +5,7 @@ import type { UsageSummary, Diagnostic, Workspace, WorkspacePermissions } from '
 import { DEFAULT_PERMISSIONS } from '../types/prospector'
 import { getUsage, getDiagnostics, getChannels, connectChannel, disconnectChannel, getLogs, getAiLogs, AI_AGENTS, type Period } from '../lib/prospector/capabilities'
 import type { Channel, ChannelConfig, LogEntry, AiLog } from '../lib/prospector/capabilities'
+import { ConfirmDialog } from '../components/Dialog'
 
 type Tab = 'usage' | 'connexions' | 'canaux' | 'protocole' | 'ailogs' | 'logs' | 'diagnostic' | 'workspaces'
 
@@ -382,6 +383,8 @@ function CanauxTab() {
   const [code, setCode] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [toUnlink, setToUnlink] = useState<{ id: string; label?: string } | null>(null)
+  const [resetOpen, setResetOpen] = useState(false)
   const fieldCls = 'w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white'
 
   const load = () => fetch('/api/channels/pair').then((r) => r.json()).then((d) => { setReady(!!d.telegramReady); setBotName(d.botName || ''); setLinks(d.channels || []) }).catch(() => {})
@@ -464,13 +467,42 @@ function CanauxTab() {
                   <p className="text-sm font-medium text-gray-700 truncate">{l.label || l.id}</p>
                   <p className="text-[11px] text-gray-400">Telegram · connecté le {new Date(l.at).toLocaleDateString('fr-FR')}</p>
                 </div>
-                <button onClick={() => unlink(l.id)} className="text-xs font-medium text-red-500 hover:bg-red-50 px-2.5 py-1.5 rounded-lg">Délier</button>
+                <button onClick={() => setToUnlink(l)} title="Délier cet appareil" className="text-gray-300 hover:text-red-500 flex-shrink-0">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                </button>
               </div>
             ))}
           </div>
         )}
         <p className="text-[11px] text-gray-400 mt-3">Un chat non appairé ne peut rien faire : le bot refuse toute demande tant que le code n'a pas été validé.</p>
+        {ready && (
+          <button onClick={() => setResetOpen(true)} className="text-[11px] font-medium text-red-500 hover:underline mt-3">Réinitialiser le bot Telegram (changer de bot)</button>
+        )}
       </div>
+
+      {toUnlink && (
+        <ConfirmDialog
+          title="Délier cet appareil"
+          message={`« ${toUnlink.label || toUnlink.id} » ne pourra plus piloter cet espace. Un nouveau code sera nécessaire pour le reconnecter.`}
+          confirmLabel="Délier" danger
+          onConfirm={async () => { await unlink(toUnlink.id); setToUnlink(null) }}
+          onCancel={() => setToUnlink(null)}
+        />
+      )}
+      {resetOpen && (
+        <ConfirmDialog
+          title="Réinitialiser le bot Telegram"
+          message="Le jeton sera effacé et tous les appareils déliés. Tu pourras ensuite configurer un autre bot."
+          confirmLabel="Réinitialiser" danger
+          onConfirm={async () => {
+            setResetOpen(false); setBusy(true)
+            for (const l of links) await fetch('/api/channels/pair', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: l.id }) })
+            await fetch('/api/config/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ TELEGRAM_BOT_TOKEN: '', TELEGRAM_WEBHOOK_SECRET: '', TELEGRAM_BOT_NAME: '' }) })
+            setCode(null); await load(); setBusy(false); setMsg('Bot réinitialisé.')
+          }}
+          onCancel={() => setResetOpen(false)}
+        />
+      )}
     </div>
   )
 }
