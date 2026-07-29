@@ -10,7 +10,7 @@
 
 import { getKey } from './keystore'
 import { reconcileByName } from './datagouv'
-import { recordAiUsage } from './usage'
+import { callClaude, parseJson, cacheKey } from './llm'
 
 export interface IdentifyInput { name?: string; title?: string; company?: string; url?: string }
 export interface IdentifyResult {
@@ -84,7 +84,6 @@ export interface CompanyWeb { website?: string; summary?: string; sector?: strin
 export async function enrichCompanyWeb(company: string, city?: string, siren?: string): Promise<CompanyWeb> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return { mode: 'off' }
-  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
   const pappers = siren ? `Consulte aussi la fiche PUBLIQUE Pappers (https://www.pappers.fr/entreprise/${siren}) pour le chiffre d'affaires, l'effectif et les infos légales.` : ''
   const system = `Tu es analyste commercial B2B. On te donne une entreprise française.
 1) Trouve son SITE OFFICIEL via la recherche web et parcours-le. ${pappers}
@@ -94,24 +93,17 @@ activité concrète (ce qu'elle vend), proposition de valeur, cible/clients, act
 N'INVENTE RIEN : laisse un champ vide si l'info n'est pas trouvée. Ne donne pas de fourchette inventée.
 Réponds UNIQUEMENT en JSON: {"website","sector","summary","ca","effectif"}. summary = 3 à 5 phrases max.`
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1100,
-        system,
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
-        messages: [{ role: 'user', content: `Entreprise: ${company}${city ? ` (${city})` : ''}${siren ? ` · SIREN ${siren}` : ''}. Trouve le site, parcours-le, et renvoie le JSON demandé.` }],
-      }),
+    // Cache 7 j par entreprise : réenrichir la même boîte ne coûte plus rien.
+    // web_search limité à 3 usages (chaque recherche est facturée + gonfle l'entrée).
+    const r = await callClaude({
+      task: 'extract', agent: 'Enrichissement web', system,
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+      messages: [{ role: 'user', content: `Entreprise: ${company}${city ? ` (${city})` : ''}${siren ? ` · SIREN ${siren}` : ''}. Trouve le site, parcours-le, et renvoie le JSON demandé.` }],
+      cache: cacheKey(['enrich', siren || company, city || '']),
     })
-    if (!res.ok) throw new Error(`Anthropic ${res.status}`)
-    const data = await res.json()
-    await recordAiUsage('Enrichissement web', model, data.usage?.input_tokens, data.usage?.output_tokens)
-    const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-    const m = text.match(/\{[\s\S]*\}/)
-    if (!m) return { mode: 'claude-web' }
-    let p: any; try { p = JSON.parse(m[0]) } catch { return { mode: 'claude-web' } }
+    if (r.blocked) return { mode: 'blocked' }
+    const p = parseJson<any>(r.text)
+    if (!p) return { mode: 'claude-web' }
     return {
       website: cleanWebsite(p.website),
       sector: (p.sector && String(p.sector).trim()) || undefined,

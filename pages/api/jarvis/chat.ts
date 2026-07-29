@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
-import { recordAiUsage } from '../../../lib/prospector/usage'
+import { callClaude, parseJson } from '../../../lib/prospector/llm'
 
 // Jarvis (copilote in-app) — Phase 1. Claude « planificateur » : à partir du message
 // et d'un CONTEXTE compact (compté côté client), il répond ET propose AU PLUS une
@@ -31,28 +31,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!key) return res.status(200).json({ reply: 'Configure ta clé Anthropic (Admin → Connexions) pour activer Jarvis.', action: null, off: true })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
-  const history = Array.isArray(body?.messages) ? body.messages.slice(-8) : []
+  // Économie : 4 derniers messages (au lieu de 8) — le contexte utile reste le même.
+  const history = Array.isArray(body?.messages) ? body.messages.slice(-4) : []
   const context = body?.context || {}
-  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
 
   const messages = [
     { role: 'user', content: `CONTEXTE (données de l'utilisateur):\n${JSON.stringify(context)}` },
-    ...history.map((m: any) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') })),
+    ...history.map((m: any) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '').slice(0, 1500) })),
   ]
 
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model, max_tokens: 700, system: SYSTEM, messages }),
-    })
-    if (!r.ok) throw new Error(`Anthropic ${r.status}`)
-    const data = await r.json()
-    await recordAiUsage('Jarvis', model, data.usage?.input_tokens, data.usage?.output_tokens)
-    const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-    const m = text.match(/\{[\s\S]*\}/)
-    let parsed: any = { reply: text.trim() || '…', action: null }
-    if (m) { try { parsed = JSON.parse(m[0]) } catch { /* garde le texte */ } }
+    const r = await callClaude({ task: 'chat', agent: 'Jarvis', system: SYSTEM, messages })
+    if (r.blocked) return res.status(200).json({ reply: r.error, action: null })
+    const parsed: any = parseJson(r.text) || { reply: r.text.trim() || '…', action: null }
     res.status(200).json({ reply: parsed.reply || '…', action: parsed.action || null })
   } catch (e: any) {
     res.status(200).json({ reply: 'Jarvis est momentanément indisponible (' + (e?.message || 'erreur') + ').', action: null })

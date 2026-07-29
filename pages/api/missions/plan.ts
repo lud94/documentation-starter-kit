@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
-import { recordAiUsage } from '../../../lib/prospector/usage'
+import { callClaude, parseJson } from '../../../lib/prospector/llm'
 import { MISSION_TOOL_META } from '../../../types/prospector'
 import type { Mission, MissionStep, MissionTool } from '../../../types/prospector'
 import { MAX_COMPANIES, MAX_ENRICH } from '../../../lib/prospector/missionTools'
@@ -43,21 +43,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const request = String(body?.request || '').trim()
   if (!request) return res.status(400).json({ error: 'Demande vide.' })
-  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
-
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model, max_tokens: 1200, system: SYSTEM, messages: [{ role: 'user', content: `Demande : ${request}` }] }),
-    })
-    if (!r.ok) throw new Error(`Anthropic ${r.status}`)
-    const data = await r.json()
-    await recordAiUsage('Mission · plan', model, data.usage?.input_tokens, data.usage?.output_tokens)
-    const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-    const m = text.match(/\{[\s\S]*\}/)
-    if (!m) return res.status(200).json({ error: 'Plan illisible, reformule la demande.' })
-    const p = JSON.parse(m[0])
+    // Planification = raisonnement structuré → Sonnet par défaut (5× moins cher qu'Opus).
+    const r = await callClaude({ task: 'plan', agent: 'Mission · plan', system: SYSTEM, messages: [{ role: 'user', content: `Demande : ${request}` }] })
+    if (r.blocked) return res.status(200).json({ error: r.error })
+    const p = parseJson<any>(r.text)
+    if (!p) return res.status(200).json({ error: 'Plan illisible, reformule la demande.' })
 
     // Validation stricte : on ne garde que les outils connus, params bornés.
     const steps: MissionStep[] = (p.steps || [])

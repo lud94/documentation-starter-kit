@@ -7,7 +7,7 @@ import type { SignalHit } from '../../types/prospector'
 import { reconcileByName } from './datagouv'
 import { searchExa, exaConfigured, type ExaDoc } from './exa'
 import { getKey } from './keystore'
-import { recordAiUsage } from './usage'
+import { callClaude as llmCall, cacheKey } from './llm'
 
 const SIGNAL_AGENT = 'Recherche signal'
 
@@ -36,28 +36,15 @@ function jsonInstruction(max: number) {
 async function callClaude(thesis: string, max: number): Promise<SignalHit[]> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return []
-  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
-
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 2000,
-      system: SYSTEM,
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
-      messages: [{ role: 'user', content: `Thèse: ${thesis}\n\n${jsonInstruction(max)}` }],
-    }),
+  // Cache 7 j par thèse : relancer la même recherche ne repaie pas.
+  const r = await llmCall({
+    task: 'research', agent: SIGNAL_AGENT, system: SYSTEM,
+    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+    messages: [{ role: 'user', content: `Thèse: ${thesis}\n\n${jsonInstruction(max)}` }],
+    cache: cacheKey(['signal-web', thesis, String(max)]),
   })
-  if (!res.ok) throw new Error(`Anthropic ${res.status} — ${(await res.text()).slice(0, 150)}`)
-  const data = await res.json()
-  await recordAiUsage(SIGNAL_AGENT, model, data.usage?.input_tokens, data.usage?.output_tokens)
-  const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-  return parseHits(text)
+  if (r.blocked) return []
+  return parseHits(r.text)
 }
 
 // Claude EXTRACTEUR : à partir des documents Exa, sort les entreprises + signaux
@@ -65,27 +52,18 @@ async function callClaude(thesis: string, max: number): Promise<SignalHit[]> {
 async function extractWithClaude(thesis: string, docs: ExaDoc[], max: number): Promise<SignalHit[]> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key || docs.length === 0) return []
-  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
-
-  const corpus = docs
-    .map((d, i) => `[${i + 1}] ${d.title}\nURL: ${d.url}\n${d.text}`)
+  // Économie : on borne le corpus (8 docs, 900 car.) — l'entrée est facturée.
+  const corpus = docs.slice(0, 8)
+    .map((d, i) => `[${i + 1}] ${d.title}\nURL: ${d.url}\n${(d.text || '').slice(0, 900)}`)
     .join('\n\n')
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      max_tokens: 2000,
-      system: `${SYSTEM}\nOn te fournit des extraits web déjà collectés. N'invente RIEN au-delà de ces extraits. Attribue à chaque entreprise l'URL source d'où vient le signal.`,
-      messages: [{ role: 'user', content: `Thèse: ${thesis}\n\nExtraits web:\n${corpus}\n\n${jsonInstruction(max)}` }],
-    }),
+  const r = await llmCall({
+    task: 'research', agent: SIGNAL_AGENT,
+    system: `${SYSTEM}\nOn te fournit des extraits web déjà collectés. N'invente RIEN au-delà de ces extraits. Attribue à chaque entreprise l'URL source d'où vient le signal.`,
+    messages: [{ role: 'user', content: `Thèse: ${thesis}\n\nExtraits web:\n${corpus}\n\n${jsonInstruction(max)}` }],
   })
-  if (!res.ok) throw new Error(`Anthropic ${res.status} — ${(await res.text()).slice(0, 150)}`)
-  const data = await res.json()
-  await recordAiUsage(SIGNAL_AGENT, model, data.usage?.input_tokens, data.usage?.output_tokens)
-  const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-  return parseHits(text)
+  if (r.blocked) return []
+  return parseHits(r.text)
 }
 
 function parseHits(text: string): SignalHit[] {

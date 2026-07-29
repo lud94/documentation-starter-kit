@@ -8,6 +8,8 @@ export const MANAGED_KEYS = [
   'PAPPERS_API_KEY', 'UNIPILE_DSN', 'UNIPILE_API_KEY', 'UNIPILE_ACCOUNT_ID', 'SIGNALS_MODEL',
   'APP_EMAIL', 'APP_PASSWORD', 'APP_TOTP_SECRET', 'APP_MFA_ENABLED', 'PII_MASKING',
   'APP_RESET_TOKEN', 'APP_RESET_EXP', 'INGEST_TOKEN', 'ANTHROPIC_BUDGET',
+  // Modèles par tâche (surcharge des défauts économiques) — maîtrise des coûts.
+  'JARVIS_MODEL', 'PLAN_MODEL', 'ENRICH_MODEL', 'WRITE_MODEL',
 ] as const
 export type ManagedKey = typeof MANAGED_KEYS[number]
 

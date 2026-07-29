@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
-import { recordAiUsage } from '../../../lib/prospector/usage'
+import { callClaude, parseJson } from '../../../lib/prospector/llm'
 import { lookupByName, fetchCompanyDetail } from '../../../lib/prospector/datagouv'
 import { identifyLead, enrichCompanyWeb } from '../../../lib/prospector/identify'
 import { upsertLead } from '../../../lib/supabase/leads'
@@ -30,19 +30,13 @@ Déduis "company"/"name" du message et du titre/URL de la page. Si rien de perti
 async function planWithClaude(message: string, url: string, title: string) {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return { reply: 'Configure la clé Anthropic dans Prospector (Admin → Connexions).', action: null }
-  const model = getKey('SIGNALS_MODEL') || 'claude-opus-4-8'
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model, max_tokens: 500, system: SYSTEM, messages: [{ role: 'user', content: `Page: ${title || ''} (${url || ''})\nDirective: ${message}` }] }),
+  // Tâche de classification/routage → modèle économique (Haiku par défaut).
+  const r = await callClaude({
+    task: 'classify', agent: 'Jarvis extension', system: SYSTEM,
+    messages: [{ role: 'user', content: `Page: ${(title || '').slice(0, 200)} (${(url || '').slice(0, 200)})\nDirective: ${message}` }],
   })
-  if (!r.ok) throw new Error(`Anthropic ${r.status}`)
-  const data = await r.json()
-  await recordAiUsage('Jarvis extension', model, data.usage?.input_tokens, data.usage?.output_tokens)
-  const text: string = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-  const m = text.match(/\{[\s\S]*\}/)
-  if (!m) return { reply: text.trim() || '…', action: null }
-  try { return JSON.parse(m[0]) } catch { return { reply: text.trim() || '…', action: null } }
+  if (r.blocked) return { reply: r.error, action: null }
+  return parseJson(r.text) || { reply: r.text.trim() || '…', action: null }
 }
 
 async function accountLeadFrom(company: string): Promise<Lead> {

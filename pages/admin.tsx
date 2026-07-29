@@ -202,6 +202,26 @@ export default function AdminPage() {
             </div>
           </div>
 
+          {/* Routage économique : quel modèle pour quelle tâche */}
+          <div className="card p-5 mt-4">
+            <h2 className="text-sm font-semibold text-gray-700 mb-1">Routage des modèles <span className="font-normal text-gray-400">— le bon modèle au bon endroit</span></h2>
+            <p className="text-xs text-gray-400 mb-3">Opus coûte ≈ 19× Haiku. Les tâches simples utilisent donc un modèle économique. Surcharge possible via les clés indiquées (Connexions).</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {[
+                { t: 'Jarvis (chat, classification)', m: 'Haiku 4.5', k: 'JARVIS_MODEL', c: 'le moins cher' },
+                { t: 'Plan de mission', m: 'Sonnet 5', k: 'PLAN_MODEL', c: '5× moins qu\'Opus' },
+                { t: 'Enrichissement web', m: 'Sonnet 5', k: 'ENRICH_MODEL', c: 'caché 7 j' },
+                { t: 'Recherche de signaux', m: 'Sonnet 5', k: 'SIGNALS_MODEL', c: 'caché 7 j' },
+              ].map((r) => (
+                <div key={r.t} className="bg-gray-50 rounded-xl px-3 py-2">
+                  <p className="text-xs font-medium text-gray-700">{r.t}</p>
+                  <p className="text-[11px] text-gray-500">{r.m} · <span className="text-gray-400">{r.c}</span></p>
+                  <code className="text-[10px] text-gray-400">{r.k}</code>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {/* Journalier — combien je dépense par jour (14 derniers jours) */}
           <div className="card p-5 mt-4">
             <h2 className="text-sm font-semibold text-gray-700 mb-3">Journalier <span className="font-normal text-gray-400">— dépense IA par jour (14 j)</span></h2>
