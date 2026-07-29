@@ -62,6 +62,7 @@ export interface Lead {
   ca?: string           // chiffre d'affaires (data.gouv finances, ou web/Pappers public)
   website?: string      // site web déclaré (data.gouv, si présent)
   summary?: string      // résumé secteur/activité issu du web (agent Claude), hors data.gouv
+  webProfile?: string   // recherche web sur la PERSONNE (poste, actualité) — factuel
   kind?: 'account' | 'contact' // 'account' = entreprise sans personne (reste hors « à inviter »)
 }
 

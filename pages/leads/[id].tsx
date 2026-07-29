@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson } from '../../lib/prospector/capabilities'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
 import AddToListModal from '../../components/AddToListModal'
@@ -134,6 +134,15 @@ export default function LeadDetailPage() {
     setAccountBusy(false)
   }
   const [reminderMsg, setReminderMsg] = useState<string | null>(null)
+  const [researching, setResearching] = useState(false)
+  const [researchMsg, setResearchMsg] = useState<string | null>(null)
+  const doResearch = async () => {
+    if (typeof id !== 'string') return
+    setResearching(true); setResearchMsg(null)
+    const r = await researchPerson(id)
+    setResearching(false)
+    if (r.error) setResearchMsg(r.error); else reload()
+  }
   const planReminder = async () => {
     if (!d) return
     await addTask({ title: `Relancer ${d.lead.firstName} ${d.lead.lastName}`, due: 'Demain', leadId: d.lead.id, leadName: `${d.lead.firstName} ${d.lead.lastName}` })
@@ -440,6 +449,20 @@ export default function LeadDetailPage() {
                   : <span className="text-gray-300 italic">Site web à enrichir (compte → « Enrichir via le web »)</span>}
               </div>
             </div>
+          </div>
+
+          {/* Recherche web sur la personne */}
+          <div className="card p-5">
+            <div className="flex items-center justify-between mb-2">
+              <SectionLabel icon="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z">Profil web</SectionLabel>
+              <button onClick={doResearch} disabled={researching} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg hover:bg-indigo-100 transition-colors disabled:opacity-40 mb-2">
+                {researching ? 'Recherche…' : lead.webProfile ? 'Actualiser' : '🔎 Rechercher'}
+              </button>
+            </div>
+            {lead.webProfile
+              ? <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-wrap">{lead.webProfile}</p>
+              : <p className="text-xs text-gray-400">Lance une recherche web factuelle sur cette personne (poste, actualité professionnelle). Rien n'est inventé ; résultat mis en cache.</p>}
+            {researchMsg && <p className="text-xs text-red-600 mt-2">{researchMsg}</p>}
           </div>
 
           {/* Entreprise */}

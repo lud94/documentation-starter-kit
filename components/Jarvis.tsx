@@ -1,30 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
-import type { Lead } from '../types/prospector'
-import {
-  getLeads, getLists, getSequences, createList, enrollLead, enrollLeadsInSequence,
-  verifyLeadCompany, enrichCompanyWebsite, isAccountLead,
-} from '../lib/prospector/capabilities'
 
-type Action = any
-interface Msg { role: 'user' | 'assistant'; content: string; action?: Action | null; result?: string; leads?: Lead[]; done?: boolean }
-
-const countBy = (arr: Lead[], k: 'stage' | 'status') => arr.reduce((a, l) => { a[l[k]] = (a[l[k]] || 0) + 1; return a }, {} as Record<string, number>)
-
-function matchFilter(l: Lead, f: any): boolean {
-  if (!f) return true
-  if (f.persona && l.persona !== f.persona) return false
-  if (f.status && l.status !== f.status) return false
-  if (f.stage && l.stage !== f.stage) return false
-  if (f.query && !`${l.firstName} ${l.lastName} ${l.company} ${l.title}`.toLowerCase().includes(String(f.query).toLowerCase())) return false
-  return true
-}
+// Panneau Jarvis in-app (⌘K). Adaptateur mince : il affiche, le serveur décide et
+// exécute — MÊME cerveau que l'extension et Telegram (mêmes capacités partout).
+interface Msg { role: 'user' | 'assistant'; content: string; action?: any; done?: boolean; result?: string }
 
 const SUGGESTIONS = [
-  'Combien de comptes et de contacts j\'ai ?',
-  'Montre-moi les contacts en séquence',
-  'Crée une liste des Head of Sales',
-  'Enrichis l\'entreprise Redsen',
+  'Mes chiffres',
+  'Trouve des ESN de 51-100 salariés à Paris',
+  'Crée une liste des dirigeants',
+  'Que sait-on de Redsen ?',
 ]
 
 export default function Jarvis({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -34,78 +18,38 @@ export default function Jarvis({ open, onClose }: { open: boolean; onClose: () =
   const scroller = useRef<HTMLDivElement>(null)
   useEffect(() => { scroller.current?.scrollTo({ top: scroller.current.scrollHeight }) }, [msgs, busy])
 
-  const buildContext = async () => {
-    const leads = await getLeads()
-    const contacts = leads.filter((l) => !isAccountLead(l))
-    const accounts = leads.filter((l) => isAccountLead(l))
-    const [lists, seqs] = await Promise.all([getLists(), getSequences()])
-    return {
-      contacts: contacts.length, accounts: accounts.length,
-      byStage: countBy(contacts, 'stage'), byStatus: countBy(contacts, 'status'),
-      personas: Array.from(new Set(contacts.map((c) => c.persona).filter(Boolean))),
-      lists: lists.map((l) => ({ name: l.name, count: l.leadIds.length })),
-      sequences: seqs.map((s) => ({ name: s.name, enrolled: s.enrolled })),
-    }
-  }
+  const call = (payload: any) =>
+    fetch('/api/jarvis/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }).then((r) => r.json())
 
   const send = async (text: string) => {
     const q = text.trim(); if (!q || busy) return
     setInput('')
-    const next = [...msgs, { role: 'user' as const, content: q }]
-    setMsgs(next); setBusy(true)
+    setMsgs((m) => [...m, { role: 'user', content: q }])
+    setBusy(true)
     try {
-      const context = await buildContext()
-      const d = await fetch('/api/jarvis/chat', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ messages: next.map((m) => ({ role: m.role, content: m.content })), context }),
-      }).then((r) => r.json())
-      const action = d.action || null
-      // search_leads = lecture → on exécute tout de suite et on affiche.
-      if (action?.type === 'search_leads') {
-        const leads = (await getLeads()).filter((l) => !isAccountLead(l) && matchFilter(l, action))
-        setMsgs((m) => [...m, { role: 'assistant', content: d.reply || `${leads.length} contact(s).`, leads }])
-      } else {
-        setMsgs((m) => [...m, { role: 'assistant', content: d.reply || '…', action }])
-      }
+      const d = await call({ message: q })
+      const content = [d.reply, d.result].filter(Boolean).join('\n\n') || '…'
+      setMsgs((m) => [...m, { role: 'assistant', content, action: d.needsConfirm ? d.action : undefined }])
     } catch {
       setMsgs((m) => [...m, { role: 'assistant', content: 'Erreur — réessaie.' }])
     } finally { setBusy(false) }
   }
 
-  // Exécution des actions d'ÉCRITURE, après confirmation.
-  const runAction = async (idx: number, a: Action) => {
+  const confirmAction = async (idx: number, action: any) => {
     setBusy(true)
-    let result = 'Action inconnue.'
     try {
-      if (a.type === 'create_list') {
-        const leads = (await getLeads()).filter((l) => !isAccountLead(l) && matchFilter(l, a.filter))
-        const list = await createList(a.name || 'Liste', leads.map((l) => l.id), 'via Jarvis')
-        result = `Liste « ${list.name} » créée avec ${leads.length} contact(s).`
-      } else if (a.type === 'add_to_sequence') {
-        const seqs = await getSequences()
-        const seq = seqs.find((s) => s.name.toLowerCase().includes(String(a.sequenceName || '').toLowerCase()))
-        if (!seq) result = `Séquence « ${a.sequenceName} » introuvable.`
-        else {
-          const leads = (await getLeads()).filter((l) => !isAccountLead(l) && matchFilter(l, a.filter))
-          for (const l of leads) await enrollLead(l.id)
-          await enrollLeadsInSequence(seq.id, leads.length, leads.map((l) => l.id))
-          result = `${leads.length} contact(s) enrôlé(s) dans « ${seq.name} ».`
-        }
-      } else if (a.type === 'enrich_company') {
-        const acc = (await getLeads()).find((l) => isAccountLead(l) && l.company.toLowerCase().includes(String(a.company || '').toLowerCase()))
-        if (!acc) result = `Compte « ${a.company} » introuvable dans le pipe. Importe-le d'abord.`
-        else { await verifyLeadCompany(acc.id); const r = await enrichCompanyWebsite(acc.id); result = `« ${acc.company} » vérifié + enrichi${r.website ? ` · ${r.website}` : ''}.` }
-      }
-    } catch { result = 'Échec de l\'action.' }
-    setMsgs((m) => m.map((x, i) => i === idx ? { ...x, done: true, result } : x))
-    setBusy(false)
+      const d = await call({ confirm: true, action })
+      setMsgs((m) => m.map((x, i) => i === idx ? { ...x, done: true, result: d.reply } : x))
+    } catch {
+      setMsgs((m) => m.map((x, i) => i === idx ? { ...x, done: true, result: 'Échec de l\'action.' } : x))
+    } finally { setBusy(false) }
   }
 
   if (!open) return null
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-gray-900/20" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-white h-full shadow-2xl flex flex-col animate-[slideIn_.2s_ease]">
+      <div className="relative w-full max-w-md bg-white h-full shadow-2xl flex flex-col">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center gap-2">
           <span className="w-8 h-8 rounded-xl gradient-brand flex items-center justify-center text-white font-bold">✦</span>
           <div className="flex-1"><p className="text-sm font-bold text-gray-900">Jarvis</p><p className="text-[11px] text-gray-400">Copilote Prospector · pilote ta plateforme</p></div>
@@ -121,27 +65,15 @@ export default function Jarvis({ open, onClose }: { open: boolean; onClose: () =
           )}
           {msgs.map((m, i) => (
             <div key={i} className={m.role === 'user' ? 'flex justify-end' : ''}>
-              <div className={`max-w-[85%] text-sm rounded-2xl px-3.5 py-2 ${m.role === 'user' ? 'gradient-brand text-white' : 'bg-gray-100 text-gray-800'}`}>
+              <div className={`max-w-[85%] text-sm rounded-2xl px-3.5 py-2 whitespace-pre-wrap ${m.role === 'user' ? 'gradient-brand text-white' : 'bg-gray-100 text-gray-800'}`}>
                 {m.content}
-                {m.leads && (
-                  <div className="mt-2 space-y-1">
-                    {m.leads.slice(0, 12).map((l) => (
-                      <Link key={l.id} href={`/leads/${l.id}`} onClick={onClose} className="block bg-white rounded-lg px-2.5 py-1.5 border border-gray-100 hover:border-gray-200">
-                        <span className="block text-xs font-medium text-gray-800">{l.firstName} {l.lastName}</span>
-                        <span className="block text-[11px] text-gray-400">{l.title} · {l.company}</span>
-                      </Link>
-                    ))}
-                    {m.leads.length > 12 && <p className="text-[11px] text-gray-400">+{m.leads.length - 12} autres…</p>}
-                    {m.leads.length === 0 && <p className="text-[11px] text-gray-400">Aucun contact ne correspond.</p>}
-                  </div>
-                )}
                 {m.action && !m.done && (
                   <div className="mt-2 flex items-center gap-2">
-                    <button onClick={() => runAction(i, m.action)} disabled={busy} className="text-xs font-semibold bg-white text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 disabled:opacity-40">Confirmer</button>
+                    <button onClick={() => confirmAction(i, m.action)} disabled={busy} className="text-xs font-semibold bg-white text-indigo-600 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 disabled:opacity-40">Confirmer</button>
                     <button onClick={() => setMsgs((mm) => mm.map((x, j) => j === i ? { ...x, done: true, result: 'Annulé.' } : x))} className="text-xs text-gray-400 px-2">Annuler</button>
                   </div>
                 )}
-                {m.result && <p className="mt-1.5 text-[12px] font-medium text-emerald-700">{m.result}</p>}
+                {m.result && <p className="mt-1.5 text-[12px] font-medium text-emerald-700 whitespace-pre-wrap">{m.result}</p>}
               </div>
             </div>
           ))}
@@ -153,7 +85,6 @@ export default function Jarvis({ open, onClose }: { open: boolean; onClose: () =
           <button onClick={() => send(input)} disabled={busy || !input.trim()} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 disabled:opacity-40">Envoyer</button>
         </div>
       </div>
-      <style jsx>{`@keyframes slideIn { from { transform: translateX(20px); opacity: 0 } to { transform: none; opacity: 1 } }`}</style>
     </div>
   )
 }

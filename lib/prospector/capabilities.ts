@@ -249,6 +249,22 @@ export async function enrichCompanyWebsite(accountId: string): Promise<{ website
   } catch { return { mode: 'error' } }
 }
 
+// Recherche web sur la PERSONNE d'un contact (poste, actualité) et persiste.
+export async function researchPerson(leadId: string): Promise<{ profile?: string; error?: string }> {
+  const l = LEADS[leadId]
+  if (!l) return { error: 'Lead introuvable.' }
+  const name = `${l.firstName} ${l.lastName}`.trim()
+  if (!name) return { error: 'Ce lead n\'a pas de nom de personne.' }
+  try {
+    const r = await fetch('/api/enrich/person', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, company: l.company, linkedinUrl: l.linkedinUrl }),
+    }).then((x) => x.json())
+    if (r.profile) { l.webProfile = r.profile; await persistLead(l) }
+    return r
+  } catch { return { error: 'Recherche indisponible.' } }
+}
+
 // Charge la fiche compte détaillée (dirigeants, CA, effectif) depuis data.gouv.
 export interface AccountDetail { found: boolean; dirigeants: { name: string; role?: string; type: string }[]; finances?: { year: string; ca?: number; resultat?: number }; effectif?: string; city?: string; address?: string; website?: string; naf?: string; active?: boolean }
 export async function getAccountDetail(siren?: string): Promise<AccountDetail | null> {
