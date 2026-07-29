@@ -6,7 +6,7 @@ import { DEFAULT_PERMISSIONS } from '../types/prospector'
 import { getUsage, getDiagnostics, getChannels, connectChannel, disconnectChannel, getLogs, getAiLogs, AI_AGENTS, type Period } from '../lib/prospector/capabilities'
 import type { Channel, ChannelConfig, LogEntry, AiLog } from '../lib/prospector/capabilities'
 
-type Tab = 'usage' | 'connexions' | 'protocole' | 'ailogs' | 'logs' | 'diagnostic' | 'workspaces'
+type Tab = 'usage' | 'connexions' | 'canaux' | 'protocole' | 'ailogs' | 'logs' | 'diagnostic' | 'workspaces'
 
 const USAGE_PERIODS: { key: Period; label: string }[] = [
   { key: 'week', label: 'Semaine' }, { key: 'month', label: 'Mois' }, { key: 'quarter', label: 'Trimestre' }, { key: 'year', label: 'Année' },
@@ -91,6 +91,7 @@ export default function AdminPage() {
   const TABS: { key: Tab; label: string }[] = [
     { key: 'usage', label: 'Usage & coûts' },
     { key: 'connexions', label: 'Connexions' },
+    { key: 'canaux', label: 'Canaux mobiles' },
     { key: 'protocole', label: 'Protocole LLM' },
     { key: 'ailogs', label: 'Logs IA' },
     { key: 'logs', label: 'Activité' },
@@ -250,6 +251,8 @@ export default function AdminPage() {
         <ConnexionsTab channels={channels} onChange={setChannels} />
       )}
 
+      {tab === 'canaux' && <CanauxTab />}
+
       {tab === 'protocole' && <ProtocoleTab />}
 
       {tab === 'ailogs' && <AiLogsTab />}
@@ -369,6 +372,108 @@ const CHANNEL_ICON: Record<Channel['key'], string> = {
 }
 
 interface KeyStatus { key: string; label: string; set: boolean; source: 'app' | 'env' | null }
+
+// ── Canaux mobiles : Jarvis sur Telegram (gratuit, pour les commerciaux nomades) ──
+function CanauxTab() {
+  const [ready, setReady] = useState(false)
+  const [botName, setBotName] = useState('')
+  const [links, setLinks] = useState<{ id: string; label?: string; at: number }[]>([])
+  const [token, setToken] = useState('')
+  const [code, setCode] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const fieldCls = 'w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border border-gray-200 focus:outline-none focus:border-indigo-400 focus:bg-white'
+
+  const load = () => fetch('/api/channels/pair').then((r) => r.json()).then((d) => { setReady(!!d.telegramReady); setBotName(d.botName || ''); setLinks(d.channels || []) }).catch(() => {})
+  useEffect(() => { load() }, [])
+
+  const saveToken = async () => {
+    if (!token.trim()) return
+    setBusy(true)
+    await fetch('/api/config/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ TELEGRAM_BOT_TOKEN: token.trim() }) })
+    setToken(''); await load(); setBusy(false); setMsg('Jeton enregistré. Branche maintenant le webhook.')
+  }
+  const setupWebhook = async () => {
+    setBusy(true)
+    const d = await fetch('/api/channels/telegram-setup', { method: 'POST' }).then((r) => r.json())
+    setBusy(false); setMsg(d.error ? `❌ ${d.error}` : `✅ Webhook branché${d.botName ? ` sur @${d.botName}` : ''}.`)
+    load()
+  }
+  const genCode = async () => {
+    setBusy(true)
+    const d = await fetch('/api/channels/pair', { method: 'POST' }).then((r) => r.json())
+    setBusy(false)
+    if (d.error) setMsg(`❌ ${d.error}`); else { setCode(d.code); setMsg(null) }
+  }
+  const unlink = async (id: string) => { await fetch('/api/channels/pair', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) }); load() }
+
+  return (
+    <div className="space-y-4">
+      <div className="card p-5">
+        <h2 className="text-sm font-semibold text-gray-700 mb-1">Jarvis sur Telegram <span className="font-normal text-gray-400">— piloter Prospector depuis son téléphone</span></h2>
+        <p className="text-xs text-gray-400 mb-4">Gratuit et illimité (tu ne paies que les tokens IA). Idéal pour les commerciaux en déplacement : questions, directives, mises à jour de statut.</p>
+
+        <ol className="space-y-3 text-sm">
+          <li className="flex gap-3">
+            <span className="w-6 h-6 rounded-lg gradient-brand text-white text-xs font-bold flex items-center justify-center flex-shrink-0">1</span>
+            <div className="flex-1">
+              <p className="font-medium text-gray-700">Créer le bot</p>
+              <p className="text-xs text-gray-400 mb-2">Sur Telegram, écris à <b>@BotFather</b> → <code className="bg-gray-100 px-1 rounded">/newbot</code> → il te donne un jeton.</p>
+              {ready ? <span className="text-xs font-semibold text-emerald-600">✓ Jeton configuré{botName && ` · @${botName}`}</span> : (
+                <div className="flex gap-2">
+                  <input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Coller le jeton BotFather" className={fieldCls} />
+                  <button onClick={saveToken} disabled={busy || !token.trim()} className="gradient-brand text-white text-xs font-semibold px-3 py-2 rounded-xl disabled:opacity-40 flex-shrink-0">Enregistrer</button>
+                </div>
+              )}
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span className="w-6 h-6 rounded-lg gradient-brand text-white text-xs font-bold flex items-center justify-center flex-shrink-0">2</span>
+            <div className="flex-1">
+              <p className="font-medium text-gray-700">Brancher le webhook</p>
+              <p className="text-xs text-gray-400 mb-2">Connecte le bot à cette instance (un clic, secret généré automatiquement).</p>
+              <button onClick={setupWebhook} disabled={busy || !ready} className="text-xs font-semibold text-gray-600 border border-gray-200 px-3 py-2 rounded-xl hover:bg-gray-50 disabled:opacity-40">Brancher le webhook</button>
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span className="w-6 h-6 rounded-lg gradient-brand text-white text-xs font-bold flex items-center justify-center flex-shrink-0">3</span>
+            <div className="flex-1">
+              <p className="font-medium text-gray-700">Connecter un téléphone</p>
+              <p className="text-xs text-gray-400 mb-2">Génère un code, puis envoie-le au bot depuis Telegram. Le chat sera lié à <b>cet espace</b>.</p>
+              <button onClick={genCode} disabled={busy || !ready} className="gradient-brand text-white text-xs font-semibold px-3 py-2 rounded-xl disabled:opacity-40">Générer un code d'appairage</button>
+              {code && (
+                <div className="mt-3 bg-indigo-50 border border-indigo-100 rounded-xl p-3 text-center">
+                  <p className="text-[11px] text-indigo-500 font-semibold mb-1">Envoie ce code au bot{botName && ` @${botName}`} (valable 15 min)</p>
+                  <p className="text-3xl font-bold gradient-text tracking-[0.3em]">{code}</p>
+                </div>
+              )}
+            </div>
+          </li>
+        </ol>
+        {msg && <p className="text-xs mt-3 text-gray-600">{msg}</p>}
+      </div>
+
+      <div className="card p-5">
+        <h2 className="text-sm font-semibold text-gray-700 mb-3">Appareils connectés à cet espace</h2>
+        {links.length === 0 ? <p className="text-xs text-gray-400">Aucun appareil connecté.</p> : (
+          <div className="space-y-2">
+            {links.map((l) => (
+              <div key={l.id} className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2">
+                <span className="text-sm">💬</span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-700 truncate">{l.label || l.id}</p>
+                  <p className="text-[11px] text-gray-400">Telegram · connecté le {new Date(l.at).toLocaleDateString('fr-FR')}</p>
+                </div>
+                <button onClick={() => unlink(l.id)} className="text-xs font-medium text-red-500 hover:bg-red-50 px-2.5 py-1.5 rounded-lg">Délier</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] text-gray-400 mt-3">Un chat non appairé ne peut rien faire : le bot refuse toute demande tant que le code n'a pas été validé.</p>
+      </div>
+    </div>
+  )
+}
 
 function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: (c: Channel[]) => void }) {
   const [drafts, setDrafts] = useState<Record<string, ChannelConfig>>({})

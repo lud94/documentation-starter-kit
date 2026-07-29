@@ -10,6 +10,8 @@ export const MANAGED_KEYS = [
   'APP_RESET_TOKEN', 'APP_RESET_EXP', 'INGEST_TOKEN', 'ANTHROPIC_BUDGET',
   // Modèles par tâche (surcharge des défauts économiques) — maîtrise des coûts.
   'JARVIS_MODEL', 'PLAN_MODEL', 'ENRICH_MODEL', 'WRITE_MODEL',
+  // Canal mobile Telegram (Jarvis nomade).
+  'TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET', 'TELEGRAM_BOT_NAME',
 ] as const
 export type ManagedKey = typeof MANAGED_KEYS[number]
 
