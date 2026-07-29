@@ -454,14 +454,14 @@ export default function LeadDetailPage() {
           {/* Recherche web sur la personne */}
           <div className="card p-5">
             <div className="flex items-center justify-between mb-2">
-              <SectionLabel icon="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z">Profil web</SectionLabel>
+              <SectionLabel icon="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z">Actualité &amp; presse</SectionLabel>
               <button onClick={doResearch} disabled={researching} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-lg hover:bg-indigo-100 transition-colors disabled:opacity-40 mb-2">
-                {researching ? 'Recherche…' : lead.webProfile ? 'Actualiser' : '🔎 Rechercher'}
+                {researching ? 'Recherche…' : lead.webProfile ? 'Actualiser' : '🔎 Chercher'}
               </button>
             </div>
             {lead.webProfile
               ? <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-wrap">{lead.webProfile}</p>
-              : <p className="text-xs text-gray-400">Lance une recherche web factuelle sur cette personne (poste, actualité professionnelle). Rien n'est inventé ; résultat mis en cache.</p>}
+              : <p className="text-xs text-gray-400">Ce que LinkedIn ne dit pas : presse, communiqués, levées, nominations, interviews, conférences. <span className="text-gray-300">LinkedIn est volontairement exclu (couvert par Unipile).</span></p>}
             {researchMsg && <p className="text-xs text-red-600 mt-2">{researchMsg}</p>}
           </div>
 

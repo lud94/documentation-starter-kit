@@ -25,7 +25,7 @@ ACTION (au plus une) :
   size ∈ [1-10, 11-20, 21-50, 51-100, 101-250, 251-500, 501-1000, 1000+]  (50 à 100 salariés → "51-100")
   location = ville ou département (ex: Paris, Lyon, 75). limit ≤ 25.
   "import": true si l'utilisateur veut aussi les AJOUTER au pipe, false s'il veut juste voir la liste.
-- { "type":"research_person", "name":"...", "company"? } → chercher sur le WEB des infos sur une PERSONNE (poste, actualité). LECTURE (coûte des tokens).
+- { "type":"research_person", "name":"...", "company"? } → ACTUALITÉ & PRESSE d'une personne, HORS LinkedIn (le profil LinkedIn est couvert ailleurs). LECTURE (coûte des tokens).
 - { "type":"stats" } → chiffres du pipe (comptes, contacts, étapes). LECTURE.
 - { "type":"find_lead", "query":"..." } → retrouver des leads DÉJÀ dans le pipe. LECTURE.
 - { "type":"explain_company", "company":"..." } → fiche + résumé d'une entreprise. LECTURE.
@@ -131,13 +131,21 @@ export async function executeJarvis(action: any, ws: string, ctxUrl = ''): Promi
       const who = [action.name, action.company].filter(Boolean).join(' · ')
       if (!action.name) return 'Précise le nom de la personne.'
       const r = await callClaude({
-        task: 'extract', agent: 'Jarvis · recherche personne',
-        system: `Tu es analyste commercial B2B. Recherche sur le web des informations PUBLIQUES et FACTUELLES sur une personne dans un contexte professionnel : poste actuel, entreprise, parcours visible, actualités/publications récentes.
-N'INVENTE RIEN : si tu ne trouves pas, dis-le. Pas de données personnelles sensibles (vie privée, coordonnées personnelles).
-Réponds en français, 4 phrases maximum, en citant la source quand tu l'as.`,
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
-        messages: [{ role: 'user', content: `Personne : ${who}. Que sait-on d'elle professionnellement ?` }],
-        cache: cacheKey(['person', action.name, action.company || '']),
+        task: 'extract', agent: 'Jarvis · actualité personne',
+        system: `Tu es analyste de veille commerciale B2B (France). Trouve ce que LinkedIn NE dit PAS :
+presse économique/sectorielle, communiqués, levées, nominations, interviews, podcasts, conférences, site officiel.
+N'utilise PAS LinkedIn ni les réseaux sociaux comme source.
+ANTI-HOMONYME : ne retiens que ce qui est relié à CETTE personne DANS CETTE entreprise ; dans le doute, écarte et dis-le.
+N'invente RIEN : si rien de pertinent, réponds "Aucune actualité publique trouvée hors LinkedIn."
+Privilégie les 18 derniers mois, DATE chaque élément, cite la source. Aucune donnée de vie privée.
+Français, 4 phrases maximum, ton factuel.`,
+        tools: [{
+          type: 'web_search_20250305', name: 'web_search', max_uses: 3,
+          blocked_domains: ['linkedin.com', 'www.linkedin.com', 'fr.linkedin.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com'],
+          user_location: { type: 'approximate', country: 'FR' },
+        }],
+        messages: [{ role: 'user', content: `Personne : ${who}. Cherche son actualité publique HORS LinkedIn.` }],
+        cache: cacheKey(['person-news', action.name, action.company || '']),
       })
       if (r.blocked) return r.error || 'Budget IA épuisé.'
       return r.text.trim() || `Aucune information publique trouvée sur ${who}.`
