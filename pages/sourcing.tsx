@@ -191,7 +191,11 @@ export default function SourcingPage() {
           ? { types: Array.from(sigTypes), sector: sigSector, location: sigLocation, months: sigMonths, keywords: sigKeywords }
           : { thesis: q }),
       })
-      const d = await res.json()
+      // Un timeout de la fonction renvoie du HTML, pas du JSON : sans ce garde-fou
+      // l'utilisateur voyait « Unexpected token '<' » au lieu du vrai problème.
+      const raw = await res.text()
+      let d: any = null
+      try { d = JSON.parse(raw) } catch { throw new Error(res.ok ? 'Réponse illisible du serveur' : `Le serveur a coupé (HTTP ${res.status}) — recherche trop longue, réduis la période ou les critères.`) }
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
       setSigHits(d.hits || []); setSigMode(d.mode || ''); setSigBuilt(d.thesis || '')
       // Plus de données de démonstration : une erreur est une erreur, on l'affiche.

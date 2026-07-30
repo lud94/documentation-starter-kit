@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { useRouter } from 'next/router'
+import { BUILD } from '../lib/version'
 import { useEffect, useState } from 'react'
 import CreateLeadModal from './CreateLeadModal'
 import Jarvis from './Jarvis'
@@ -200,6 +201,11 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
           </button>
+        </div>
+        {/* Empreinte de build : ce que cette page contient VRAIMENT. Un clic la
+            sélectionne entière, prête à coller dans un message. */}
+        <div className="px-4 pb-3 text-[10px] text-gray-300 select-all" title={`${BUILD.env} · ${BUILD.sha}`}>
+          build {BUILD.branch}@{BUILD.short}
         </div>
       </aside>
 

@@ -8,6 +8,7 @@
 import type { SignalHit } from '../../types/prospector'
 import { searchExa, exaConfigured, type ExaDoc } from './exa'
 import { getKey } from './keystore'
+import { withBuild } from '../version'
 import { callClaude as llmCall, cacheKey } from './llm'
 
 const SIGNAL_AGENT = 'Recherche signal'
@@ -162,8 +163,13 @@ async function callClaude(thesis: string, max: number, q?: SignalQuery): Promise
     messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}${hint}\n\n${jsonInstruction(max)}` }],
     cache: cacheKey(['signal-web', thesis, String(max), 'v2']),
   })
-  if (r.blocked) return []
-  return parseHits(r.text)
+  // Un budget épuisé est une ERREUR, pas « aucun résultat » : on le dit.
+  if (r.blocked) throw new Error(r.error || 'Appel IA refusé (budget).')
+  const hits = parseHits(r.text)
+  // Réponse tronquée (plafond de tokens atteint) : le JSON est incomplet, donc
+  // parseHits rend peu ou rien. On le signale au lieu d'afficher « 0 résultat ».
+  if (!hits.length && r.truncated) throw new Error('Réponse IA tronquée (limite de tokens). Réduis le nombre de critères ou la période.')
+  return hits
 }
 
 // Claude EXTRACTEUR : à partir des documents Exa, sort les entreprises + signaux
@@ -181,7 +187,7 @@ async function extractWithClaude(thesis: string, docs: ExaDoc[], max: number, q?
     system: `${SYSTEM}\nOn te fournit des extraits web déjà collectés. N'invente RIEN au-delà de ces extraits. Attribue à chaque entreprise l'URL source d'où vient le signal.`,
     messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}\n\nExtraits web:\n${corpus}\n\n${jsonInstruction(max)}` }],
   })
-  if (r.blocked) return []
+  if (r.blocked) throw new Error(r.error || 'Appel IA refusé (budget).')
   return parseHits(r.text)
 }
 
@@ -229,13 +235,16 @@ export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): P
       // l'entreprise. Le tri de pertinence se fait par keepOnFocus() en sortie.
       const docs = await searchExa(thesis, 12, { months: q?.months })
       hits = docs.length ? await extractWithClaude(thesis, docs, max, q) : await callClaude(thesis, max, q)
+      // Exa a bien répondu mais rien d'exploitable n'en sort (documents hors sujet) :
+      // on repasse par la recherche web plutôt que de rendre une page vide.
+      if (!hits.length) hits = await callClaude(thesis, max, q)
     } else {
       hits = await callClaude(thesis, max, q)
     }
   } catch (e: any) {
     // On remonte l'erreur RÉELLE (modèle indisponible, outil web non activé, quota…)
     // au lieu de fabriquer des résultats.
-    return { mode, hits: [], thesis, error: String(e?.message || e).slice(0, 300) }
+    return { mode, hits: [], thesis, error: withBuild(String(e?.message || e).slice(0, 300)) }
   }
 
   // Post-traitement LOCAL (gratuit, instantané) : on respecte le ciblage demandé
