@@ -2,7 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 
 // Panneau Jarvis in-app (⌘K). Adaptateur mince : il affiche, le serveur décide et
 // exécute — MÊME cerveau que l'extension et Telegram (mêmes capacités partout).
-interface Msg { role: 'user' | 'assistant'; content: string; action?: any; done?: boolean; result?: string }
+interface Msg { role: 'user' | 'assistant'; content: string; action?: any; done?: boolean; result?: string; q?: string }
+
+// Sortie d'exploration : ouvre la question dans l'abonnement de l'utilisateur
+// (aucun token Prospector). Complément de la réponse Jarvis, pas remplacement.
+const EXTERNAL: Record<string, (q: string) => string> = {
+  Claude: (q) => `https://claude.ai/new?q=${encodeURIComponent(q)}`,
+  ChatGPT: (q) => `https://chatgpt.com/?q=${encodeURIComponent(q)}`,
+  Perplexity: (q) => `https://www.perplexity.ai/search?q=${encodeURIComponent(q)}`,
+}
 
 const SUGGESTIONS = [
   'Mes chiffres',
@@ -29,7 +37,7 @@ export default function Jarvis({ open, onClose }: { open: boolean; onClose: () =
     try {
       const d = await call({ message: q })
       const content = [d.reply, d.result].filter(Boolean).join('\n\n') || '…'
-      setMsgs((m) => [...m, { role: 'assistant', content, action: d.needsConfirm ? d.action : undefined }])
+      setMsgs((m) => [...m, { role: 'assistant', content, action: d.needsConfirm ? d.action : undefined, q }])
     } catch {
       setMsgs((m) => [...m, { role: 'assistant', content: 'Erreur — réessaie.' }])
     } finally { setBusy(false) }
@@ -74,6 +82,14 @@ export default function Jarvis({ open, onClose }: { open: boolean; onClose: () =
                   </div>
                 )}
                 {m.result && <p className="mt-1.5 text-[12px] font-medium text-emerald-700 whitespace-pre-wrap">{m.result}</p>}
+                {m.role === 'assistant' && m.q && !m.action && (
+                  <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-gray-400">
+                    <span>Approfondir :</span>
+                    {Object.keys(EXTERNAL).map((k) => (
+                      <a key={k} href={EXTERNAL[k](m.q!)} target="_blank" rel="noopener noreferrer" className="text-indigo-500 hover:underline">{k} ↗</a>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))}
