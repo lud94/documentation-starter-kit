@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Conversation, Visitor, LeadDetail } from '../types/prospector'
 import { STATUS_META } from '../types/prospector'
-import { getConversations, getVisitors, getLeadDetail, detectDealKillers, regenerateReply, addTask } from '../lib/prospector/capabilities'
+import { getConversations, getVisitors, getLeadDetail, detectDealKillers, regenerateReply, addTask, sendMessage, setLeadStage } from '../lib/prospector/capabilities'
 
 const REGEN_CHIPS = ['Plus court', 'Plus direct', 'Moins commercial', 'Autre angle']
 
@@ -42,6 +42,23 @@ export default function InboxPage() {
   const threadRef = useRef<HTMLDivElement>(null)
 
   const regen = async (leadId: string, ins: string) => { setBusy(true); const m = await regenerateReply(leadId, ins); setReply(m); setBusy(false) }
+  // Envoi : enregistré dans le fil et persisté. L'expédition réelle passera par Unipile.
+  const [sending, setSending] = useState(false)
+  const [sentMsg, setSentMsg] = useState<string | null>(null)
+  const doSend = async (leadId: string, channel: 'linkedin' | 'email' | 'whatsapp') => {
+    if (!reply.trim()) return
+    setSending(true)
+    await sendMessage(leadId, channel, reply.trim())
+    setReply(''); setSending(false)
+    setSentMsg('Message enregistré dans le fil. L\'expédition réelle nécessite Unipile.')
+    setTimeout(() => setSentMsg(null), 4000)
+  }
+  // Invitation d'un visiteur : passe le lead à l'étape « invité ».
+  const [invited, setInvited] = useState<Set<string>>(new Set())
+  const doInvite = async (leadId: string) => {
+    await setLeadStage(leadId, 'invited')
+    setInvited((s) => new Set(s).add(leadId))
+  }
 
   useEffect(() => {
     getConversations().then((c) => { setConvs(c); setSelected((s) => s ?? c[0]?.id ?? null) })
@@ -197,9 +214,10 @@ export default function InboxPage() {
                     <button onClick={() => setReply(active.suggestedReply)} className="text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors flex items-center gap-1.5"><span className="gradient-text font-semibold">✦</span> Générer une réponse</button>
                     <div className="flex items-center gap-2">
                       <span className="inline-flex items-center gap-1 text-[11px] text-gray-400 bg-gray-50 px-2 py-1 rounded-lg"><ChannelIcon channel={active.channel} className="w-3 h-3" />Répondre via {CHANNEL[active.channel].label}</span>
-                      <button disabled={!reply.trim()} className="gradient-brand text-white text-xs font-semibold px-4 py-1.5 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">Envoyer</button>
+                      <button onClick={() => doSend(active.lead.id, active.channel)} disabled={!reply.trim() || sending} className="gradient-brand text-white text-xs font-semibold px-4 py-1.5 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">{sending ? 'Envoi…' : 'Envoyer'}</button>
                     </div>
                   </div>
+                  {sentMsg && <p className="text-[11px] text-emerald-600 mt-2">{sentMsg}</p>}
                 </div>
               </>
             ) : (
@@ -217,7 +235,7 @@ export default function InboxPage() {
                 <div className="min-w-0 flex-1"><p className="text-sm font-medium text-gray-800 truncate">{v.lead.firstName} {v.lead.lastName}</p><p className="text-xs text-gray-400 truncate">{v.lead.title} · {v.lead.company}</p></div>
                 <span className="text-xs text-gray-400 flex-shrink-0">{v.times > 1 ? `${v.times}× · ` : ''}{v.viewedAt}</span>
                 <Link href={`/leads/${v.lead.id}`} className="text-xs font-medium text-gray-500 bg-gray-50 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors flex-shrink-0">Voir la fiche</Link>
-                <button className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity flex-shrink-0">Inviter</button>
+                <button onClick={() => doInvite(v.lead.id)} disabled={invited.has(v.lead.id)} className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-opacity flex-shrink-0 ${invited.has(v.lead.id) ? 'bg-emerald-50 text-emerald-600' : 'gradient-brand text-white hover:opacity-90'}`}>{invited.has(v.lead.id) ? '✓ Invité' : 'Inviter'}</button>
               </div>
             ))}
           </div>

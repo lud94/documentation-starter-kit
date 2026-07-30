@@ -106,6 +106,7 @@ export default function SourcingPage() {
   const [sigMonths, setSigMonths] = useState(6)
   const [sigKeywords, setSigKeywords] = useState('')
   const [sigBuilt, setSigBuilt] = useState('')
+  const [sigDone, setSigDone] = useState(false) // une recherche a été effectuée (pour l'état « aucun résultat »)
   const [sigCatalog, setSigCatalog] = useState<{ key: string; label: string; group: string }[]>([])
   useEffect(() => { fetch('/api/signals/search?catalog=1').then((r) => r.json()).then((d) => setSigCatalog(d.types || [])).catch(() => {}) }, [])
   const toggleSigType = (k: string) => setSigTypes((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
@@ -183,7 +184,7 @@ export default function SourcingPage() {
     const usingTypes = !thesis && sigTypes.size > 0
     if (!q && !usingTypes) return
     if (thesis) setSigThesis(thesis)
-    setSigRunning(true); setSigError(null); setSigHits([])
+    setSigRunning(true); setSigError(null); setSigHits([]); setSigDone(false)
     try {
       const res = await fetch('/api/signals/search', {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -193,10 +194,10 @@ export default function SourcingPage() {
       })
       const d = await res.json()
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
-      setSigHits(d.hits); setSigMock(!!d.mock); setSigMode(d.mode || ''); setSigBuilt(d.thesis || '')
+      setSigHits(d.hits || []); setSigMock(!!d.mock); setSigMode(d.mode || ''); setSigBuilt(d.thesis || '')
     } catch (e: any) {
       setSigError(e.message || 'Agent indisponible')
-    } finally { setSigRunning(false) }
+    } finally { setSigRunning(false); setSigDone(true) }
   }
 
   const importSignal = async (h: SignalHit) => {
@@ -429,6 +430,15 @@ export default function SourcingPage() {
               {sigTypes.size > 0 && <button onClick={() => setSigTypes(new Set())} className="text-xs text-gray-400 hover:text-gray-600">Effacer</button>}
             </div>
             {sigBuilt && <p className="text-[11px] text-gray-400 mt-2 italic">Requête envoyée : « {sigBuilt} »</p>}
+            {/* Retour visible ICI (et non plus seulement plus bas) : erreur, attente, vide. */}
+            {sigRunning && <p className="text-xs text-indigo-600 mt-2">Veille en cours — l'agent interroge le web puis vérifie chaque entreprise sur data.gouv (10 à 40 s).</p>}
+            {!sigRunning && sigError && <p className="text-xs text-red-600 mt-2">Échec : {sigError}</p>}
+            {!sigRunning && !sigError && sigDone && sigHits.length === 0 && (
+              <p className="text-xs text-amber-600 mt-2">Aucune entreprise trouvée pour ces critères. Élargis la fraîcheur (12-18 mois), retire le secteur ou la ville, ou coche plus de types de signaux.</p>
+            )}
+            {!sigRunning && sigHits.length > 0 && (
+              <p className="text-xs text-emerald-600 mt-2">{sigHits.length} entreprise(s) détectée(s) — voir les résultats ci-dessous ↓</p>
+            )}
           </div>
 
           {/* Mode expert : thèse libre */}

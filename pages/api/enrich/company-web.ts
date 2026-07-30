@@ -2,6 +2,9 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { enrichCompanyWeb } from '../../../lib/prospector/identify'
 
+// Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
+export const config = { maxDuration: 60 }
+
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
 // Enrichit une entreprise via l'agent web (Claude seul) : site + résumé secteur/activité.

@@ -6,6 +6,9 @@ import { runStep } from '../../../lib/prospector/missionTools'
 import { MISSION_TOOL_META } from '../../../types/prospector'
 import type { Mission } from '../../../types/prospector'
 
+// Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
+export const config = { maxDuration: 60 }
+
 // ORCHESTRATEUR : exécute UNE étape par appel, puis persiste l'état.
 // Découpage volontaire → compatible serverless (pas de timeout), reprise après
 // interruption gratuite, et pause avant toute étape sensible/coûteuse.

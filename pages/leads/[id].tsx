@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson, saveResearchNotes } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson, saveResearchNotes, verifyLeadCompany, enrichCompanyWebsite } from '../../lib/prospector/capabilities'
 import AskExternalAI from '../../components/AskExternalAI'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
@@ -135,6 +135,21 @@ export default function LeadDetailPage() {
     setAccountBusy(false)
   }
   const [reminderMsg, setReminderMsg] = useState<string | null>(null)
+  // Enrichissement entreprise depuis la fiche contact : vérif data.gouv + agent web.
+  const [companyBusy, setCompanyBusy] = useState(false)
+  const [companyMsg, setCompanyMsg] = useState<string | null>(null)
+  const enrichCompany = async () => {
+    if (typeof id !== 'string') return
+    setCompanyBusy(true); setCompanyMsg(null)
+    await verifyLeadCompany(id)
+    const r = await enrichCompanyWebsite(id)
+    setCompanyBusy(false)
+    setCompanyMsg(r.mode === 'off'
+      ? 'Agent web non configuré (Admin → Connexions → clé Anthropic).'
+      : (r.website || r.summary) ? 'Entreprise enrichie.' : 'Vérifiée sur data.gouv — rien de plus trouvé sur le web.')
+    setTimeout(() => setCompanyMsg(null), 4000)
+    reload()
+  }
   const [researching, setResearching] = useState(false)
   const [researchMsg, setResearchMsg] = useState<string | null>(null)
   const doResearch = async () => {
@@ -239,7 +254,17 @@ export default function LeadDetailPage() {
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.96 7.96 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
             Envoyer un message
           </button>
-          <button className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors">LinkedIn</button>
+          {/* LinkedIn : ouvre le profil s'il est connu, sinon une recherche ciblée. */}
+          <a
+            href={d.linkedinUrl
+              ? (d.linkedinUrl.startsWith('http') ? d.linkedinUrl : `https://${d.linkedinUrl}`)
+              : `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(`${lead.firstName} ${lead.lastName} ${lead.company}`.trim())}`}
+            target="_blank" rel="noopener noreferrer"
+            title={d.linkedinUrl ? 'Ouvrir le profil LinkedIn' : 'Rechercher ce contact sur LinkedIn'}
+            className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors"
+          >
+            LinkedIn{!d.linkedinUrl && ' ↗'}
+          </a>
           {lead.company && lead.company !== '—' && (
             <button onClick={() => router.push(`/pipeline?tab=comptes&q=${encodeURIComponent(lead.company)}`)} title="Voir la fiche du compte" className="text-sm font-medium text-gray-600 bg-gray-50 px-3 py-2 rounded-xl hover:bg-gray-100 transition-colors flex items-center gap-1.5">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>
@@ -396,7 +421,8 @@ export default function LeadDetailPage() {
                 <span className="text-xs text-gray-400">({scoring.confidence})</span>
                 {scoring.edgeCase && <span className="text-xs font-medium text-amber-500">Cas limite</span>}
               </div>
-              <button className="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1">
+              {/* Rescorer = relancer l'enrichissement (le score en dépend). */}
+              <button onClick={enrichThis} title="Relancer l'enrichissement et recalculer le score" className="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1">
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                 Rescorer
               </button>
@@ -473,11 +499,13 @@ export default function LeadDetailPage() {
           <div className="card p-5">
             <div className="flex items-center justify-between mb-3">
               <SectionLabel icon="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0H5m14 0h2M5 21H3m2-14h2m6 0h2m-8 4h2m6 0h2m-8 4h2m6 0h2">Entreprise</SectionLabel>
-              <button className="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1 mb-2">
+              {/* Enrichir l'entreprise : vérif data.gouv puis agent web (site, activité, CA). */}
+              <button onClick={enrichCompany} disabled={companyBusy} title="Vérifier sur data.gouv puis enrichir via le web" className="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1 mb-2 disabled:opacity-40">
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                Enrichir
+                {companyBusy ? 'Enrichissement…' : 'Enrichir'}
               </button>
             </div>
+            {companyMsg && <p className="text-[11px] text-emerald-600 mb-2">{companyMsg}</p>}
             <p className="font-semibold text-gray-800 text-sm">{company.name}</p>
             <p className="text-xs text-gray-500 mt-1">{company.size} · {company.location}</p>
             {company.website && <a href={`https://${company.website}`} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 hover:underline">{company.website}</a>}

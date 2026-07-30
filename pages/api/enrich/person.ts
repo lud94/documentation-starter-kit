@@ -2,6 +2,9 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { callClaude, cacheKey } from '../../../lib/prospector/llm'
 
+// Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
+export const config = { maxDuration: 60 }
+
 // ACTUALITÉ & PRESSE sur une personne — volontairement COMPLÉMENTAIRE de LinkedIn
 // (qui sera couvert par Unipile). LinkedIn est bloqué au niveau de l'outil : on ne
 // veut que ce que LinkedIn NE dit PAS. Mise en cache 7 j.

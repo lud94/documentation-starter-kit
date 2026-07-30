@@ -4,6 +4,10 @@ import { hydrateKeystore } from '../../../lib/prospector/keystore'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
+// Recherche longue (Exa + Claude web + réconciliation SIREN) → il faut laisser
+// le temps à la fonction serverless, sinon timeout silencieux côté client.
+export const config = { maxDuration: 60 }
+
 // Recherche par signal. Deux modes :
 //  • thèse libre (GET ?thesis=…) — mode expert, inchangé
 //  • critères structurés (POST { types, sector, location, months, keywords })

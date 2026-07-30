@@ -80,7 +80,11 @@ export default function BrainPage() {
                       {a.ragBlocks.map((b) => (
                         <span key={b} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-500">RAG: {b}</span>
                       ))}
-                      <button className="ml-auto gradient-brand text-white text-xs font-semibold px-4 py-1.5 rounded-lg hover:opacity-90 transition-opacity">Enregistrer</button>
+                      {/* Honnêteté : ces prompts sont une VUE. Les prompts réellement
+                          exécutés sont versionnés dans le code (llm.ts, signals.ts,
+                          jarvisAgent.ts). Un « Enregistrer » ici donnerait l'illusion
+                          de piloter l'IA. → désactivé jusqu'à la vraie persistance. */}
+                      <button disabled title="Lecture seule : les prompts actifs sont versionnés dans le code. L'édition depuis l'interface arrive avec la persistance des agents." className="ml-auto bg-gray-100 text-gray-400 text-xs font-semibold px-4 py-1.5 rounded-lg cursor-not-allowed">Lecture seule</button>
                     </div>
                   </div>
                 )}
@@ -104,7 +108,8 @@ export default function BrainPage() {
                   <span key={ag} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{ag}</span>
                 ))}
               </div>
-              <button className="text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">Éditer le bloc</button>
+              {/* Pas de moteur RAG réel derrière ces blocs → on ne prétend pas éditer. */}
+              <button disabled title="Base de connaissance en lecture seule : le moteur RAG n'est pas encore branché." className="text-xs font-medium text-gray-400 bg-gray-100 px-3 py-1.5 rounded-lg cursor-not-allowed">Lecture seule</button>
             </div>
           ))}
         </div>
@@ -169,7 +174,9 @@ export default function BrainPage() {
               </select>
               <span className="text-xs text-gray-400">temp</span>
               <input type="number" step="0.1" min="0" max="1" defaultValue={a.temperature} className="w-16 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-xl px-2 py-2 focus:outline-none focus:border-indigo-400" />
-              <button className="ml-auto text-xs font-medium text-gray-500 bg-gray-50 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">Enregistrer</button>
+              {/* Le vrai routage des modèles se configure dans Admin → Usage & coûts
+                  (clés JARVIS_MODEL / PLAN_MODEL / ENRICH_MODEL / SIGNALS_MODEL). */}
+              <button onClick={() => router.push('/admin')} title="Configurer le routage réel des modèles (Admin → Usage & coûts)" className="ml-auto text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">Configurer dans Admin →</button>
             </div>
           ))}
           <div className="card p-5">

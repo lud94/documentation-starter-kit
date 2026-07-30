@@ -4,6 +4,9 @@ import { planJarvis, executeJarvis, isWrite } from '../../../lib/prospector/jarv
 import { redeemPairingCode, resolveChannelWs, unlinkChannel } from '../../../lib/prospector/pairing'
 import { listItems, upsertItem, deleteItem } from '../../../lib/supabase/store'
 
+// Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
+export const config = { maxDuration: 60 }
+
 // Canal Telegram — adaptateur mince : il transporte du texte, le cerveau Jarvis
 // (partagé avec l'extension) fait tout le reste. Gratuit, pas de fenêtre 24 h.
 // Sécurité : secret de webhook + appairage obligatoire par code à usage unique.

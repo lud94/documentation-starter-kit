@@ -3,6 +3,9 @@ import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { planJarvis, executeJarvis, isWrite } from '../../../lib/prospector/jarvisAgent'
 import { resolveWorkspaceByToken } from '../../../lib/prospector/wstoken'
 
+// Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
+export const config = { maxDuration: 60 }
+
 // Canal EXTENSION (widget flottant sur le web) — adaptateur mince.
 // Utilise le MÊME cerveau Jarvis que Telegram : mêmes capacités partout.
 // Protégé par le jeton d'ingestion (qui détermine aussi l'espace de destination).

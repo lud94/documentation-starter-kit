@@ -281,7 +281,7 @@ export default function AdminPage() {
         <div className="card p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold text-gray-700">Connexions & configuration</h2>
-            <button className="text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">Tester tout</button>
+            <button onClick={() => { setTab('diagnostic'); getDiagnostics().then(setDiags) }} title="Lancer les tests de connexion (onglet Diagnostic)" className="text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">Tester tout</button>
           </div>
           <div className="space-y-1">
             {diags.map((d) => (

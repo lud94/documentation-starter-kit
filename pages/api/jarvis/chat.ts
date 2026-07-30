@@ -3,6 +3,9 @@ import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { planJarvis, executeJarvis, isWrite } from '../../../lib/prospector/jarvisAgent'
 import { activeWs } from '../../../lib/auth/ws'
 
+// Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
+export const config = { maxDuration: 60 }
+
 // Canal IN-APP (barre ⌘K) — adaptateur mince, MÊME cerveau que l'extension et
 // Telegram. L'espace vient de la session (pas d'un jeton).
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

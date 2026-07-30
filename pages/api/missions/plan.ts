@@ -5,6 +5,9 @@ import { MISSION_TOOL_META } from '../../../types/prospector'
 import type { Mission, MissionStep, MissionTool } from '../../../types/prospector'
 import { MAX_COMPANIES, MAX_ENRICH } from '../../../lib/prospector/missionTools'
 
+// Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
+export const config = { maxDuration: 60 }
+
 // Planificateur : demande libre → CONTRAT DE MISSION structuré.
 // Il PLANIFIE seulement (rien n'est exécuté ici) : l'utilisateur valide ensuite.
 const TOOLS = Object.keys(MISSION_TOOL_META) as MissionTool[]
