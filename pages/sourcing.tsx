@@ -95,7 +95,6 @@ export default function SourcingPage() {
   const [sigThesis, setSigThesis] = useState('')
   const [sigRunning, setSigRunning] = useState(false)
   const [sigHits, setSigHits] = useState<SignalHit[]>([])
-  const [sigMock, setSigMock] = useState(false)
   const [sigMode, setSigMode] = useState('')
   const [sigError, setSigError] = useState<string | null>(null)
   const [sigImported, setSigImported] = useState<Set<string>>(new Set())
@@ -194,7 +193,9 @@ export default function SourcingPage() {
       })
       const d = await res.json()
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
-      setSigHits(d.hits || []); setSigMock(!!d.mock); setSigMode(d.mode || ''); setSigBuilt(d.thesis || '')
+      setSigHits(d.hits || []); setSigMode(d.mode || ''); setSigBuilt(d.thesis || '')
+      // Plus de données de démonstration : une erreur est une erreur, on l'affiche.
+      if (d.error) setSigError(d.error)
     } catch (e: any) {
       setSigError(e.message || 'Agent indisponible')
     } finally { setSigRunning(false); setSigDone(true) }
@@ -323,7 +324,7 @@ export default function SourcingPage() {
           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-500 text-white">in</span>
         </button>
         <button onClick={() => setTab('prospects')} className={`text-sm font-medium px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2 ${tab === 'prospects' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500'}`}>
-          Entreprises sourcées
+          Résultats · critères
           {companies.length > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full gradient-brand text-white">{companies.length}</span>}
         </button>
       </div>
@@ -458,10 +459,10 @@ export default function SourcingPage() {
             </div>
             {sigError && <p className="text-xs text-red-600 mt-3">Échec : {sigError}</p>}
             {sigHits.length > 0 && (
-              <p className={`text-[11px] mt-3 ${sigMode === 'exa+claude' ? 'text-emerald-600' : sigMode === 'claude-web' ? 'text-amber-600' : 'text-amber-600'}`}>
-                {sigMode === 'exa+claude' ? '⚡ Capteur Exa → cerveau Claude (réel)'
-                  : sigMode === 'claude-web' ? '⚡ Claude web seul (ajoute EXA_API_KEY pour un capteur plus frais)'
-                  : '⚠️ Résultats simulés — ajoute ANTHROPIC_API_KEY (+ EXA_API_KEY) dans Vercel pour le réel.'}
+              <p className={`text-[11px] mt-3 ${sigMode === 'exa+claude' ? 'text-emerald-600' : 'text-amber-600'}`}>
+                {sigMode === 'exa+claude'
+                  ? '⚡ Capteur Exa → cerveau Claude'
+                  : '⚡ Claude web seul (ajoute EXA_API_KEY pour un capteur plus frais et un meilleur ciblage des sources)'}
               </p>
             )}
           </div>
@@ -483,6 +484,10 @@ export default function SourcingPage() {
                         ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">✓ existe (SIREN {h.siren})</span>
                         : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">non vérifiée</span>}
                       {h.city && <span className="text-xs text-gray-400">{h.city}</span>}
+                      {/* Écarter un résultat non pertinent (hors cible, doublon, faux positif). */}
+                      <button onClick={() => setSigHits((hs) => hs.filter((x) => x.company !== h.company))} title="Écarter ce résultat" className="ml-auto text-gray-300 hover:text-red-500 flex-shrink-0">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                      </button>
                     </div>
                     <p className="text-xs text-gray-500 mb-2">📌 {h.detail}</p>
                     <div className="bg-indigo-50/40 border border-indigo-100 rounded-lg p-2.5 mb-2">
@@ -492,9 +497,14 @@ export default function SourcingPage() {
                       <button onClick={() => copyIce(h)} className="text-xs font-medium text-gray-500 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition-colors">{copied === h.company ? '✓ Copié' : 'Copier l\'accroche'}</button>
                       {h.sourceUrl && <a href={h.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-indigo-600 hover:underline">Source</a>}
                       {!h.verified && <a href={`https://www.google.com/search?q=${encodeURIComponent(h.company + ' ' + (h.city || ''))}`} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-amber-600 hover:underline">Vérifier</a>}
-                      <button onClick={() => importSignal(h)} disabled={sigImported.has(h.company)} className={`text-xs font-semibold px-3 py-1 rounded-lg ml-auto transition-opacity ${sigImported.has(h.company) ? 'bg-emerald-50 text-emerald-600' : 'gradient-brand text-white hover:opacity-90'}`}>
-                        {sigImported.has(h.company) ? '✓ Dans le pipe' : '+ Importer'}
-                      </button>
+                      {sigImported.has(h.company) ? (
+                        // Point de repère : une entreprise importée devient un COMPTE
+                        // dans Pipeline → Comptes (pas dans « Entreprises sourcées »,
+                        // qui liste les résultats de la recherche par critères).
+                        <a href={`/pipeline?tab=comptes&q=${encodeURIComponent(h.company)}`} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto bg-emerald-50 text-emerald-600 hover:bg-emerald-100">✓ Dans Pipeline → voir le compte</a>
+                      ) : (
+                        <button onClick={() => importSignal(h)} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto transition-opacity gradient-brand text-white hover:opacity-90">+ Importer</button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -547,7 +557,7 @@ export default function SourcingPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 card p-5">
             <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-              <h2 className="text-sm font-semibold text-gray-700">Entreprises sourcées</h2>
+              <h2 className="text-sm font-semibold text-gray-700">Résultats de la recherche par critères <span className="font-normal text-gray-400">— les comptes importés vivent dans Pipeline → Comptes</span></h2>
               {companies.length > 0 && (
                 <div className="flex items-center gap-2">
                   <button onClick={resolveBatch} disabled={batchRunning} className="text-xs font-semibold text-gray-600 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50">

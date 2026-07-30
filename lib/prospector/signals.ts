@@ -146,33 +146,33 @@ function parseHits(text: string): SignalHit[] {
   }))
 }
 
-// Mock déterministe pour tester l'UX sans clé.
-function mockHits(thesis: string): SignalHit[] {
-  const t = thesis || 'recrutement sales'
-  return [
-    { company: 'Pigment', signalType: 'recrutement', detail: `Recrute un Head of Sales — ${t}`, icebreaker: `Vu que Pigment ouvre un poste de Head of Sales, la structuration de l'équipe commerciale est sûrement un sujet chaud en ce moment.`, sector: 'SaaS B2B', city: 'Paris', sourceUrl: 'https://www.welcometothejungle.com', verified: false },
-    { company: 'Descartes Underwriting', signalType: 'levée', detail: 'Levée de fonds récente (Série B)', icebreaker: `Félicitations pour la levée — c'est souvent le moment où l'acquisition doit passer à l'échelle.`, sector: 'Insurtech', city: 'Paris', sourceUrl: 'https://www.maddyness.com', verified: false },
-    { company: 'HarfangLab', signalType: 'recrutement', detail: 'Recrute plusieurs SDR (cybersécurité)', icebreaker: `HarfangLab scale son équipe SDR — la répétabilité du process outbound devient vite le nerf de la guerre.`, sector: 'Cybersécurité', city: 'Paris', sourceUrl: 'https://www.linkedin.com/jobs', verified: false },
-  ]
-}
+// ⚠️ PLUS DE DONNÉES DE DÉMONSTRATION. Avant, un échec d'appel retombait sur des
+// entreprises codées en dur (Pigment, Descartes…) présentées comme de vrais
+// résultats, badge SIREN inclus. C'était le pire des mensonges possibles.
+// Désormais : soit des résultats réels, soit une ERREUR EXPLICITE.
 
 // `q` (critères structurés) est optionnel : sans lui, on garde la thèse libre.
-export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): Promise<{ mock: boolean; mode: string; hits: SignalHit[]; thesis: string }> {
+export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): Promise<{ mode: string; hits: SignalHit[]; thesis: string; error?: string }> {
   const mode = signalsMode()
-  let hits: SignalHit[]
-  let mock = false
+  if (mode === 'mock') {
+    return { mode, hits: [], thesis, error: 'Aucune clé IA configurée : ajoute ANTHROPIC_API_KEY dans Admin → Connexions pour activer la veille par signal.' }
+  }
+
+  let hits: SignalHit[] = []
   try {
     if (mode === 'exa+claude') {
       const docs = await searchExa(thesis, 12, q ? { domains: domainsFor(q), months: q.months } : undefined)
       hits = docs.length ? await extractWithClaude(thesis, docs, max) : await callClaude(thesis, max, q)
-    } else if (mode === 'claude-web') {
-      hits = await callClaude(thesis, max, q)
     } else {
-      hits = mockHits(thesis); mock = true
+      hits = await callClaude(thesis, max, q)
     }
-  } catch {
-    hits = mockHits(thesis); mock = true
+  } catch (e: any) {
+    // On remonte l'erreur RÉELLE (modèle indisponible, outil web non activé, quota…)
+    // au lieu de fabriquer des résultats.
+    return { mode, hits: [], thesis, error: String(e?.message || e).slice(0, 300) }
   }
+
+  if (!hits.length) return { mode, hits: [], thesis }
 
   // Réconciliation SIREN — vérifie l'existence réelle, filtre les hallucinations.
   const reconciled = await Promise.all(
@@ -183,5 +183,5 @@ export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): P
         : { ...h, verified: false }
     }),
   )
-  return { mock, mode, hits: reconciled, thesis }
+  return { mode, hits: reconciled, thesis }
 }
