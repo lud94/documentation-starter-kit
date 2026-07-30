@@ -1122,20 +1122,38 @@ export async function importCompaniesToPipeline(companies: SourcedCompany[]) {
 
 // Importe une entreprise détectée par SIGNAL, en attachant le signal + l'icebreaker
 // au lead → l'accroche devient actionnable (fiche + pré-remplissage 1er message).
+// La vérification data.gouv se fait ICI (à l'ajout), pas pendant la recherche :
+// un seul appel, uniquement pour les entreprises réellement retenues.
 export async function importSignalToPipeline(hit: SignalHit) {
-  const siren = hit.siren || `sig-${hit.company}`
-  if (importedPlaceholders[siren]) return { added: 0, id: importedPlaceholders[siren] }
+  const key = hit.siren || `sig-${hit.company}`
+  if (importedPlaceholders[key]) return { added: 0, id: importedPlaceholders[key] }
+
+  // Vérification SIREN + enrichissement (dirigeant, effectif, site, NAF, ville).
+  // Aucun champ n'est prérempli si data.gouv ne renvoie rien.
+  let dg: any = null
+  try {
+    const r = await fetch(`/api/company/verify?name=${encodeURIComponent(hit.company)}`)
+    const j = await r.json()
+    if (j?.found) dg = j
+  } catch { /* réseau : on importe sans vérification */ }
+
+  const siren = dg?.siren || hit.siren
+  if (siren && importedPlaceholders[siren]) return { added: 0, id: importedPlaceholders[siren] }
   const id = newLeadId()
-  importedPlaceholders[siren] = id
+  importedPlaceholders[key] = id
+  if (siren) importedPlaceholders[siren] = id
   const lead: Lead = {
-    id, kind: 'account', firstName: '', lastName: '', title: '', company: hit.company,
+    id, kind: 'account', firstName: '', lastName: '', title: '',
+    company: dg?.name || hit.company,
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
-    siren: hit.siren, city: hit.city, active: hit.verified ? true : undefined,
+    siren, city: dg?.city || hit.city, active: dg ? dg.active : undefined,
+    naf: dg?.naf || undefined, dirigeant: dg?.dirigeant || undefined,
+    effectif: dg?.effectif || undefined, website: dg?.website || undefined,
     signal: hit.detail, icebreaker: hit.icebreaker,
   }
   LEADS[id] = lead
   await persistLead(lead)
-  return { added: 1, id }
+  return { added: 1, id, verified: !!dg, siren }
 }
 
 // Ajout manuel d'un lead (saisie ou depuis une URL LinkedIn).

@@ -201,9 +201,17 @@ export default function SourcingPage() {
     } finally { setSigRunning(false); setSigDone(true) }
   }
 
+  // Résultat de la vérification data.gouv, obtenue AU MOMENT de l'import.
+  const [sigCheck, setSigCheck] = useState<Record<string, { verified: boolean; siren?: string }>>({})
+  const [sigBusy, setSigBusy] = useState<string | null>(null)
+
   const importSignal = async (h: SignalHit) => {
-    await importSignalToPipeline(h)
-    setSigImported((s) => new Set(s).add(h.company))
+    setSigBusy(h.company)
+    try {
+      const r: any = await importSignalToPipeline(h)
+      setSigCheck((c) => ({ ...c, [h.company]: { verified: !!r?.verified, siren: r?.siren } }))
+      setSigImported((s) => new Set(s).add(h.company))
+    } finally { setSigBusy(null) }
   }
 
   const router = useRouter()
@@ -470,40 +478,49 @@ export default function SourcingPage() {
           {sigHits.length > 0 && (
             <div className="card p-5 max-w-3xl">
               <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
-                <h2 className="text-sm font-semibold text-gray-700">Entreprises détectées ({sigHits.filter((h) => h.verified).length} vérifiées)</h2>
+                <h2 className="text-sm font-semibold text-gray-700">Entreprises détectées ({sigHits.length})</h2>
                 <button onClick={makeSignalList} className="text-xs font-semibold text-indigo-600 border border-indigo-200 bg-indigo-50/50 px-2.5 py-1 rounded-lg hover:bg-indigo-50">+ Créer une liste depuis ces signaux</button>
               </div>
-              <p className="text-xs text-gray-400 mb-4">Chaque entreprise citée par l'agent est réconciliée sur un SIREN réel. Les non-vérifiées sont à contrôler manuellement (lien de recherche).</p>
+              <p className="text-xs text-gray-400 mb-4">Chaque résultat cite sa source et sa date — cliquez sur « Source » pour contrôler. La vérification SIREN (data.gouv) se déclenche <b>à l&apos;import</b>, uniquement sur les entreprises que vous retenez. Le bouton corbeille écarte un résultat hors cible.</p>
               <div className="space-y-2">
                 {sigHits.map((h) => (
                   <div key={h.company} className="p-3 rounded-xl border border-gray-100">
                     <div className="flex items-center gap-2 flex-wrap mb-1.5">
                       <span className="text-sm font-medium text-gray-800">{h.company}</span>
                       <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${SIG_STYLE[h.signalType]}`}>{h.signalType}</span>
-                      {h.verified
-                        ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">✓ existe (SIREN {h.siren})</span>
-                        : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">non vérifiée</span>}
+                      {sigCheck[h.company] && (sigCheck[h.company].verified
+                        ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">✓ SIREN {sigCheck[h.company].siren}</span>
+                        : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">SIREN introuvable</span>)}
                       {h.city && <span className="text-xs text-gray-400">{h.city}</span>}
                       {/* Écarter un résultat non pertinent (hors cible, doublon, faux positif). */}
                       <button onClick={() => setSigHits((hs) => hs.filter((x) => x.company !== h.company))} title="Écarter ce résultat" className="ml-auto text-gray-300 hover:text-red-500 flex-shrink-0">
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                       </button>
                     </div>
-                    <p className="text-xs text-gray-500 mb-2">📌 {h.detail}</p>
+                    <p className="text-xs text-gray-500 mb-1.5">📌 {h.detail}</p>
+                    {/* Traçabilité : ce que la source dit réellement (aucun champ inventé). */}
+                    {(h.date || h.amount || h.sourceName || h.role) && (
+                      <div className="flex items-center gap-2 flex-wrap mb-2 text-[11px] text-gray-400">
+                        {h.date && <span>🗓 {h.date}</span>}
+                        {h.amount && <span className="font-medium text-gray-500">💰 {h.amount}</span>}
+                        {h.role && <span>👤 {h.role}</span>}
+                        {h.sourceName && <span>📰 {h.sourceName}</span>}
+                      </div>
+                    )}
                     <div className="bg-indigo-50/40 border border-indigo-100 rounded-lg p-2.5 mb-2">
                       <p className="text-xs text-gray-700 italic">« {h.icebreaker} »</p>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <button onClick={() => copyIce(h)} className="text-xs font-medium text-gray-500 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition-colors">{copied === h.company ? '✓ Copié' : 'Copier l\'accroche'}</button>
                       {h.sourceUrl && <a href={h.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-indigo-600 hover:underline">Source</a>}
-                      {!h.verified && <a href={`https://www.google.com/search?q=${encodeURIComponent(h.company + ' ' + (h.city || ''))}`} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-amber-600 hover:underline">Vérifier</a>}
+                      <a href={`https://www.google.com/search?q=${encodeURIComponent(h.company + ' ' + (h.city || ''))}`} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-gray-400 hover:underline">Recouper</a>
                       {sigImported.has(h.company) ? (
                         // Point de repère : une entreprise importée devient un COMPTE
                         // dans Pipeline → Comptes (pas dans « Entreprises sourcées »,
                         // qui liste les résultats de la recherche par critères).
                         <a href={`/pipeline?tab=comptes&q=${encodeURIComponent(h.company)}`} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto bg-emerald-50 text-emerald-600 hover:bg-emerald-100">✓ Dans Pipeline → voir le compte</a>
                       ) : (
-                        <button onClick={() => importSignal(h)} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto transition-opacity gradient-brand text-white hover:opacity-90">+ Importer</button>
+                        <button onClick={() => importSignal(h)} disabled={sigBusy === h.company} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto transition-opacity gradient-brand text-white hover:opacity-90 disabled:opacity-50">{sigBusy === h.company ? 'Vérification…' : '+ Importer'}</button>
                       )}
                     </div>
                   </div>
