@@ -86,6 +86,59 @@ export interface CallOpts {
 
 export interface CallResult { text: string; cached?: boolean; blocked?: boolean; error?: string; truncated?: boolean }
 
+// ── Envoi TOLÉRANT AUX OPTIONS ────────────────────────────────────────────────
+// Leçon apprise à la dure (deux fois) : une option refusée par l'API — un domaine
+// que le crawler n'atteint pas, un outil non activé sur la clé, un réglage
+// inconnu du modèle — faisait échouer TOUTE la requête, donc zéro résultat à
+// l'écran. Désormais une option refusée est RETIRÉE et l'appel est rejoué.
+// Le service rend un résultat dégradé plutôt qu'une page d'erreur.
+const OPTIONAL_KEYS = ['output_config', 'thinking']
+
+async function post(key: string, body: any): Promise<{ ok: boolean; status: number; data: any; text: string }> {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) return { ok: false, status: r.status, data: null, text: await r.text() }
+  return { ok: true, status: r.status, data: await r.json(), text: '' }
+}
+
+async function send(key: string, body: any): Promise<any> {
+  let attempt = await post(key, body)
+  if (attempt.ok) return attempt.data
+  // Seul un 400 (requête invalide) est dégradable : un 401/429/500 n'est pas un
+  // problème d'option et doit remonter tel quel.
+  if (attempt.status !== 400) throw new Error(withBuild(`Anthropic ${attempt.status} — ${attempt.text.slice(0, 150)}`))
+
+  for (let i = 0; i < 3 && !attempt.ok; i++) {
+    const msg = attempt.text
+    const before = JSON.stringify(body)
+
+    // 1) L'API nomme un type d'outil qu'elle ne connaît pas → on retire cet outil.
+    if (Array.isArray(body.tools)) {
+      const rejected = body.tools.filter((t: any) => t?.type && msg.includes(t.type))
+      if (rejected.length && rejected.length < body.tools.length) {
+        body.tools = body.tools.filter((t: any) => !rejected.includes(t))
+      }
+    }
+    // 2) Un réglage optionnel est mis en cause → on l'enlève.
+    for (const k of OPTIONAL_KEYS) {
+      if (k in body && (msg.includes(k) || msg.includes('effort'))) delete body[k]
+    }
+    // 3) Rien d'identifiable : on retire tout ce qui est facultatif d'un coup.
+    if (JSON.stringify(body) === before) {
+      OPTIONAL_KEYS.forEach((k) => delete body[k])
+      if (Array.isArray(body.tools) && body.tools.length > 1) body.tools = [body.tools[0]]
+      else if (JSON.stringify(body) === before) break // plus rien à retirer
+    }
+    attempt = await post(key, body)
+  }
+
+  if (!attempt.ok) throw new Error(withBuild(`Anthropic ${attempt.status} — ${attempt.text.slice(0, 150)}`))
+  return attempt.data
+}
+
 // Appel Claude centralisé : budget → cache → API (avec prompt caching) → suivi conso.
 export async function callClaude(o: CallOpts): Promise<CallResult> {
   const key = getKey('ANTHROPIC_API_KEY')
@@ -126,13 +179,7 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
   // Sans ça, on récupérait une réponse tronquée — donc zéro entreprise, sans erreur.
   for (let turn = 0; turn < 4; turn++) {
     body.messages = messages
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    if (!r.ok) throw new Error(withBuild(`Anthropic ${r.status} — ${(await r.text()).slice(0, 150)}`))
-    const data = await r.json()
+    const data = await send(key, body)
 
     const u = data.usage || {}
     inTokens += (u.input_tokens || 0) + Math.round((u.cache_read_input_tokens || 0) * 0.1)
