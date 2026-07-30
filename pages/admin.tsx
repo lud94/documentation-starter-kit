@@ -928,6 +928,7 @@ const PERM_META: { key: keyof WorkspacePermissions; label: string; desc: string 
   { key: 'leads', label: 'Gestion des leads', desc: 'Statut, tags, import, sourcing' },
   { key: 'sequences', label: 'Séquences', desc: 'Créer / éditer et enrôler des leads' },
   { key: 'validate', label: 'Valider les actions du jour', desc: 'Mode revue des messages IA' },
+  { key: 'externalAI', label: 'IA externe (Claude/ChatGPT/Perplexity)', desc: 'Autoriser l\'envoi de contexte lead vers un service tiers depuis la fiche. À décocher si la politique du client l\'interdit.' },
 ]
 
 function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose: () => void; onSaved: () => void }) {
@@ -1000,7 +1001,7 @@ function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose
         <div className="space-y-2 mb-4">
           {PERM_META.map((p) => (
             <label key={p.key} className="flex items-start gap-3 p-2.5 rounded-xl border border-gray-100 cursor-pointer hover:bg-gray-50/50">
-              <input type="checkbox" checked={perms[p.key]} onChange={(e) => setPerms((v) => ({ ...v, [p.key]: e.target.checked }))} className="accent-indigo-500 mt-0.5" />
+              <input type="checkbox" checked={perms[p.key] !== false} onChange={(e) => setPerms((v) => ({ ...v, [p.key]: e.target.checked }))} className="accent-indigo-500 mt-0.5" />
               <span>
                 <span className="block text-sm font-medium text-gray-700">{p.label}</span>
                 <span className="block text-xs text-gray-400">{p.desc}</span>

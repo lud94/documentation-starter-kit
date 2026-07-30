@@ -269,6 +269,7 @@ export interface WorkspacePermissions {
   leads: boolean       // gérer ses leads (statut, tags, import, sourcing)
   sequences: boolean   // créer / éditer ses séquences
   validate: boolean    // valider les actions du jour (mode revue)
+  externalAI?: boolean // autoriser l'envoi de contexte vers une IA externe (Claude/ChatGPT/Perplexity)
 }
 export interface Workspace {
   id: string
@@ -282,7 +283,7 @@ export interface Workspace {
   hasClientAccess?: boolean
 }
 
-export const DEFAULT_PERMISSIONS: WorkspacePermissions = { messaging: true, leads: true, sequences: true, validate: true }
+export const DEFAULT_PERMISSIONS: WorkspacePermissions = { messaging: true, leads: true, sequences: true, validate: true, externalAI: true }
 
 // ── Missions (agentique) : contrat structuré → plan validé → exécution pas-à-pas ──
 export type MissionStatus = 'draft' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled'
