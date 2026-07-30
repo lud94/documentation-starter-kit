@@ -9,7 +9,7 @@ import type { SignalHit } from '../../types/prospector'
 import { searchExa, exaConfigured, type ExaDoc } from './exa'
 import { getKey } from './keystore'
 import { withBuild } from '../version'
-import { callClaude as llmCall, cacheKey } from './llm'
+import { callClaude as llmCall, cacheKey, pickModel } from './llm'
 
 const SIGNAL_AGENT = 'Recherche signal'
 
@@ -112,6 +112,23 @@ N'inclus AUCUNE entreprise dont le signal ne correspond pas à cette demande, m�
 signalType attendu : ${wanted.join(' ou ')}. Si tu ne trouves pas assez d'entreprises correspondantes, renvoie MOINS d'entrées — ne comble jamais avec autre chose.`
 }
 
+// web_fetch (ouvrir un article trouvé) n'existe que sur les modèles récents.
+// L'envoyer à un modèle qui ne le supporte pas ferait échouer toute la requête.
+function supportsWebFetch(model: string): boolean {
+  return /(opus-5|sonnet-5|fable-5|opus-4-[678]|sonnet-4-6)/i.test(model)
+}
+
+// Consigne d'EXHAUSTIVITÉ. Sans elle, l'agent se contente de 1 ou 2 exemples
+// « représentatifs » : c'est son comportement par défaut quand on lui demande de
+// trouver des entreprises. Or la presse spécialisée publie des récapitulatifs
+// mensuels qui en listent des dizaines — il faut lui dire d'aller les ouvrir.
+const RECALL = `MÉTHODE — vise l'EXHAUSTIVITÉ, pas l'illustration :
+1. Cherche d'abord les RÉCAPITULATIFS publiés par la presse spécialisée : « récap levées de fonds [mois] [année] », « les levées de la semaine », « baromètre des levées », « funding roundup France ».
+2. OUVRE ces articles (outil web_fetch) au lieu de te contenter de l'extrait de résultat : le corps de l'article liste souvent 20 à 40 entreprises que l'extrait ne montre pas.
+3. Énumère CHAQUE entreprise citée qui correspond au ciblage, une entrée par entreprise. Ne sélectionne pas « les plus intéressantes ».
+4. Complète ensuite par des recherches ciblées pour les entreprises absentes des récapitulatifs.
+Un résultat de 1 ou 2 entreprises sur une période de plusieurs mois est un ÉCHEC : il en existe beaucoup plus, cherche mieux.`
+
 // …et on le vérifie après coup (le prompt ne suffit pas toujours).
 function keepOnFocus(hits: SignalHit[], q?: SignalQuery): SignalHit[] {
   const defs = SIGNAL_TYPES.filter((t) => (q?.types || []).includes(t.key))
@@ -151,17 +168,24 @@ async function callClaude(thesis: string, max: number, q?: SignalQuery): Promise
   // son recrutement sur son propre site carrière, pas sur un jobboard connu).
   // Les sources de référence sont données comme PRÉFÉRENCE dans le prompt, et la
   // pertinence est garantie par focusInstruction() + keepOnFocus() côté serveur.
-  const tool: any = {
-    type: 'web_search_20250305', name: 'web_search', max_uses: 4,
+  const tools: any[] = [{
+    type: 'web_search_20250305', name: 'web_search', max_uses: 10,
     user_location: { type: 'approximate', country: 'FR' },
     blocked_domains: ['linkedin.com'], // pas de scraping LinkedIn (Unipile s'en charge)
+  }]
+  // ⚠️ LEVIER PRINCIPAL DE COUVERTURE : sans web_fetch, l'agent ne lit que les
+  // extraits de résultats de recherche — or un récapitulatif « les levées de juin »
+  // liste 30 entreprises dans le CORPS de l'article, invisible dans l'extrait.
+  // Avec web_fetch il ouvre l'article et les énumère toutes.
+  if (supportsWebFetch(pickModel('research'))) {
+    tools.push({ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6, blocked_domains: ['linkedin.com'] })
   }
   const prefer = q ? domainsFor(q) : []
   const hint = prefer.length ? `\n\nSources à privilégier quand elles couvrent le sujet (non exclusif — le site officiel ou la page carrière de l'entreprise est une source valable) : ${prefer.join(', ')}.` : ''
   const r = await llmCall({
-    task: 'research', agent: SIGNAL_AGENT, system: SYSTEM, tools: [tool],
-    messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}${hint}\n\n${jsonInstruction(max)}` }],
-    cache: cacheKey(['signal-web', thesis, String(max), 'v2']),
+    task: 'research', agent: SIGNAL_AGENT, system: SYSTEM, tools,
+    messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}${hint}\n\n${RECALL}\n\n${jsonInstruction(max)}` }],
+    cache: cacheKey(['signal-web', thesis, String(max), 'v3']),
   })
   // Un budget épuisé est une ERREUR, pas « aucun résultat » : on le dit.
   if (r.blocked) throw new Error(r.error || 'Appel IA refusé (budget).')
@@ -219,14 +243,25 @@ function parseHits(text: string): SignalHit[] {
 // résultats, badge SIREN inclus. C'était le pire des mensonges possibles.
 // Désormais : soit des résultats réels, soit une ERREUR EXPLICITE.
 
+// Découpe la fenêtre demandée en mois calendaires (3 passes au maximum, pour
+// borner le coût). Chaque passe cible un mois nommé — c'est ce qui permet à
+// l'agent de trouver le récapitulatif mensuel correspondant.
+function monthSlices(months: number): string[] {
+  const n = Math.min(Math.max(months, 1), 3)
+  const fmt = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' })
+  const now = new Date()
+  return Array.from({ length: n }, (_, i) => fmt.format(new Date(now.getFullYear(), now.getMonth() - i, 1)))
+}
+
 // `q` (critères structurés) est optionnel : sans lui, on garde la thèse libre.
-export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): Promise<{ mode: string; hits: SignalHit[]; thesis: string; error?: string }> {
+export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): Promise<{ mode: string; hits: SignalHit[]; thesis: string; passes?: number; error?: string }> {
   const mode = signalsMode()
   if (mode === 'mock') {
     return { mode, hits: [], thesis, error: 'Aucune clé IA configurée : ajoute ANTHROPIC_API_KEY dans Admin → Connexions pour activer la veille par signal.' }
   }
 
   let hits: SignalHit[] = []
+  let passes = 1
   try {
     if (mode === 'exa+claude') {
       // Exa : on garde le filtre de FRAÎCHEUR (le vrai apport : la fenêtre demandée
@@ -239,7 +274,21 @@ export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): P
       // on repasse par la recherche web plutôt que de rendre une page vide.
       if (!hits.length) hits = await callClaude(thesis, max, q)
     } else {
-      hits = await callClaude(thesis, max, q)
+      // Balayage par MOIS plutôt qu'une requête unique sur toute la période.
+      // Une seule requête « 3 derniers mois » rend 1 ou 2 entreprises ; trois
+      // requêtes « juin », « mai », « avril » en rendent bien davantage, parce que
+      // chacune tombe sur le récapitulatif mensuel correspondant.
+      const slices = monthSlices(q?.months || 6)
+      const per = Math.max(8, Math.ceil(max / slices.length))
+      const batches = await Promise.all(slices.map((label) =>
+        callClaude(`${thesis}\n\nPÉRIODE À COUVRIR POUR CETTE RECHERCHE : ${label}. Ne renvoie que des signaux datés de ce mois-là.`, per, q)
+          .catch(() => [] as SignalHit[]),
+      ))
+      hits = batches.flat()
+      passes = slices.length
+      // Si toutes les passes échouent, on relance une fois en global pour avoir
+      // une vraie erreur plutôt qu'un silence.
+      if (!hits.length) hits = await callClaude(thesis, max, q)
     }
   } catch (e: any) {
     // On remonte l'erreur RÉELLE (modèle indisponible, outil web non activé, quota…)
@@ -255,5 +304,5 @@ export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): P
   // ralentissait tout (cause de timeout) et marquait « non vérifiée » des sociétés
   // réelles dont le nom ne matchait pas exactement. La vérification SIREN est un
   // geste d'AJOUT, pas de découverte → elle se fait à l'import (voir capabilities).
-  return { mode, hits: clean, thesis }
+  return { mode, hits: clean, thesis, passes }
 }

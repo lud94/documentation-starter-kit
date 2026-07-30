@@ -33,7 +33,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!thesis || thesis.length < 5) return res.status(400).json({ error: 'Précise au moins un type de signal ou une thèse.' })
 
   try {
-    res.status(200).json(await searchSignals(thesis, 8, q))
+    res.status(200).json(await searchSignals(thesis, 25, q))
   } catch (e: any) {
     res.status(502).json({ error: e?.message || 'Erreur agent signaux' })
   }

@@ -96,6 +96,7 @@ export default function SourcingPage() {
   const [sigRunning, setSigRunning] = useState(false)
   const [sigHits, setSigHits] = useState<SignalHit[]>([])
   const [sigMode, setSigMode] = useState('')
+  const [sigPasses, setSigPasses] = useState(1)
   const [sigError, setSigError] = useState<string | null>(null)
   const [sigImported, setSigImported] = useState<Set<string>>(new Set())
   // Critères structurés de la recherche par signal
@@ -197,7 +198,7 @@ export default function SourcingPage() {
       let d: any = null
       try { d = JSON.parse(raw) } catch { throw new Error(res.ok ? 'Réponse illisible du serveur' : `Le serveur a coupé (HTTP ${res.status}) — recherche trop longue, réduis la période ou les critères.`) }
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
-      setSigHits(d.hits || []); setSigMode(d.mode || ''); setSigBuilt(d.thesis || '')
+      setSigHits(d.hits || []); setSigMode(d.mode || ''); setSigBuilt(d.thesis || ''); setSigPasses(d.passes || 1)
       // Plus de données de démonstration : une erreur est une erreur, on l'affiche.
       if (d.error) setSigError(d.error)
     } catch (e: any) {
@@ -475,6 +476,7 @@ export default function SourcingPage() {
                 {sigMode === 'exa+claude'
                   ? '⚡ Capteur Exa → cerveau Claude'
                   : '⚡ Claude web seul (ajoute EXA_API_KEY pour un capteur plus frais et un meilleur ciblage des sources)'}
+                {sigPasses > 1 && ` · ${sigPasses} passes (une par mois) pour couvrir la période`}
               </p>
             )}
           </div>
