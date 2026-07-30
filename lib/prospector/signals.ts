@@ -28,10 +28,10 @@ export function signalsMode(): 'exa+claude' | 'claude-web' | 'mock' {
 // au lieu d'une thèse en texte libre.
 export interface SignalTypeDef { key: string; label: string; group: 'financement' | 'croissance' | 'direction'; terms: string; domains: string[] }
 
-// ⚠️ Ces listes servent de `allowed_domains` à l'outil de recherche web
-// d'Anthropic, qui REFUSE (400) tout domaine bloquant son crawler. Ne jamais y
-// ajouter un domaine sans l'avoir testé (bfmtv.com et latribune.fr sont refusés).
-// LinkedIn est volontairement exclu (pas de scraping LinkedIn).
+// Sources de RÉFÉRENCE, utilisées comme simple préférence dans le prompt (et comme
+// filtre côté Exa). Jamais en `allowed_domains` sur la recherche web d'Anthropic :
+// elle refuse (400) tout domaine bloquant son crawler — bfmtv.com et latribune.fr
+// l'ont fait tomber. LinkedIn est exclu (pas de scraping LinkedIn).
 const PRESS = ['maddyness.com', 'frenchweb.fr', 'usine-digitale.fr', 'eu-startups.com', 'journaldunet.com', 'lejournaldesentreprises.com', 'sifted.eu', 'tech.eu']
 const JOBS = ['welcometothejungle.com', 'hellowork.com', 'apec.fr', 'cadremploi.fr', 'indeed.fr']
 
@@ -143,30 +143,25 @@ async function callClaude(thesis: string, max: number, q?: SignalQuery): Promise
   if (!key) return []
   // Sources ciblées selon le type de signal (presse pour les levées, jobboards
   // pour les recrutements) → moins de bruit, résultats plus fiables.
-  const allowed = q ? domainsFor(q) : []
-  const prompt = `Thèse: ${thesis}${focusInstruction(q)}\n\n${jsonInstruction(max)}`
-  const run = (domains: string[]) => {
-    const tool: any = { type: 'web_search_20250305', name: 'web_search', max_uses: 4, user_location: { type: 'approximate', country: 'FR' } }
-    if (domains.length) tool.allowed_domains = domains
-    // Sans liste blanche, on interdit au moins LinkedIn (pas de scraping LinkedIn).
-    else tool.blocked_domains = ['linkedin.com']
-    return llmCall({
-      task: 'research', agent: SIGNAL_AGENT, system: SYSTEM, tools: [tool],
-      messages: [{ role: 'user', content: prompt }],
-      cache: cacheKey(['signal-web', thesis, String(max), domains.length ? 'allow' : 'open']),
-    })
+  // ── Choix d'architecture (volontaire) ──
+  // On NE met PAS de `allowed_domains` : une liste blanche est un point de
+  // défaillance unique (un seul domaine bloquant le crawler d'Anthropic = 400 sur
+  // TOUTE la requête) et elle amputerait la couverture (une ESN annonce souvent
+  // son recrutement sur son propre site carrière, pas sur un jobboard connu).
+  // Les sources de référence sont données comme PRÉFÉRENCE dans le prompt, et la
+  // pertinence est garantie par focusInstruction() + keepOnFocus() côté serveur.
+  const tool: any = {
+    type: 'web_search_20250305', name: 'web_search', max_uses: 4,
+    user_location: { type: 'approximate', country: 'FR' },
+    blocked_domains: ['linkedin.com'], // pas de scraping LinkedIn (Unipile s'en charge)
   }
-
-  let r
-  try {
-    r = await run(allowed)
-  } catch (e: any) {
-    // Anthropic renvoie un 400 si l'un des domaines de la liste blanche bloque son
-    // crawler. Plutôt que d'échouer, on relance en recherche ouverte (le
-    // post-filtre de ciblage garde la qualité) — l'utilisateur voit des résultats.
-    if (!/not accessible|invalid_request_error/i.test(String(e?.message || ''))) throw e
-    r = await run([])
-  }
+  const prefer = q ? domainsFor(q) : []
+  const hint = prefer.length ? `\n\nSources à privilégier quand elles couvrent le sujet (non exclusif — le site officiel ou la page carrière de l'entreprise est une source valable) : ${prefer.join(', ')}.` : ''
+  const r = await llmCall({
+    task: 'research', agent: SIGNAL_AGENT, system: SYSTEM, tools: [tool],
+    messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}${hint}\n\n${jsonInstruction(max)}` }],
+    cache: cacheKey(['signal-web', thesis, String(max), 'v2']),
+  })
   if (r.blocked) return []
   return parseHits(r.text)
 }
