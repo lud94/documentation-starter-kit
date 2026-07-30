@@ -11,12 +11,6 @@ export function exaConfigured(): boolean {
   return !!getKey('EXA_API_KEY')
 }
 
-// Domaines où vivent les signaux (annonces emploi FR + presse startup/levées).
-const SIGNAL_DOMAINS = [
-  'welcometothejungle.com', 'linkedin.com', 'indeed.fr', 'hellowork.com',
-  'maddyness.com', 'frenchweb.fr', 'lesechos.fr', 'usine-digitale.fr', 'eu-startups.com',
-]
-
 // `opts` permet de cibler les sources et la fenêtre de fraîcheur selon le type de
 // signal recherché (presse pour les levées, jobboards pour les recrutements).
 export async function searchExa(thesis: string, numResults = 12, opts?: { domains?: string[]; months?: number }): Promise<ExaDoc[]> {
@@ -31,7 +25,12 @@ export async function searchExa(thesis: string, numResults = 12, opts?: { domain
       query: thesis,
       type: 'auto',
       numResults,
-      includeDomains: opts?.domains?.length ? opts.domains : SIGNAL_DOMAINS,
+      // Liste blanche uniquement si l'appelant en demande une : par défaut, recherche
+      // large (le site carrière d'une ESN est une source légitime), la pertinence
+      // étant assurée par les post-filtres. Sans domaines, on exclut LinkedIn.
+      ...(opts?.domains?.length
+        ? { includeDomains: opts.domains }
+        : { excludeDomains: ['linkedin.com'] }),
       startPublishedDate: recentIso(days),
       contents: { text: { maxCharacters: 1200 } },
     }),

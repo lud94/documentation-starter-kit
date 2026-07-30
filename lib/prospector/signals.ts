@@ -223,7 +223,11 @@ export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): P
   let hits: SignalHit[] = []
   try {
     if (mode === 'exa+claude') {
-      const docs = await searchExa(thesis, 12, q ? { domains: domainsFor(q), months: q.months } : undefined)
+      // Exa : on garde le filtre de FRAÎCHEUR (le vrai apport : la fenêtre demandée
+      // devient une contrainte réelle, pas un souhait adressé au modèle) mais PAS de
+      // liste blanche de domaines — un signal se trouve aussi sur le site de
+      // l'entreprise. Le tri de pertinence se fait par keepOnFocus() en sortie.
+      const docs = await searchExa(thesis, 12, { months: q?.months })
       hits = docs.length ? await extractWithClaude(thesis, docs, max, q) : await callClaude(thesis, max, q)
     } else {
       hits = await callClaude(thesis, max, q)
