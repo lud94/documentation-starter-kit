@@ -5,8 +5,17 @@ Il décrit **ce qui existe dans le code**, en distinguant systématiquement ce q
 fonctionne réellement, ce qui attend une clé d'API, et ce qui est encore simulé.
 
 Dernière mise à jour : branche `claude/elegant-gates-jen674`.
-⚠️ **La production (`main`) est en retard de 7 commits sur cette branche.** Plusieurs
-correctifs décrits ici sont compilés mais n'ont jamais été exécutés.
+
+⚠️ **Écart production / branche — constat daté du 31 juillet 2026.** Au moment de
+l'audit, `main` était en retard de **8 commits** sur cette branche, et les correctifs
+décrits ici étaient compilés sans avoir jamais été exécutés. **Ce chiffre se périme à
+chaque commit** : ne pas le citer sans l'avoir revérifié.
+
+```sh
+git fetch origin
+git rev-list --left-right --count origin/main...claude/elegant-gates-jen674
+git log --oneline origin/main..claude/elegant-gates-jen674
+```
 
 ---
 
@@ -44,26 +53,36 @@ asynchrone gèle la fonction et le reste ne s'exécute jamais. Rencontré deux f
 
 ## 3. Modèle de persistance — point important pour toute refonte
 
-Il n'y a **pas de schéma relationnel métier**. Presque tout vit dans un magasin
-documentaire générique :
+Il n'y a **pas de schéma relationnel métier**. Les objets vivent en JSONB, répartis
+entre une table dédiée aux leads (voir ci-dessous) et un magasin documentaire
+générique :
 
 ```sql
 prospector_store (kind text, id text, workspace_id text, data jsonb, updated_at)
 -- clé primaire (kind, id, workspace_id)
 ```
 
-`kind` vaut `lead`, `sequence`, `list`, `mission`, `task`, `note`, `aicache`… et
-`data` porte l'objet JSON complet. Il existe un repli en mémoire quand Supabase
+`kind` vaut `list`, `sequence`, `mission`, `task`, `aicache`, `tgpending`, `wsver`… et
+`data` porte l'objet JSON complet. **Il n'existe aucun `kind` `lead`, `account` ou
+`contact`** : ces objets vivent dans `prospector_leads`. Il existe un repli en mémoire quand Supabase
 n'est pas configuré.
 
 Tables dédiées existantes :
 
 | Table | Rôle |
 |---|---|
+| `prospector_leads` | **comptes ET contacts** — une ligne par `Lead`, `data` en JSONB. C'est ici que vit le cœur métier, **pas** dans `prospector_store` |
 | `prospector_settings` | keystore durable (clés API, hash du mot de passe, secret MFA) |
 | `prospector_workspaces` | **espaces clients** — c'est déjà le concept de « tenant » |
 | `prospector_pappers_cache` | cache par SIREN |
 | `prospector_usage` | compteurs de consommation |
+
+⚠️ **Défaut connu, classé P0** : la clé primaire de `prospector_leads` est `id` **seul**
+(`supabase/schema.sql:43`), alors que `prospector_store` est partitionné par
+`(kind, id, workspace_id)`. Combiné à l'`onConflict: 'id'` de `lib/supabase/leads.ts`,
+une écriture sur un identifiant existant écrase la ligne **et déplace son
+`workspace_id`**. La lecture et la suppression filtrent correctement par espace ;
+l'écriture, non.
 
 **Conséquence pour un projet de couche signaux** : introduire des tables
 relationnelles (`companies`, `signals`, `signal_evidence`…) n'est pas « ajouter des
@@ -264,11 +283,16 @@ un jeton dérivé par HMAC. Non publiée au Chrome Web Store (prévu en « non r
 5. **Séquences non envoyées** — la mécanique existe, le canal manque.
 6. **RGPD non traité** — aucun `person_ref`, aucune durée de conservation, aucune
    purge, aucun registre des traitements. Bloquant avant tout suivi de personnes.
-7. **La RLS Supabase n'est pas en place** — aujourd'hui sans conséquence, puisque le
-   navigateur ne parle jamais à Supabase directement ; ce qui protège réellement,
-   c'est que la clé de service ne quitte pas le serveur.
-8. **Écart production / branche** — 7 commits non fusionnés, dont tous les correctifs
-   de la recherche par signal.
+7. **RLS activée, mais aucune politique** — correction d'une erreur de la version
+   précédente de ce document, qui affirmait l'inverse. `row level security` est bien
+   activé sur les six tables (`supabase/schema.sql:49, 60, 64-67`), sans aucune
+   policy publique. La clé de service contourne la RLS par construction : ce qui
+   protège réellement aujourd'hui, c'est que le navigateur ne joint jamais Supabase
+   et que cette clé ne quitte pas le serveur. Des politiques deviendront nécessaires
+   le jour où un accès client direct sera introduit.
+8. **Écart production / branche** — commits non fusionnés au 31/07/2026 (voir
+   l'en-tête pour la commande de vérification), dont tous les correctifs de la
+   recherche par signal.
 
 ---
 
