@@ -2,6 +2,7 @@
 // Table `prospector_settings (key text primary key, value text, updated_at timestamptz)`.
 // Repli silencieux si Supabase non configuré ou en erreur → le keystore mémoire prend le relais.
 import { supabase, supabaseConfigured } from './client'
+import { writeAllowed } from '../env'
 
 const TABLE = 'prospector_settings'
 
@@ -20,6 +21,7 @@ export async function loadAllSettings(): Promise<Record<string, string>> {
 }
 
 export async function saveSetting(key: string, value: string): Promise<boolean> {
+  if (!writeAllowed('prospector_settings')) return false
   const sb = supabase()
   if (!sb) return false
   try {

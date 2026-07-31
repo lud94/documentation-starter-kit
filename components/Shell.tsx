@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { BUILD } from '../lib/version'
+import EnvironmentBanner from './EnvironmentBanner'
 import { useEffect, useState } from 'react'
 import CreateLeadModal from './CreateLeadModal'
 import Jarvis from './Jarvis'
@@ -104,7 +105,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen flex">
+    <div className="min-h-screen flex flex-col">
+      <EnvironmentBanner />
+      <div className="flex-1 flex">
       {/* Sidebar */}
       <aside className="w-60 bg-white border-r border-gray-100 flex flex-col fixed inset-y-0 left-0 z-40">
         {/* Logo + workspace */}
@@ -303,6 +306,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
       {modal && modal !== 'sourcing' && <CreateLeadModal mode={modal} onClose={() => setModal(null)} />}
       <Jarvis open={jarvisOpen} onClose={() => setJarvisOpen(false)} />
+      </div>
     </div>
   )
 }

@@ -24,3 +24,8 @@ export function withBuild(message: string): string {
   const tag = `[build ${buildTag()}]`
   return message.includes(tag) ? message : `${message} ${tag}`
 }
+
+// L'environnement métier ne se déduit PAS de VERCEL_ENV : il est déclaré.
+// La logique vit dans lib/env.ts, ce module ne fait que la réexporter pour les
+// appelants qui n'ont besoin que de l'étiquette.
+export { appEnv, projectRole, envSummary } from './env'

@@ -2,6 +2,7 @@
 // Table `prospector_store (kind text, id text, workspace_id text, data jsonb, updated_at)`
 // clé primaire (kind, id, workspace_id). Repli mémoire (globalThis) sans Supabase.
 import { supabase } from './client'
+import { writeAllowed } from '../env'
 
 const TABLE = 'prospector_store'
 const g = globalThis as any
@@ -24,6 +25,7 @@ export async function listItems<T = any>(kind: string, ws: string): Promise<T[]>
 }
 
 export async function upsertItem(kind: string, id: string, data: any, ws: string): Promise<boolean> {
+  if (!writeAllowed('prospector_store')) return false
   const sb = supabase()
   if (!sb) { mem.set(key(kind, ws, id), data); return true }
   try {
@@ -33,6 +35,7 @@ export async function upsertItem(kind: string, id: string, data: any, ws: string
 }
 
 export async function deleteItem(kind: string, id: string, ws: string): Promise<boolean> {
+  if (!writeAllowed('prospector_store')) return false
   const sb = supabase()
   if (!sb) { mem.delete(key(kind, ws, id)); return true }
   try {

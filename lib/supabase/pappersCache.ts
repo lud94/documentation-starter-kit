@@ -5,6 +5,7 @@
 // Repli mémoire (globalThis) si Supabase non configuré.
 import type { ResolvedContact } from '../../types/prospector'
 import { supabase } from './client'
+import { writeAllowed } from '../env'
 
 const CACHE = 'prospector_pappers_cache'
 const USAGE = 'prospector_usage'
@@ -23,6 +24,7 @@ export async function getCachedDirigeants(siren: string): Promise<ResolvedContac
 }
 
 export async function setCachedDirigeants(siren: string, contacts: ResolvedContact[]): Promise<void> {
+  if (!writeAllowed('prospector_pappers_cache')) return
   const sb = supabase()
   if (!sb) { memCache.set(siren, contacts); return }
   try { await sb.from(CACHE).upsert({ siren, data: contacts, created_at: new Date().toISOString() }, { onConflict: 'siren' }) } catch { /* noop */ }
@@ -30,6 +32,9 @@ export async function setCachedDirigeants(siren: string, contacts: ResolvedConta
 
 // Incrémente un compteur d'usage (ex. appels Pappers réels) et renvoie le total.
 export async function bumpUsage(key: string, by = 1): Promise<number> {
+  // Compteur d'usage : en cas de blocage, on retombe sur le compteur mémoire
+  // plutôt que de perdre l'information ou de faire échouer l'appelant.
+  if (!writeAllowed('prospector_usage')) { memUsage[key] = (memUsage[key] || 0) + by; return memUsage[key] }
   const sb = supabase()
   if (!sb) { memUsage[key] = (memUsage[key] || 0) + by; return memUsage[key] }
   try {

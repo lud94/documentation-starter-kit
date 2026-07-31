@@ -4,6 +4,7 @@
 // Le workspace est déterminé par le serveur (session + espace actif), jamais par le client.
 import type { Lead } from '../../types/prospector'
 import { supabase } from './client'
+import { writeAllowed } from '../env'
 
 const TABLE = 'prospector_leads'
 const g = globalThis as any
@@ -20,6 +21,7 @@ export async function listLeads(ws: string): Promise<Lead[]> {
 }
 
 export async function upsertLead(lead: Lead, ws: string): Promise<boolean> {
+  if (!writeAllowed('prospector_leads')) return false
   const sb = supabase()
   if (!sb) { mem.set(lead.id, { lead, ws }); return true }
   try {
@@ -30,6 +32,7 @@ export async function upsertLead(lead: Lead, ws: string): Promise<boolean> {
 
 // Suppression cloisonnée : on ne supprime que dans l'espace courant.
 export async function deleteLead(id: string, ws: string): Promise<boolean> {
+  if (!writeAllowed('prospector_leads')) return false
   const sb = supabase()
   if (!sb) { const r = mem.get(id); if (r && r.ws !== ws) return false; mem.delete(id); return true }
   try {
