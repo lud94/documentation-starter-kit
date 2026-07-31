@@ -3,3 +3,5 @@ node_modules
 
 # Artefact de compilation incrémentale TypeScript (tsc --noEmit)
 tsconfig.tsbuildinfo
+supabase/.temp/
+supabase/.branches/

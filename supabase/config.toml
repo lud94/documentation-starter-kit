@@ -1,0 +1,28 @@
+# Configuration Supabase CLI — développement local uniquement.
+#
+# ⚠️ AUCUNE référence de projet distant ici. Le rattachement au projet Supabase
+# se fait par `supabase link --project-ref <ref>`, qui écrit dans supabase/.temp/
+# (ignoré par git). Aucun identifiant de projet, aucune URL, aucun secret ne doit
+# apparaître dans ce fichier versionné.
+
+[db]
+# Doit correspondre à la version PostgreSQL du projet distant.
+# À CONFIRMER lors du lot A3b : non vérifiable sans accès au projet.
+major_version = 15
+
+[db.pooler]
+enabled = false
+
+# Services non utilisés en local pour ce dépôt : la plateforme n'accède à Supabase
+# que côté serveur, avec la clé de service, sans Auth ni Storage ni Realtime.
+[auth]
+enabled = false
+
+[storage]
+enabled = false
+
+[realtime]
+enabled = false
+
+[studio]
+enabled = true

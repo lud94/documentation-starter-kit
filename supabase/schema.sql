@@ -1,3 +1,15 @@
+-- ⚠️ FICHIER HÉRITÉ — NE PLUS ÉDITER.
+--
+-- La source de vérité du schéma est désormais `supabase/migrations/`, gérée par le
+-- CLI Supabase (voir supabase/README.md). Ce fichier est conservé UNIQUEMENT comme
+-- référence historique, jusqu'à ce que la baseline réelle ait été récupérée depuis
+-- le projet distant (`supabase db pull`), qu'une base locale ait été reconstruite à
+-- partir d'elle et que la comparaison ait été concluante. Il sera supprimé à ce
+-- moment-là, et pas avant : mieux vaut un fichier hérité clairement marqué qu'une
+-- baseline fabriquée à partir d'hypothèses.
+--
+-- Toute évolution de schéma passe par une nouvelle migration, jamais par ce fichier.
+
 -- Schéma Supabase pour Prospector — à exécuter dans Supabase → SQL Editor.
 -- Persiste les réglages (clés API, hash mot de passe, secret MFA) et les espaces clients.
 -- Accès uniquement via la service_role key côté serveur (jamais exposée au navigateur).
