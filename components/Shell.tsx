@@ -7,6 +7,7 @@ import CreateLeadModal from './CreateLeadModal'
 import Jarvis from './Jarvis'
 import { getNotifications, markNotificationsRead } from '../lib/prospector/capabilities'
 import type { Notification } from '../lib/prospector/capabilities'
+import { invalidateLeads } from '../lib/prospector/capabilities'
 
 const NOTIF_ICON: Record<Notification['type'], string> = {
   reply: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.9 9.9 0 01-4-.8L3 20l.8-3.2A7.9 7.9 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z',
@@ -83,6 +84,11 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const switchWs = async (id: string) => {
     setWsOpen(false)
     await fetch('/api/workspaces/active', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ws: id }) })
+    // Invalidation EXPLICITE du cache de leads avant de changer d'espace. La
+    // navigation dure ci-dessous le détruit déjà, mais s'appuyer sur cet effet de
+    // bord serait fragile : une future navigation côté client ferait apparaître
+    // les leads d'un espace dans un autre, sans erreur visible.
+    invalidateLeads()
     window.location.href = '/pipeline' // recharge dans le nouvel espace
   }
   useEffect(() => {

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../types/prospector'
 import { PromptDialog } from '../components/Dialog'
-import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, takeWriteRejections, rejectionLabel, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { PersonHit } from '../lib/prospector/capabilities'
 
@@ -207,6 +207,13 @@ export default function SourcingPage() {
   }
 
   // Résultat de la vérification data.gouv, obtenue AU MOMENT de l'import.
+  // Refus d'écriture remontés par la couche de persistance : ils DOIVENT être
+  // affichés, sinon l'utilisateur croit avoir importé.
+  const [writeRejected, setWriteRejected] = useState<string | null>(null)
+  const reportRejections = () => {
+    const r = takeWriteRejections()
+    setWriteRejected(r.length ? `${r.length} enregistrement(s) refusé(s) — ${rejectionLabel(r[0].reason)}. Rien n'a été écrasé.` : null)
+  }
   const [sigCheck, setSigCheck] = useState<Record<string, { verified: boolean; siren?: string }>>({})
   const [sigBusy, setSigBusy] = useState<string | null>(null)
 
@@ -214,6 +221,7 @@ export default function SourcingPage() {
     setSigBusy(h.company)
     try {
       const r: any = await importSignalToPipeline(h)
+      reportRejections()
       setSigCheck((c) => ({ ...c, [h.company]: { verified: !!r?.verified, siren: r?.siren } }))
       setSigImported((s) => new Set(s).add(h.company))
     } finally { setSigBusy(null) }
@@ -227,6 +235,7 @@ export default function SourcingPage() {
     setSignalListOpen(false)
     const ids: string[] = []
     for (const h of sigHits) { const r = await importSignalToPipeline(h); if (r?.id) ids.push(r.id) }
+    reportRejections()
     setSigImported((s) => { const n = new Set(s); sigHits.forEach((h) => n.add(h.company)); return n })
     await createList(name, ids, 'signaux Exa/Claude')
     setSignalListMsg(`Liste « ${name} » créée depuis les signaux.`); setTimeout(() => setSignalListMsg(null), 4000)
@@ -252,6 +261,7 @@ export default function SourcingPage() {
 
   const importOne = async (c: SourcedCompany) => {
     await importCompaniesToPipeline([c])
+    reportRejections()
     setImported((s) => new Set(s).add(c.id))
   }
   const importAll = async () => {
@@ -480,6 +490,12 @@ export default function SourcingPage() {
               </p>
             )}
           </div>
+
+          {writeRejected && (
+            <div className="card p-4 max-w-3xl border-l-4 border-red-500">
+              <p className="text-xs text-red-600 font-semibold">⚠️ {writeRejected}</p>
+            </div>
+          )}
 
           {sigHits.length > 0 && (
             <div className="card p-5 max-w-3xl">

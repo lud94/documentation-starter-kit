@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, isAccountLead, PERSONAS , takeWriteRejections, rejectionLabel} from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
@@ -311,7 +311,14 @@ export default function PipelinePage() {
 
   const router = useRouter()
   // force=true → resynchronise avec le serveur (import via l'extension, etc.).
-  const refresh = (force = false) => getLeads(force).then((l) => { setLeads(l); setLoading(false) })
+  // Refus d'écriture : ils doivent être visibles. Un refus silencieux laisserait
+  // croire à un enregistrement réussi — exactement le défaut qu'on corrige.
+  const [writeRejected, setWriteRejected] = useState<string | null>(null)
+  const refresh = (force = false) => {
+    const r = takeWriteRejections()
+    setWriteRejected(r.length ? `${r.length} enregistrement(s) refusé(s) — ${rejectionLabel(r[0].reason)}. Rien n'a été écrasé.` : null)
+    return getLeads(force).then((l) => { setLeads(l); setLoading(false) })
+  }
   useEffect(() => { refresh() }, [])
   // Ouverture ciblée depuis une fiche contact : ?tab=comptes&q=<entreprise>.
   useEffect(() => {
@@ -375,6 +382,12 @@ export default function PipelinePage() {
   return (
     <>
       <Head><title>Prospector · Pipeline & Leads</title></Head>
+
+      {writeRejected && (
+        <div className="card p-4 mb-4 border-l-4 border-red-500">
+          <p className="text-xs text-red-600 font-semibold">⚠️ {writeRejected}</p>
+        </div>
+      )}
 
       <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
         <div>

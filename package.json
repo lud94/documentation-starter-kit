@@ -13,7 +13,10 @@
     "db:status": "supabase migration list",
     "db:push": "supabase db push",
     "db:diff": "supabase db diff",
-    "db:reset": "supabase db reset"
+    "db:reset": "supabase db reset",
+    "db:test:up": "supabase start && node scripts/apply-test-fixture.mjs",
+    "db:test:down": "supabase stop --no-backup",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

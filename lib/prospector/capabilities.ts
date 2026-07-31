@@ -94,8 +94,46 @@ export function personaFromTitle(title: string): string {
 
 // Persistance (Supabase via API). Le store mémoire reste la source de travail,
 // hydraté depuis le serveur et écrit en write-through à chaque création/màj.
-async function persistLead(lead: Lead) {
-  try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead }) }) } catch { /* offline → mémoire */ }
+export type WriteRejection = { id: string; reason: string }
+
+// Dernier refus d'écriture observé, exposé aux écrans pour affichage. Un refus
+// silencieux serait pire que l'ancien défaut : l'utilisateur croirait avoir
+// enregistré.
+let lastRejections: WriteRejection[] = []
+export function takeWriteRejections(): WriteRejection[] { const r = lastRejections; lastRejections = []; return r }
+export function rejectionLabel(reason: string): string {
+  return reason === 'workspace_conflict' ? "refusé : appartient à un autre espace de travail"
+    : reason === 'contention' ? 'écriture concurrente, à réessayer'
+    : reason === 'env_blocked' ? "écritures suspendues (configuration d'environnement)"
+    : "échec d'enregistrement"
+}
+
+async function persistLead(lead: Lead): Promise<boolean> {
+  try {
+    const r = await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead }) })
+    const d = await r.json().catch(() => null)
+    if (d?.rejected?.length) { lastRejections = lastRejections.concat(d.rejected); return false }
+    return r.ok
+  } catch { return false /* hors ligne → mémoire seule */ }
+}
+
+// Invalidation EXPLICITE du cache de leads. Aujourd'hui le changement d'espace
+// provoque une navigation dure (components/Shell.tsx), qui détruit ce cache par
+// effet de bord. On ne s'appuie pas sur cet effet : une navigation côté client
+// le supprimerait sans que personne ne s'en aperçoive, et le cache d'un espace
+// serait alors présenté dans un autre.
+async function persistLeads(leads: Lead[]): Promise<number> {
+  try {
+    const r = await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads }) })
+    const d = await r.json().catch(() => null)
+    if (d?.rejected?.length) lastRejections = lastRejections.concat(d.rejected)
+    return d?.saved ?? 0
+  } catch { return 0 }
+}
+
+export function invalidateLeads(): void {
+  for (const k of Object.keys(LEADS)) delete LEADS[k]
+  leadsHydrated = null
 }
 let leadsHydrated: Promise<void> | null = null
 async function hydrateLeads(force = false): Promise<void> {
@@ -1116,7 +1154,7 @@ export async function importCompaniesToPipeline(companies: SourcedCompany[]) {
     }
     LEADS[id] = lead; created.push(lead)
   })
-  if (created.length) { try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ } }
+  if (created.length) await persistLeads(created)
   return { added: created.length, skipped: companies.length - created.length }
 }
 
@@ -1201,7 +1239,7 @@ export async function addLeadsFromCsv(csv: string): Promise<{ added: number }> {
     LEADS[lead.id] = lead; created.push(lead)
   })
   if (created.length) {
-    try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ }
+    await persistLeads(created)
   }
   return { added: created.length }
 }
@@ -1231,7 +1269,7 @@ export async function addContactsToPipeline(company: SourcedCompany, contacts: R
     }
     LEADS[lead.id] = lead; created.push(lead)
   })
-  if (created.length) { try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ } }
+  if (created.length) await persistLeads(created)
   return { added: created.length, ids: created.map((l) => l.id) }
 }
 

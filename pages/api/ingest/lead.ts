@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { getKey, hydrateKeystore } from '../../../lib/prospector/keystore'
-import { upsertLead } from '../../../lib/supabase/leads'
+import { upsertLeadChecked } from '../../../lib/supabase/leads'
 import { lookupByName } from '../../../lib/prospector/datagouv'
 import { identifyLead } from '../../../lib/prospector/identify'
 import { resolveWorkspaceByToken } from '../../../lib/prospector/wstoken'
@@ -69,7 +69,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     } catch { /* vérif best-effort */ }
   }
 
-  const ok = await upsertLead(lead, ws)
-  res.status(ok ? 200 : 502).json({ ok, id: lead.id })
+  const r = await upsertLeadChecked(lead, ws)
+  if (r.ok) return res.status(200).json({ ok: true, id: lead.id })
+
+  // Un conflit d'espace est un refus MÉTIER (409), pas une panne. La contention et
+  // le blocage par le contrat d'environnement sont TRANSITOIRES (503). Le reste est
+  // une erreur de notre persistance (500) — jamais 502, qui laisserait croire à une
+  // défaillance d'un service amont.
+  const status = r.reason === 'workspace_conflict' ? 409
+    : r.reason === 'contention' || r.reason === 'env_blocked' ? 503
+    : 500
+  const message = r.reason === 'workspace_conflict'
+    ? "Cet identifiant appartient déjà à un autre espace de travail : l'écriture est refusée."
+    : r.reason === 'contention' ? 'Écriture concurrente en cours, réessayez.'
+    : r.reason === 'env_blocked' ? "Écritures suspendues : incohérence de configuration d'environnement."
+    : 'Échec de persistance.'
+  res.status(status).json({ ok: false, id: lead.id, reason: r.reason, error: message })
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }
