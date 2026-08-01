@@ -15,9 +15,10 @@ on:
     paths:
       - 'lib/supabase/**'
       - 'lib/env.ts'
+      - 'lib/prospector/money.ts'
+      - 'lib/prospector/fingerprint.ts'
       - 'supabase/**'
       - 'tests/integration/**'
-      - 'scripts/apply-test-fixture.mjs'
       - 'vitest.integration.config.ts'
       - '.github/workflows/integration.yml'
 
@@ -48,11 +49,11 @@ jobs:
       - name: Démarrer l'instance locale
         run: npx supabase start
 
-      # Fixture TEMPORAIRE : la baseline de migrations (lot A3b) n'existe pas
-      # encore. Dès qu'elle existera, cette étape doit devenir `supabase db reset`
-      # et le script doit être supprimé.
-      - name: Appliquer la fixture legacy
-        run: node scripts/apply-test-fixture.mjs
+      # Baseline A3b + migrations suivantes. La fixture temporaire et son script
+      # ont disparu avec le lot A3b : le schéma vient désormais des migrations
+      # versionnées, donc des mêmes fichiers qu'en production.
+      - name: Appliquer les migrations
+        run: npx supabase db reset --local
 
       # `supabase status -o env` émet des lignes NOM="valeur". On n'extrait que
       # les deux variables nécessaires, et on les masque dans les logs : la clé
@@ -63,6 +64,7 @@ jobs:
           npx supabase status -o env > /tmp/supabase.env
           API_URL="$(sed -n 's/^API_URL="\(.*\)"$/\1/p' /tmp/supabase.env)"
           SERVICE_KEY="$(sed -n 's/^SERVICE_ROLE_KEY="\(.*\)"$/\1/p' /tmp/supabase.env)"
+          ANON_KEY="$(sed -n 's/^ANON_KEY="\(.*\)"$/\1/p' /tmp/supabase.env)"
           if [ -z "$API_URL" ] || [ -z "$SERVICE_KEY" ]; then
             echo "Impossible de lire API_URL/SERVICE_ROLE_KEY depuis \`supabase status\`." >&2
             sed 's/=.*/=<masqué>/' /tmp/supabase.env >&2
@@ -71,6 +73,8 @@ jobs:
           echo "::add-mask::$SERVICE_KEY"
           echo "SUPABASE_TEST_URL=$API_URL" >> "$GITHUB_ENV"
           echo "SUPABASE_TEST_SERVICE_KEY=$SERVICE_KEY" >> "$GITHUB_ENV"
+          # Clé anon : sert au contrôle de permissions des RPC budgétaires (C2a-1).
+          [ -n "$ANON_KEY" ] && echo "SUPABASE_TEST_ANON_KEY=$ANON_KEY" >> "$GITHUB_ENV"
           rm -f /tmp/supabase.env
 
       - name: Tests d'intégration

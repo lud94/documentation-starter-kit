@@ -184,8 +184,10 @@ export interface GatewayResult { ok: boolean; status: number; data: any; text: s
 //
 // Exportée pour les sondes de diagnostic, qui ont besoin du statut et du corps
 // d'erreur bruts. `callClaude()` reste le chemin nominal.
+export const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages'
+
 export async function anthropicPost(key: string, body: any): Promise<GatewayResult> {
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
+  const r = await fetch(ANTHROPIC_ENDPOINT, {
     method: 'POST',
     headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
     body: JSON.stringify(body),

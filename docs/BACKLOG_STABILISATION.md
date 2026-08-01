@@ -5,7 +5,9 @@ où on en est et ce qui bloque quoi. Toute affirmation ici renvoie à un fichier
 un commit ou un document vérifiable.
 
 Branche de travail : `claude/elegant-gates-jen674`. **Rien n'est fusionné dans
-`main`, rien n'est déployé.**
+`main`, aucune migration ni promotion production.** La branche déclenche en
+revanche des déploiements et des checks Vercel automatiques : « rien n'est
+déployé » serait faux.
 
 ---
 
@@ -14,7 +16,8 @@ Branche de travail : `claude/elegant-gates-jen674`. **Rien n'est fusionné dans
 | Lot | État | Portée |
 |---|---|---|
 | **C1 — garde-fou fail-safe** | **Implémenté** (`6b6d213`) | P0 **fortement mitigé**, non fermé |
-| **C2 — réservation atomique** | **Non commencé, bloquant** | Requis avant le niveau de sécurité financière définitif |
+| **C2a — réservation atomique** | **En cours** — C2a-0 et C2a-1 livrés | Requis avant le niveau de sécurité financière définitif |
+| **C2c — réconciliation facturation** | Non commencé | Aucun chiffre plateforme n'est une facture avant ce lot |
 | **Usage par `workspace_id`** | Non commencé | Requis avant tout budget client individualisé |
 
 ### C1 — implémenté, P0 fortement mitigé
@@ -52,9 +55,28 @@ Ce que C2 ferme et que C1 laisse ouvert :
 une garantie de dépense.** C'est une protection sérieuse en usage mono-instance
 nominal, pas un plafond opposable.
 
+### C2c — réconciliation avec la facturation Anthropic
+
+**Non commencé.** Deux besoins distincts, réunis parce qu'ils dépendent tous deux
+d'une source externe :
+
+1. **Réconciliation courante.** `settled_micros` est un coût **calculé** à partir
+   des tokens renvoyés et de tarifs saisis dans `lib/prospector/money.ts`.
+   Anthropic ne nous communique aucun montant facturé. Tant que C2c n'existe pas,
+   aucun chiffre de la plateforme ne doit être présenté comme une facture.
+2. **Cutover de l'historique de production.** Le compteur `ai:usd_micros` est
+   initialisé à `ai:cents × 10000` par la migration C2a-1. C'est une **conversion
+   d'unité, pas une reconstruction** : `ai:cents` sous-comptait — mesuré, un appel
+   Jarvis sur Haiku coûtait 0,28 cent et était arrondi à zéro, donc les appels les
+   plus nombreux n'ont jamais été comptés. La valeur de départ est un **minorant**
+   de la dépense historique réelle. C2a ne tente pas de la corriger : reconstruire
+   un historique à partir d'un compteur dont on a prouvé qu'il ment produirait un
+   chiffre faux présenté comme exact. La décision de réconciliation ou de remise à
+   zéro au moment de la promotion en production appartient à C2c.
+
 ### Usage par `workspace_id`
 
-`prospector_usage` n'a pas de colonne `workspace_id` (`supabase/schema.sql`) : le
+`prospector_usage` n'a pas de colonne `workspace_id` (baseline A3b, ligne 99) : le
 compteur est global à la plateforme. **Requis avant tout budget client
 individualisé** et avant toute refacturation. Traité séparément, dans l'évolution
 multi-tenant — pas dans C2.
@@ -68,10 +90,10 @@ multi-tenant — pas dans C2.
 | A0 — correction de la documentation | Livré (`45c4bd0`) | |
 | A1 / A1b — tests et empreinte de build | Livré (`92426fa`, `3d5106f`) | |
 | A3a — structure de migrations | Livré (`2e17938`) | `supabase/migrations/` volontairement vide |
-| **A3b — baseline de migrations** | **Non commencé, bloquant** | Exige les accès Supabase. Bloque C2 et la suppression de `schema.sql` |
+| **A3b — baseline de migrations** | **Livré** (`f3bc894`) | Baseline réelle de production ; `schema.sql` et la fixture temporaire supprimés |
 | A2 — contrat d'environnement | Livré (`ab4b9c7`) | `APP_ENV_STRICT` **transitoire** |
 | B — isolation par espace de travail | Livré (`10a8d5f`) | Tests d'intégration **écrits, jamais exécutés** |
-| Outillage CI | Livré (`be0a2f0`) | Workflow d'intégration livré, **jamais exécuté** |
+| Outillage CI | Livré (`be0a2f0`, `ef739c1`) | Gardes mutations Supabase + passerelle Anthropic. Workflow d'intégration **jamais exécuté** |
 | A4a / A4b — adoption ESLint | Non commencé | `docs/LINT_BASELINE.md` |
 
 ### Points en attente d'une action extérieure
@@ -86,5 +108,13 @@ multi-tenant — pas dans C2.
   l'activation a une portée plus large qu'avant : avec un budget positif saisi, une
   incohérence d'environnement ne suspend plus seulement les écritures, elle coupe
   **toute la surface IA**. À constater sur staging avant production.
-- **Staging Vercel / Supabase isolé.** Non créé (aucune ressource externe n'est
-  créée depuis cette session). Prérequis de la fusion.
+- **Staging Vercel / Supabase isolé.** **Créé et validé** : `/api/config/status`
+  rend `configured`, `matrixOk`, `supabaseOk`, `strict` vrais et `issues: []`.
+- **A3c — adoption de l'historique de migrations en production.** Avant la première
+  migration structurelle production, la baseline devra être marquée comme déjà
+  appliquée dans l'historique natif Supabase, sans rejouer son SQL. Non fait.
+- **Porte de sauvegarde production.** Aucune migration structurelle production
+  autorisée avant l'existence d'une sauvegarde et d'une restauration vérifiables.
+- **RLS / isolation locataire en base.** RLS active, aucune policy : l'isolation
+  reste principalement applicative. Traité avec le modèle relationnel Prospector V3,
+  pas bricolé dans le legacy.
