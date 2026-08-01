@@ -8,7 +8,7 @@
 [db]
 # Doit correspondre à la version PostgreSQL du projet distant.
 # À CONFIRMER lors du lot A3b : non vérifiable sans accès au projet.
-major_version = 15
+major_version = 17
 
 [db.pooler]
 enabled = false

@@ -15,7 +15,7 @@
     "db:push": "supabase db push",
     "db:diff": "supabase db diff",
     "db:reset": "supabase db reset",
-    "db:test:up": "supabase start && node scripts/apply-test-fixture.mjs",
+    "db:test:up": "supabase start && supabase db reset --local",
     "db:test:down": "supabase stop --no-backup",
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },

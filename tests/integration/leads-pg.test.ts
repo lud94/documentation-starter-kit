@@ -16,10 +16,8 @@ import type { Lead } from '../../types/prospector'
 //
 // Prérequis : `npm run db:test:up` (Docker requis). Nettoyage : `npm run db:test:down`.
 //
-// ⚠️ Le schéma provient d'une FIXTURE TEMPORAIRE
-// (tests/integration/fixtures/prospector_leads.sql), la baseline A3b n'existant
-// pas encore. À la disponibilité de la baseline : basculer sur `supabase db reset`
-// et supprimer la fixture.
+// Le schema provient de la baseline A3b versionnee dans supabase/migrations/.
+// npm run db:test:up reconstruit la base locale via supabase db reset --local.
 
 const URL_ = process.env.SUPABASE_TEST_URL || 'http://127.0.0.1:54321'
 const KEY = process.env.SUPABASE_TEST_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
@@ -48,7 +46,7 @@ beforeAll(async () => {
   delete process.env.VERCEL_ENV
   leads = await import('../../lib/supabase/leads')
 
-  // Vérifie que la fixture a bien été appliquée : un échec ici signifie
+  // Verifie que la baseline a bien ete appliquee : un echec ici signifie
   // `npm run db:test:up` non exécuté, pas un défaut du code testé.
   const probe = await createClient(URL_, KEY).from('prospector_leads').select('id').limit(1)
   if (probe.error) throw new Error(`Table prospector_leads inaccessible : ${probe.error.message}. Exécuter \`npm run db:test:up\`.`)
