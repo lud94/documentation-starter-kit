@@ -126,15 +126,24 @@ séparé. Le point 6 est bloqué par la baseline de migrations.
   suivi indisponible ;
 - 13 cas dans `tests/budget-guard.test.ts`.
 
+**Statut du P0 : fortement mitigé, PAS fermé.** C1 sécurise la lecture et les
+incompatibilités d'environnement. Il subsiste un cas non couvert, explicitement
+reporté en C2 : une écriture de consommation peut échouer **après** un appel
+alors que les lectures suivantes restent disponibles. Le compteur reste alors
+obsolète, `budgetLeft()` lit une valeur périmée en toute confiance, et rien ne
+bloque. C1 ne le détecte pas — pour lui, la lecture a réussi.
+
 **Lot C2 (non fait, après A3b).** La concurrence n'est **pas** résolue par C1 :
 
 - `bumpUsage()` reste un `select` puis `upsert` **non atomique** — deux écritures
   simultanées écrivent chacune `cur + by` et l'une écrase l'autre (chemin (e)) ;
 - la lecture reste antérieure à la dépense, sans réservation : N instances
   concurrentes peuvent encore dépasser le plafond (chemin (b)) ;
-- `recordAiUsage()` continue d'avaler ses exceptions (chemin (c)) ; C1 en limite
-  la portée — un échec durable finit par rendre la lecture indisponible, donc
-  bloquante — mais ne le corrige pas à la source.
+- `recordAiUsage()` continue d'avaler ses exceptions (chemin (c)). C1 n'en limite
+  la portée que si l'indisponibilité touche AUSSI la lecture. Une base qui accepte
+  les `select` mais refuse les `upsert` — table en lecture seule, quota d'écriture,
+  droit retiré — laisse le compteur figé sans qu'aucun garde-fou ne s'en aperçoive.
+  C'est le cas résiduel qui empêche de fermer le P0.
 
 C2 exige une migration (RPC d'incrément atomique), donc la baseline A3b. Le
 point 6 (`workspace_id` sur `prospector_usage`) reste hors périmètre des deux.

@@ -24,6 +24,14 @@
 > Rédigé pour reprise dans une nouvelle session Claude (accès Google Drive requis).
 > Contexte : Ludwig, CEO Smart.AI.
 
+> **État des lots de stabilisation : `docs/BACKLOG_STABILISATION.md`.** C'est ce
+> document-là qui fait foi sur ce qui est livré, ce qui bloque quoi et ce qui
+> attend une action extérieure. Trois points saillants au 1er août 2026 :
+> le lot **C1** (garde-fou budget fail-safe) est implémenté et le P0 budget est
+> **fortement mitigé mais non fermé** ; **C2** (réservation atomique, après A3b)
+> est **bloquant** avant tout niveau de sécurité financière définitif ; le suivi
+> d'usage **par `workspace_id`** est requis avant tout budget client individualisé.
+
 ---
 
 ## 1. Où on en est concrètement (fait, déployé, fonctionnel)

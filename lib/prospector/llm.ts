@@ -52,8 +52,14 @@ export function pickModel(task: LlmTask): string {
 // façon durable.** À défaut, on refuse l'appel payant. Refuser à tort coûte une
 // erreur visible ; autoriser à tort coûte de l'argent réel, silencieusement.
 //
-// ⚠️ PÉRIMÈTRE C1 — ce lot rend le garde-fou fail-safe, il ne résout PAS la
-// concurrence. `bumpUsage()` reste un `select` puis `upsert` NON ATOMIQUE : deux
+// ⚠️ PÉRIMÈTRE C1 — le P0 est fortement mitigé, PAS fermé. Cas résiduel connu :
+// une écriture de consommation peut échouer APRÈS un appel alors que les lectures
+// suivantes restent disponibles (base en lecture seule, quota d'écriture, droit
+// retiré). Le compteur reste obsolète et la fonction ci-dessous lit une valeur
+// périmée en toute confiance — pour elle, la lecture a réussi.
+//
+// Ce lot ne résout pas non plus la concurrence.
+// `bumpUsage()` reste un `select` puis `upsert` NON ATOMIQUE : deux
 // écritures simultanées écrivent toutes deux `cur + by` et l'une écrase l'autre.
 // La lecture reste antérieure à la dépense, sans réservation : N instances
 // concurrentes peuvent encore dépasser le plafond. La réservation atomique
