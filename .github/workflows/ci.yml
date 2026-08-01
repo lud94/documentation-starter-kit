@@ -37,6 +37,9 @@ jobs:
       - name: Vérification des types
         run: npm run typecheck
 
+      - name: Garde-fou des écritures Supabase
+        run: npm run check:mutations
+
       - name: Tests unitaires
         run: npm test
 

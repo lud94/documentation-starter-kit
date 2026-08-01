@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "check:mutations": "node scripts/check-supabase-mutations.mjs",
     "db:new": "supabase migration new",
     "db:status": "supabase migration list",
     "db:push": "supabase db push",

@@ -1,0 +1,83 @@
+name: Tests d'intégration (Supabase local)
+
+# Séparé de `ci.yml` volontairement : ces tests exigent un daemon Docker et
+# démarrent une pile Supabase complète (~2-3 min). Les rendre bloquants sur
+# chaque push allongerait la boucle de retour sans gain, alors qu'ils ne
+# concernent qu'un périmètre restreint (persistance, migrations, environnement).
+#
+# ⚠️ AUCUNE base ni clé externe. L'instance est créée par `supabase start` dans
+# le runner, et la clé de service est celle, publique et jetable, générée par le
+# CLI pour l'instance locale. Aucun `secrets.*` n'est lu par ce workflow.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'lib/supabase/**'
+      - 'lib/env.ts'
+      - 'supabase/**'
+      - 'tests/integration/**'
+      - 'scripts/apply-test-fixture.mjs'
+      - 'vitest.integration.config.ts'
+      - '.github/workflows/integration.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      # Le CLI Supabase est épinglé en devDependencies (2.111.0) : on l'utilise
+      # tel quel plutôt qu'une action tierce, pour que la version exécutée en CI
+      # soit exactement celle du poste de développement.
+      - name: Version du CLI Supabase
+        run: npx supabase --version
+
+      - name: Démarrer l'instance locale
+        run: npx supabase start
+
+      # Fixture TEMPORAIRE : la baseline de migrations (lot A3b) n'existe pas
+      # encore. Dès qu'elle existera, cette étape doit devenir `supabase db reset`
+      # et le script doit être supprimé.
+      - name: Appliquer la fixture legacy
+        run: node scripts/apply-test-fixture.mjs
+
+      # `supabase status -o env` émet des lignes NOM="valeur". On n'extrait que
+      # les deux variables nécessaires, et on les masque dans les logs : la clé
+      # est jetable, mais un secret affiché prend l'habitude de le rester.
+      - name: Exporter l'URL et la clé de service locales
+        run: |
+          set -euo pipefail
+          npx supabase status -o env > /tmp/supabase.env
+          API_URL="$(sed -n 's/^API_URL="\(.*\)"$/\1/p' /tmp/supabase.env)"
+          SERVICE_KEY="$(sed -n 's/^SERVICE_ROLE_KEY="\(.*\)"$/\1/p' /tmp/supabase.env)"
+          if [ -z "$API_URL" ] || [ -z "$SERVICE_KEY" ]; then
+            echo "Impossible de lire API_URL/SERVICE_ROLE_KEY depuis \`supabase status\`." >&2
+            sed 's/=.*/=<masqué>/' /tmp/supabase.env >&2
+            exit 1
+          fi
+          echo "::add-mask::$SERVICE_KEY"
+          echo "SUPABASE_TEST_URL=$API_URL" >> "$GITHUB_ENV"
+          echo "SUPABASE_TEST_SERVICE_KEY=$SERVICE_KEY" >> "$GITHUB_ENV"
+          rm -f /tmp/supabase.env
+
+      - name: Tests d'intégration
+        run: npm run test:integration
+
+      # `if: always()` : sans cela, un test en échec laisserait les conteneurs
+      # en vie et le job en attente de nettoyage.
+      - name: Arrêter l'instance locale
+        if: always()
+        run: npx supabase stop --no-backup
