@@ -40,6 +40,9 @@ jobs:
       - name: Garde-fou des écritures Supabase
         run: npm run check:mutations
 
+      - name: Garde-fou de la passerelle Anthropic
+        run: npm run check:gateway
+
       - name: Tests unitaires
         run: npm test
 

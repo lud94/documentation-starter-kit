@@ -171,7 +171,20 @@ export interface CallResult {
 // Le service rend un résultat dégradé plutôt qu'une page d'erreur.
 const OPTIONAL_KEYS = ['output_config', 'thinking']
 
-async function post(key: string, body: any): Promise<{ ok: boolean; status: number; data: any; text: string }> {
+export interface GatewayResult { ok: boolean; status: number; data: any; text: string }
+
+// ── PASSERELLE UNIQUE vers Anthropic ──────────────────────────────────────────
+//
+// C'est le SEUL `fetch` vers api.anthropic.com du dépôt, et cette exclusivité est
+// vérifiée en CI (scripts/check-anthropic-gateway.mjs). Tout appel facturable doit
+// passer ici : c'est le point où le lot C2a posera la réservation budgétaire.
+//
+// Un appel émis ailleurs échapperait au plafond ET au comptage — c'était le cas de
+// pages/api/config/diagnose.ts jusqu'à ce lot.
+//
+// Exportée pour les sondes de diagnostic, qui ont besoin du statut et du corps
+// d'erreur bruts. `callClaude()` reste le chemin nominal.
+export async function anthropicPost(key: string, body: any): Promise<GatewayResult> {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
@@ -182,7 +195,7 @@ async function post(key: string, body: any): Promise<{ ok: boolean; status: numb
 }
 
 async function send(key: string, body: any): Promise<any> {
-  let attempt = await post(key, body)
+  let attempt = await anthropicPost(key, body)
   if (attempt.ok) return attempt.data
   // Seul un 400 (requête invalide) est dégradable : un 401/429/500 n'est pas un
   // problème d'option et doit remonter tel quel.
@@ -209,7 +222,7 @@ async function send(key: string, body: any): Promise<any> {
       if (Array.isArray(body.tools) && body.tools.length > 1) body.tools = [body.tools[0]]
       else if (JSON.stringify(body) === before) break // plus rien à retirer
     }
-    attempt = await post(key, body)
+    attempt = await anthropicPost(key, body)
   }
 
   if (!attempt.ok) throw new Error(withBuild(`Anthropic ${attempt.status} — ${attempt.text.slice(0, 150)}`))

@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:mutations": "node scripts/check-supabase-mutations.mjs",
+    "check:gateway": "node scripts/check-anthropic-gateway.mjs",
     "db:new": "supabase migration new",
     "db:status": "supabase migration list",
     "db:push": "supabase db push",

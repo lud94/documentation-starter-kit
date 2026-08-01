@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
-import { pickModel } from '../../../lib/prospector/llm'
+import { pickModel, anthropicPost } from '../../../lib/prospector/llm'
 import { buildTag } from '../../../lib/version'
 
 export const config = { maxDuration: 60 }
@@ -8,15 +8,19 @@ export const config = { maxDuration: 60 }
 // Diagnostic IA — teste CHAQUE capacité séparément, avec de tout petits appels,
 // et dit laquelle est refusée. Remplace les allers-retours « ça ne marche pas » /
 // « qu'est-ce que ça dit exactement ? » par une réponse unique et lisible.
+//
+// ⚠️ CONTOURNEMENT CORRIGÉ (lot C2a-0). Cette route émettait ses quatre appels
+// avec son propre `fetch` : ils échappaient au garde-fou budgétaire ET n'étaient
+// jamais comptés dans prospector_usage. Petits (max_tokens: 64) mais réels, et la
+// route est atteignable depuis l'Admin. Tout passe désormais par anthropicPost(),
+// la passerelle unique — c'est là que C2a posera la réservation.
 async function probe(key: string, model: string, extra: any): Promise<{ ok: boolean; detail?: string }> {
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model, max_tokens: 64, messages: [{ role: 'user', content: 'Réponds juste: OK' }], ...extra }),
+    const r = await anthropicPost(key, {
+      model, max_tokens: 64, messages: [{ role: 'user', content: 'Réponds juste: OK' }], ...extra,
     })
     if (r.ok) return { ok: true }
-    return { ok: false, detail: (await r.text()).slice(0, 220) }
+    return { ok: false, detail: r.text.slice(0, 220) }
   } catch (e: any) {
     return { ok: false, detail: String(e?.message || e).slice(0, 220) }
   }
