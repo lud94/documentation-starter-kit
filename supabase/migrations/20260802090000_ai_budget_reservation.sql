@@ -1,7 +1,13 @@
 -- categorie: additive
--- rollback: suppression des cinq fonctions. La table prospector_ai_reservations
---           est CONSERVEE (historique financier, dont les UNRESOLVED non tranchees) ;
---           sa suppression est une decision operateur, jamais un effet de bord.
+-- rollback: supprimer les SIX fonctions (prospector_ai_bump, _engaged, _reserve,
+--           _settle, _resolve, _reconcile). Les DEUX tables sont CONSERVEES :
+--             * prospector_ai_reservations porte l'historique financier, dont les
+--               UNRESOLVED non tranchees - les perdre effacerait un passif ;
+--             * prospector_ai_ledger porte le compteur de consommation ; le
+--               supprimer ramenerait la depense connue a zero, donc RELEVERAIT le
+--               plafond restant. Un rollback ne doit jamais rendre plus permissif.
+--           La suppression des tables est une decision operateur explicite, jamais
+--           un effet de bord du retrait des fonctions.
 -- reversible: partielle
 
 -- ============================================================================
@@ -39,7 +45,11 @@
 -- ── Compteur monetaire durable ───────────────────────────────────────────────
 create table if not exists public.prospector_ai_ledger (
   key        text        primary key,
-  micros     bigint      not null default 0,
+  -- Le compteur de depense ne DECROIT jamais : une valeur negative releverait le
+  -- plafond restant, c'est-a-dire exactement la panne que ce lot ferme. La
+  -- contrainte est en base, pas seulement en applicatif : c'est la seule place
+  -- qu'un futur appelant ne peut pas contourner.
+  micros     bigint      not null default 0 check (micros >= 0),
   updated_at timestamptz not null default now()
 );
 
@@ -117,17 +127,34 @@ revoke all on table public.prospector_ai_reservations from anon, authenticated;
 -- ── Increment atomique ───────────────────────────────────────────────────────
 -- Remplace le `select` puis `upsert` non atomique. Une seule instruction, donc
 -- aucune fenetre entre lecture et ecriture.
-create or replace function public.prospector_ai_bump(p_key text, p_delta bigint)
+--
+-- SURFACE MINIMALE, DELIBEREE. Pas de parametre `p_key` : C2a n'a besoin que d'un
+-- compteur, 'ai:usd_micros'. Une cle libre aurait offert a un futur appelant la
+-- possibilite d'incrementer un compteur qui n'entre dans aucun arbitrage - donc
+-- de croire compter une depense sans qu'elle pese jamais au budget. Le jour ou un
+-- second compteur sera necessaire, il faudra l'ajouter ici explicitement.
+--
+-- DELTA POSITIF UNIQUEMENT. Un delta negatif serait une remise de depense, donc
+-- un relevement du plafond restant : refuse a la source plutot que rattrape par
+-- la contrainte de table, pour que le message dise ce qui s'est passe.
+create or replace function public.prospector_ai_bump(p_delta bigint)
 returns bigint
-language sql
+language plpgsql
 security definer
 set search_path = ''
 as $$
+declare v_micros bigint;
+begin
+  if p_delta is null or p_delta < 0 then
+    raise exception 'prospector_ai_bump: delta negatif ou absent (%) - la consommation ne decroit jamais', p_delta;
+  end if;
   insert into public.prospector_ai_ledger as l (key, micros, updated_at)
-  values (p_key, p_delta, now())
+  values ('ai:usd_micros', p_delta, now())
   on conflict (key) do update
     set micros = l.micros + excluded.micros, updated_at = now()
-  returning l.micros;
+  returning l.micros into v_micros;
+  return v_micros;
+end;
 $$;
 
 
@@ -144,8 +171,13 @@ as $$
   select
     coalesce((select l.micros from public.prospector_ai_ledger l
               where l.key = 'ai:usd_micros'), 0)::bigint,
+    -- TOUTES les OPEN, expirees comprises. Les exclure a l'echeance ferait
+    -- DISPARAITRE leur poids entre l'expiration et le balayage : pendant cette
+    -- fenetre, l'engagement chuterait et une reservation aurait pu etre accordee
+    -- au-dela du plafond. Le balayage les deplace ensuite vers UNRESOLVED sans
+    -- changer le total - l'engagement reste continu.
     coalesce((select sum(r.estimated_micros) from public.prospector_ai_reservations r
-              where r.state = 'OPEN' and r.expires_at > now()), 0)::bigint,
+              where r.state = 'OPEN'), 0)::bigint,
     coalesce((select sum(r.estimated_micros) from public.prospector_ai_reservations r
               where r.state = 'UNRESOLVED'), 0)::bigint;
 $$;
@@ -244,12 +276,21 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
-declare v_updated integer;
+declare
+  v_updated integer;
+  v_amount  bigint;
 begin
+  -- Un montant absent n'est PAS zero : on ignorerait alors une depense reelle en
+  -- la comptant gratuite. L'appelant doit dire ce qu'il a depense.
+  if p_settled_micros is null or p_settled_micros < 0 then
+    raise exception 'prospector_ai_settle: montant absent ou negatif (%) - un reglement doit etre chiffre', p_settled_micros;
+  end if;
+  v_amount := p_settled_micros;
+
   perform 1 from public.prospector_ai_ledger where key = 'ai:usd_micros' for update;
 
   update public.prospector_ai_reservations
-     set state = 'SETTLED', settled_micros = greatest(coalesce(p_settled_micros, 0), 0),
+     set state = 'SETTLED', settled_micros = v_amount,
          resolved_at = now(), outcome_code = p_outcome
    where id = p_id and state = 'OPEN';
   get diagnostics v_updated = row_count;
@@ -257,7 +298,7 @@ begin
 
   -- SEUL chemin qui alimente le compteur, et uniquement avec un cout REGLE.
   -- Aucune estimation n'y entre jamais.
-  perform public.prospector_ai_bump('ai:usd_micros', greatest(coalesce(p_settled_micros, 0), 0));
+  perform public.prospector_ai_bump(v_amount);
   return 'settled';
 end;
 $$;
@@ -311,30 +352,42 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
-declare v_updated integer;
+declare
+  v_updated integer;
+  v_amount  bigint;
 begin
   if p_state not in ('SETTLED', 'RELEASED') then
     raise exception 'prospector_ai_reconcile: etat cible invalide %', p_state;
   end if;
+
+  -- Tracabilite obligatoire, les DEUX champs. Une reconciliation est un acte
+  -- comptable manuel : sans auteur ni motif, l'historique ne dit pas pourquoi un
+  -- passif incertain a ete transforme en depense, ou efface.
   if p_resolved_by is null or length(trim(p_resolved_by)) = 0 then
     raise exception 'prospector_ai_reconcile: resolved_by obligatoire (tracabilite)';
   end if;
+  if p_resolution_reason is null or length(trim(p_resolution_reason)) = 0 then
+    raise exception 'prospector_ai_reconcile: resolution_reason obligatoire (tracabilite)';
+  end if;
+
+  -- « Facture » sans montant serait « facture zero » : on refuse plutot que de
+  -- transformer une absence d'information en absence de depense.
+  if p_state = 'SETTLED' and (p_settled_micros is null or p_settled_micros < 0) then
+    raise exception 'prospector_ai_reconcile: SETTLED exige un montant explicite et positif (recu %)', p_settled_micros;
+  end if;
+  v_amount := case when p_state = 'SETTLED' then p_settled_micros else 0 end;
 
   perform 1 from public.prospector_ai_ledger where key = 'ai:usd_micros' for update;
 
   update public.prospector_ai_reservations
-     set state = p_state,
-         settled_micros = case when p_state = 'SETTLED'
-                               then greatest(coalesce(p_settled_micros, 0), 0) else 0 end,
+     set state = p_state, settled_micros = v_amount,
          resolved_at = now(), resolved_by = p_resolved_by,
          resolution_reason = p_resolution_reason
    where id = p_id and state = 'UNRESOLVED';
   get diagnostics v_updated = row_count;
   if v_updated = 0 then return 'noop'; end if;
 
-  if p_state = 'SETTLED' then
-    perform public.prospector_ai_bump('ai:usd_micros', greatest(coalesce(p_settled_micros, 0), 0));
-  end if;
+  if p_state = 'SETTLED' then perform public.prospector_ai_bump(v_amount); end if;
   return lower(p_state);
 end;
 $$;
@@ -344,14 +397,14 @@ $$;
 -- PostgreSQL accorde EXECUTE a PUBLIC par defaut a la creation : le revoke est
 -- necessaire, pas decoratif. Seule la cle de service, utilisee cote serveur,
 -- doit pouvoir engager une depense.
-revoke execute on function public.prospector_ai_bump(text, bigint)                     from public, anon, authenticated;
+revoke execute on function public.prospector_ai_bump(bigint)                     from public, anon, authenticated;
 revoke execute on function public.prospector_ai_engaged()                              from public, anon, authenticated;
 revoke execute on function public.prospector_ai_reserve(uuid, text, bigint, bigint, text, text, integer) from public, anon, authenticated;
 revoke execute on function public.prospector_ai_settle(uuid, bigint, text)             from public, anon, authenticated;
 revoke execute on function public.prospector_ai_resolve(uuid, text, text)              from public, anon, authenticated;
 revoke execute on function public.prospector_ai_reconcile(uuid, text, bigint, text, text) from public, anon, authenticated;
 
-grant execute on function public.prospector_ai_bump(text, bigint)                      to service_role;
+grant execute on function public.prospector_ai_bump(bigint)                      to service_role;
 grant execute on function public.prospector_ai_engaged()                               to service_role;
 grant execute on function public.prospector_ai_reserve(uuid, text, bigint, bigint, text, text, integer) to service_role;
 grant execute on function public.prospector_ai_settle(uuid, bigint, text)              to service_role;

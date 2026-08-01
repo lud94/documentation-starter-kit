@@ -65,16 +65,18 @@ jobs:
           API_URL="$(sed -n 's/^API_URL="\(.*\)"$/\1/p' /tmp/supabase.env)"
           SERVICE_KEY="$(sed -n 's/^SERVICE_ROLE_KEY="\(.*\)"$/\1/p' /tmp/supabase.env)"
           ANON_KEY="$(sed -n 's/^ANON_KEY="\(.*\)"$/\1/p' /tmp/supabase.env)"
-          if [ -z "$API_URL" ] || [ -z "$SERVICE_KEY" ]; then
-            echo "Impossible de lire API_URL/SERVICE_ROLE_KEY depuis \`supabase status\`." >&2
+          # ANON_KEY est OBLIGATOIRE : le contrôle de permissions des RPC budgétaires
+          # en dépend, et un test de permissions silencieusement ignoré se lit comme
+          # un succès. Mieux vaut un job rouge qu'une garantie imaginaire.
+          if [ -z "$API_URL" ] || [ -z "$SERVICE_KEY" ] || [ -z "$ANON_KEY" ]; then
+            echo "Impossible de lire API_URL/SERVICE_ROLE_KEY/ANON_KEY depuis \`supabase status\`." >&2
             sed 's/=.*/=<masqué>/' /tmp/supabase.env >&2
             exit 1
           fi
           echo "::add-mask::$SERVICE_KEY"
           echo "SUPABASE_TEST_URL=$API_URL" >> "$GITHUB_ENV"
           echo "SUPABASE_TEST_SERVICE_KEY=$SERVICE_KEY" >> "$GITHUB_ENV"
-          # Clé anon : sert au contrôle de permissions des RPC budgétaires (C2a-1).
-          [ -n "$ANON_KEY" ] && echo "SUPABASE_TEST_ANON_KEY=$ANON_KEY" >> "$GITHUB_ENV"
+          echo "SUPABASE_TEST_ANON_KEY=$ANON_KEY" >> "$GITHUB_ENV"
           rm -f /tmp/supabase.env
 
       - name: Tests d'intégration

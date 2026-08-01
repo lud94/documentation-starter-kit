@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  parseBudgetMicros, ceilDiv, tokenCostMicros, cachedTokenCostMicros,
+  readBudgetConfig, ceilDiv, tokenCostMicros, cachedTokenCostMicros,
   estimateMicros, settleMicros, priceFor, microsToUsdString, legacyCentsToMicros,
   MICROS_PER_USD,
 } from '../lib/prospector/money'
@@ -14,26 +14,57 @@ import { ANTHROPIC_ENDPOINT } from '../lib/prospector/llm'
 // d'arrondi — sur-estimer refuse un appel de trop (visible), sous-estimer laisse
 // filer une dépense (invisible).
 
-describe('lecture d’ANTHROPIC_BUDGET', () => {
-  it('entier simple', () => { expect(parseBudgetMicros('20')).toBe(20_000_000n) })
-  it('décimale avec point', () => { expect(parseBudgetMicros('20.5')).toBe(20_500_000n) })
-  it('décimale avec virgule (saisie française)', () => { expect(parseBudgetMicros('20,5')).toBe(20_500_000n) })
-  it('espaces tolérés', () => { expect(parseBudgetMicros('  7.25 ')).toBe(7_250_000n) })
+describe('lecture d’ANTHROPIC_BUDGET — trois états, jamais deux', () => {
+  const micros = (raw: string) => {
+    const c = readBudgetConfig(raw)
+    if (c.kind !== 'valid') throw new Error(`attendu valid, reçu ${c.kind}`)
+    return c.micros
+  }
+
+  it('entier simple', () => { expect(micros('20')).toBe(20_000_000n) })
+  it('décimale avec point', () => { expect(micros('20.5')).toBe(20_500_000n) })
+  it('décimale avec virgule (saisie française)', () => { expect(micros('20,5')).toBe(20_500_000n) })
+  it('espaces tolérés', () => { expect(micros('  7.25 ')).toBe(7_250_000n) })
 
   it('au-delà de 6 décimales : TRONQUE, jamais arrondi au supérieur', () => {
-    // Tronquer diminue le plafond : sens conservateur.
-    expect(parseBudgetMicros('1.9999999')).toBe(1_999_999n)
+    expect(micros('1.9999999')).toBe(1_999_999n) // tronquer diminue le plafond
   })
 
-  it('saisie invalide → non configuré, jamais un plafond deviné', () => {
-    for (const bad of ['abc', '20abc', '', '  ', '-5', '1e3', '0', '0.0000001']) {
-      expect(parseBudgetMicros(bad)).toBeNull()
+  it('ABSENT — variable non posée', () => {
+    for (const v of [undefined, null, '', '   ']) {
+      expect(readBudgetConfig(v as any).kind).toBe('absent')
     }
+  })
+
+  it('DÉFAUT P0 — « 0 » est un budget VALIDE de zéro, pas une absence', () => {
+    // Zéro dépense autorisée. L'ancienne version rendait null, donc « pas de
+    // plafond », donc dépense ILLIMITÉE — l'inverse exact de la saisie.
+    const c = readBudgetConfig('0')
+    expect(c.kind).toBe('valid')
+    expect(c.kind === 'valid' && c.micros).toBe(0n)
+    expect(readBudgetConfig('0,00').kind).toBe('valid')
+  })
+
+  it('DÉFAUT P0 — une saisie fautive est INVALIDE, jamais une absence', () => {
+    // L'ancienne version les confondait avec « pas de budget » : une faute de
+    // frappe désactivait le garde-fou.
+    for (const bad of ['abc', '20abc', '-5', '1e3', '20 $', '20.5.1', ' 2 0 ']) {
+      const c = readBudgetConfig(bad)
+      expect(c.kind).toBe('invalid')
+      expect(c.kind === 'invalid' && c.reason.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('positif mais trop fin pour le µUSD : INVALIDE, pas zéro', () => {
+    // Tronquer à zéro changerait le sens de la saisie ; arrondir inventerait un
+    // montant. On refuse et on le dit.
+    expect(readBudgetConfig('0.0000001').kind).toBe('invalid')
+    expect(readBudgetConfig('0.000001').kind).toBe('valid')
   })
 
   it('parseFloat aurait accepté « 20abc » — pas nous', () => {
     expect(parseFloat('20abc')).toBe(20)      // le piège
-    expect(parseBudgetMicros('20abc')).toBeNull()
+    expect(readBudgetConfig('20abc').kind).toBe('invalid')
   })
 })
 
@@ -138,9 +169,9 @@ describe('affichage et conversion héritée', () => {
     expect(legacyCentsToMicros(1n)).toBe(10_000n)
   })
   it('un budget de 3000 $ dépasserait un integer en µUSD', () => {
-    const micros = parseBudgetMicros('3000')!
-    expect(micros).toBe(3_000n * MICROS_PER_USD)
-    expect(micros > 2_147_483_647n).toBe(true) // d'où bigint en base
+    const c = readBudgetConfig('3000')
+    expect(c.kind === 'valid' && c.micros).toBe(3_000n * MICROS_PER_USD)
+    expect(c.kind === 'valid' && c.micros > 2_147_483_647n).toBe(true) // d'où bigint en base
   })
 })
 

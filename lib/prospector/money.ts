@@ -30,24 +30,51 @@ export function ceilDiv(a: bigint, b: bigint): bigint {
   return (a + b - 1n) / b
 }
 
-// ── Lecture d'ANTHROPIC_BUDGET ────────────────────────────────────────────────
-// Saisi à la main dans l'Admin, donc à traiter comme une entrée non fiable.
-// `parseFloat` est proscrit : il accepte « 20abc », rend NaN silencieusement, et
-// perd de la précision au-delà du dixième de cent.
+// ── Lecture d'ANTHROPIC_BUDGET — TROIS ÉTATS, jamais deux ────────────────────
+//
+// DÉFAUT CORRIGÉ (P0 de configuration). La version précédente rendait `null`
+// pour trois situations qui n'ont rien à voir :
+//   * la variable est absente        → aucun plafond demandé
+//   * la variable vaut « 0 »         → ZÉRO dépense autorisée
+//   * la variable vaut « 20abc »     → configuration cassée
+// Les confondre revenait à ce qu'un « 0 » saisi volontairement, ou une saisie
+// fautive, DÉSACTIVENT le garde-fou au lieu de le fermer. C'est exactement
+// l'inverse du comportement attendu d'un plafond de dépense.
 //
 // Format accepté : entier optionnellement suivi d'une partie décimale, séparateur
 // « . » ou « , ». Au-delà de 6 décimales, la partie excédentaire est TRONQUÉE —
 // tronquer diminue le plafond, ce qui est le sens conservateur.
 //
-// Toute autre forme rend `null` = budget non configuré. On ne devine pas un
-// plafond à partir d'une saisie qu'on ne comprend pas.
-export function parseBudgetMicros(raw: string | undefined | null): bigint | null {
-  if (!raw) return null
-  const m = /^\s*(\d+)(?:[.,](\d*))?\s*$/.exec(raw)
-  if (!m) return null
-  const frac = (m[2] || '').slice(0, 6).padEnd(6, '0')
-  const micros = BigInt(m[1]) * MICROS_PER_USD + BigInt(frac)
-  return micros > 0n ? micros : null
+// Cas particulier volontairement classé INVALIDE : une valeur strictement
+// positive mais trop fine pour le µUSD (« 0.0000001 »). L'utilisateur a demandé
+// un plafond non nul que notre unité ne sait pas représenter. Le tronquer à zéro
+// changerait silencieusement le sens de sa saisie ; l'arrondir au µUSD
+// inventerait un montant. On refuse et on le dit.
+export type BudgetConfig =
+  | { kind: 'absent' }
+  | { kind: 'valid'; micros: bigint }          // micros >= 0 ; 0 est légitime
+  | { kind: 'invalid'; raw: string; reason: string }
+
+export function readBudgetConfig(raw: string | undefined | null): BudgetConfig {
+  if (raw === undefined || raw === null || raw.trim() === '') return { kind: 'absent' }
+
+  const s = raw.trim()
+  const m = /^(\d+)(?:[.,](\d*))?$/.exec(s)
+  if (!m) {
+    return { kind: 'invalid', raw: s,
+      reason: 'Montant illisible. Attendu : un nombre positif, par exemple « 20 » ou « 20,50 ».' }
+  }
+
+  const fracRaw = m[2] || ''
+  const micros = BigInt(m[1]) * MICROS_PER_USD + BigInt(fracRaw.slice(0, 6).padEnd(6, '0'))
+
+  // Saisie positive mais inférieure au micro-dollar : on ne devine pas.
+  if (micros === 0n && /[1-9]/.test(fracRaw)) {
+    return { kind: 'invalid', raw: s,
+      reason: 'Montant positif mais inférieur au micro-dollar : trop fin pour être représenté. Saisir au moins 0,000001.' }
+  }
+
+  return { kind: 'valid', micros }
 }
 
 // ── Tarifs ────────────────────────────────────────────────────────────────────

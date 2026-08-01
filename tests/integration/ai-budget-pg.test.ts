@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 // Tests d'INTÉGRATION — lot C2a-1, RPC de réservation budgétaire.
 //
 // Ils exercent les fonctions PostgreSQL DIRECTEMENT, sans appeler Anthropic :
-// c'est la logique d'arbitrage qu'on valide, pas le fournisseur. Les dix cas
+// c'est la logique d'arbitrage qu'on valide, pas le fournisseur. Les 20 cas
 // ci-dessous ne dépensent pas un centime.
 //
 // Ils valident ce que les tests mémoire ne PEUVENT PAS valider :
@@ -74,9 +74,21 @@ describe('incrément atomique', () => {
     // L'ancien `select` puis `upsert` en perdait : deux écritures simultanées
     // écrivaient chacune `cur + by` et l'une écrasait l'autre.
     await Promise.all(Array.from({ length: 50 }, () =>
-      sb.rpc('prospector_ai_bump', { p_key: 'ai:usd_micros', p_delta: 100 })))
+      sb.rpc('prospector_ai_bump', { p_delta: 100 })))
     expect((await engaged()).consumed) // exactement 50 × 100
       .toBe(5_000)
+  })
+
+  it('un delta négatif est REFUSÉ — la consommation ne décroît jamais', async () => {
+    const { error } = await sb.rpc('prospector_ai_bump', { p_delta: -1 })
+    expect(error).toBeTruthy()
+    expect((await engaged()).consumed).toBe(0)
+  })
+
+  it('la contrainte de table interdit un compteur négatif', async () => {
+    const { error } = await sb.from('prospector_ai_ledger')
+      .update({ micros: -1 }).eq('key', 'ai:usd_micros')
+    expect(error).toBeTruthy() // check (micros >= 0)
   })
 })
 
@@ -163,6 +175,35 @@ describe('issues et passif', () => {
     expect(e.open).toBe(0)
   })
 
+  it('DÉFAUT CORRIGÉ — l’engagement reste CONTINU pendant la fenêtre d’expiration', async () => {
+    // Fenêtre : entre l'échéance d'une OPEN et le balayage paresseux. Si
+    // prospector_ai_engaged() excluait les OPEN expirées, leur poids
+    // DISPARAÎTRAIT pendant cet intervalle et une réservation aurait pu être
+    // accordée au-delà du plafond.
+    const budget = 5_000
+    const id = randomUUID()
+    await reserve(id, 5_000, budget)
+    expect((await engaged()).open).toBe(5_000)
+
+    // On force l'échéance SANS déclencher le balayage.
+    await sb.from('prospector_ai_reservations')
+      .update({ expires_at: new Date(Date.now() - 60_000).toISOString() }).eq('id', id)
+
+    // Avant balayage : le poids doit être TOUJOURS là.
+    const before = await engaged()
+    expect(before.open).toBe(5_000)
+    expect(before.open + before.unresolved + before.consumed).toBe(5_000)
+
+    // Et le plafond doit rester opposable dans cette fenêtre.
+    expect((await reserve(randomUUID(), 1_000, budget)).state).toBe('budget_exhausted')
+
+    // Après balayage : même total, simplement déplacé vers UNRESOLVED.
+    const after = await engaged()
+    expect(after.open).toBe(0)
+    expect(after.unresolved).toBe(5_000)
+    expect(after.open + after.unresolved + after.consumed).toBe(5_000)
+  })
+
   it('une OPEN expirée devient UNRESOLVED, jamais RELEASED', async () => {
     const id = randomUUID()
     // TTL plancher : la fonction borne à 60 s, donc on force l'échéance en base.
@@ -201,21 +242,47 @@ describe('issues et passif', () => {
     expect(data!.resolved_by).toBe('ludwig')
   })
 
-  it('la réconciliation exige une traçabilité : resolved_by obligatoire', async () => {
+  it('la réconciliation exige une traçabilité complète et un montant chiffré', async () => {
     const id = randomUUID()
     await reserve(id, 5_000, 1_000_000)
     await resolve_(id, 'UNRESOLVED', 'timeout')
-    const { error } = await sb.rpc('prospector_ai_reconcile', {
-      p_id: id, p_state: 'SETTLED', p_settled_micros: 1, p_resolved_by: '', p_resolution_reason: null,
+
+    const base = { p_id: id, p_state: 'SETTLED', p_settled_micros: 1, p_resolved_by: 'ludwig', p_resolution_reason: 'vérifié' }
+
+    // resolved_by vide → refus
+    expect((await sb.rpc('prospector_ai_reconcile', { ...base, p_resolved_by: '  ' })).error).toBeTruthy()
+    // resolution_reason absent ou vide → refus
+    expect((await sb.rpc('prospector_ai_reconcile', { ...base, p_resolution_reason: null })).error).toBeTruthy()
+    expect((await sb.rpc('prospector_ai_reconcile', { ...base, p_resolution_reason: '   ' })).error).toBeTruthy()
+    // DÉFAUT CORRIGÉ — « facturé » sans montant ne doit pas devenir « facturé zéro »
+    expect((await sb.rpc('prospector_ai_reconcile', { ...base, p_settled_micros: null })).error).toBeTruthy()
+
+    // Rien n'a bougé : le passif est intact.
+    const e = await engaged()
+    expect(e.unresolved).toBe(5_000)
+    expect(e.consumed).toBe(0)
+  })
+
+  it('un règlement sans montant est refusé, jamais compté zéro', async () => {
+    const id = randomUUID()
+    await reserve(id, 5_000, 1_000_000)
+    const { error } = await sb.rpc('prospector_ai_settle', {
+      p_id: id, p_settled_micros: null, p_outcome: 'http_200',
     })
     expect(error).toBeTruthy()
+    expect((await engaged()).open).toBe(5_000) // toujours ouverte
   })
 })
 
 describe('permissions', () => {
   it('la clé anon ne peut PAS engager de dépense', async () => {
     const anonKey = process.env.SUPABASE_TEST_ANON_KEY
-    if (!anonKey) return // fourni par le workflow d'intégration ; ignoré en local sans clé
+    // En CI la clé est obligatoire : un test de permissions silencieusement ignoré
+    // vaut moins que pas de test du tout, parce qu'il se lit comme un succès.
+    if (!anonKey && process.env.CI) {
+      throw new Error('SUPABASE_TEST_ANON_KEY absente en CI — le contrôle de permissions ne doit jamais être ignoré.')
+    }
+    if (!anonKey) return // exécution locale sans clé anon
     const anon = createClient(URL_, anonKey)
     const { error } = await anon.rpc('prospector_ai_reserve', {
       p_id: randomUUID(), p_fingerprint: FP, p_budget_micros: 0,

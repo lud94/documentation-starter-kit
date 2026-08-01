@@ -50,18 +50,29 @@ describe('budget non configuré', () => {
     expect(readUsageDurable).not.toHaveBeenCalled()
   })
 
-  it('égal à zéro → identique à absent', async () => {
-    process.env.ANTHROPIC_BUDGET = '0'
+  it('chaîne vide → identique à absent', async () => {
+    process.env.ANTHROPIC_BUDGET = '   '
     const g = await budgetLeft()
     expect(g.state).toBe('not_configured')
     expect(g.blocked).toBe(false)
   })
 
-  it('valeur illisible → traitée comme non configurée, jamais comme un plafond nul bloquant', async () => {
+  it('DÉFAUT P0 — valeur illisible : BLOQUE, ne désactive pas le garde-fou', async () => {
+    // Avant C2a-1b, « abc » passait pour « pas de budget » : une faute de frappe
+    // dans l'Admin supprimait le plafond au lieu de le fermer.
     process.env.ANTHROPIC_BUDGET = 'abc'
     const g = await budgetLeft()
-    expect(g.state).toBe('not_configured')
-    expect(g.blocked).toBe(false)
+    expect(g.state).toBe('configuration_error')
+    expect(g.blocked).toBe(true)
+    expect(readUsageDurable).not.toHaveBeenCalled() // refus avant toute lecture
+  })
+
+  it('DÉFAUT P0 — « 0 » signifie ZÉRO dépense autorisée, pas dépense illimitée', async () => {
+    process.env.ANTHROPIC_BUDGET = '0'
+    readUsageDurable.mockResolvedValue({ ok: true, value: 0 })
+    const g = await budgetLeft()
+    expect(g.state).toBe('budget_exhausted')
+    expect(g.blocked).toBe(true)
   })
 })
 

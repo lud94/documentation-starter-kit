@@ -9,6 +9,7 @@ import { withBuild } from '../version'
 import { recordAiUsage } from './usage'
 import { readUsageDurable } from '../supabase/pappersCache'
 import { writeAllowed } from '../env'
+import { readBudgetConfig, microsToUsdString, MICROS_PER_CENT } from './money'
 import { listItems, upsertItem } from '../supabase/store'
 
 export type LlmTask = 'chat' | 'classify' | 'plan' | 'extract' | 'write' | 'research'
@@ -68,10 +69,11 @@ export function pickModel(task: LlmTask): string {
 // donc la baseline de migrations. Le multi-tenant de `prospector_usage`
 // (absence de workspace_id) reste hors périmètre lui aussi.
 export type BudgetState =
-  | 'not_configured'    // aucun plafond saisi : aucun garde-fou, comportement explicite
-  | 'available'         // plafond saisi, consommation lue, marge restante
-  | 'budget_exhausted'  // plafond saisi, consommation lue, plafond atteint
-  | 'usage_unavailable' // plafond saisi, consommation NON lisible durablement → refus
+  | 'not_configured'      // ANTHROPIC_BUDGET absente : aucun plafond demandé
+  | 'available'           // plafond saisi, consommation lue, marge restante
+  | 'budget_exhausted'    // plafond saisi, consommation lue, plafond atteint
+  | 'usage_unavailable'   // plafond saisi, consommation NON lisible durablement → refus
+  | 'configuration_error' // ANTHROPIC_BUDGET saisie mais illisible → refus, jamais désactivation
 
 export interface BudgetGuard {
   state: BudgetState
@@ -86,11 +88,25 @@ export interface BudgetGuard {
 // budget épuisé, mais introduire un second code (`usage_tracking_unavailable`)
 // pour la même condition créerait deux vérités à maintenir en parallèle.
 export async function budgetLeft(): Promise<BudgetGuard> {
-  const budget = parseFloat(getKey('ANTHROPIC_BUDGET') || '') || 0
+  // Trois états, jamais deux. `parseFloat` confondait « absente », « 0 » et
+  // « 20abc » — et faisait donc PASSER les deux derniers pour « pas de plafond ».
+  const cfg = readBudgetConfig(getKey('ANTHROPIC_BUDGET'))
 
-  // Budget absent ou nul : aucun plafond n'a été demandé. On n'invente pas une
-  // protection que personne n'a configurée, et on le dit explicitement.
-  if (!(budget > 0)) return { state: 'not_configured', budget: 0, spent: null, blocked: false }
+  // Configuration cassée : on FERME. Une saisie qu'on ne comprend pas ne doit
+  // jamais valoir autorisation de dépenser.
+  if (cfg.kind === 'invalid') {
+    return { state: 'configuration_error', budget: 0, spent: null, blocked: true,
+      reason: `Budget Anthropic mal configuré — ${cfg.reason} Appels IA bloqués tant que la saisie n'est pas corrigée dans Admin → Usage.` }
+  }
+
+  // Absente : aucun plafond n'a été demandé. On n'invente pas une protection que
+  // personne n'a configurée, et on le dit explicitement.
+  if (cfg.kind === 'absent') return { state: 'not_configured', budget: 0, spent: null, blocked: false }
+
+  // À partir d'ici le plafond est valide — Y COMPRIS zéro, qui signifie « aucune
+  // dépense autorisée » et non « dépense illimitée ».
+  const budgetMicros = cfg.micros
+  const budget = Number(microsToUsdString(budgetMicros, 6))
 
   // Le compteur doit pouvoir être ÉCRIT, pas seulement lu : si le contrat
   // d'environnement (lot A2) interdit d'écrire `prospector_usage`, l'appel serait
@@ -108,10 +124,15 @@ export async function budgetLeft(): Promise<BudgetGuard> {
         : 'Suivi de consommation indisponible : le compteur d\'usage est illisible. Appels IA bloqués par sécurité.' }
   }
 
-  const spent = read.value / 100
-  if (spent >= budget) {
+  // Comparaison faite en ENTIERS : le compteur hérité est en cents, converti en
+  // µUSD. Les `number` ci-dessous ne servent qu'à l'affichage.
+  const spentMicros = BigInt(Math.max(0, Math.trunc(read.value))) * MICROS_PER_CENT
+  const spent = Number(microsToUsdString(spentMicros, 6))
+  if (spentMicros >= budgetMicros) {
     return { state: 'budget_exhausted', budget, spent, blocked: true,
-      reason: `Crédit Anthropic épuisé (${spent.toFixed(2)} $ / ${budget.toFixed(2)} $). Recharge puis mets à jour le montant dans Admin → Usage.` }
+      reason: budgetMicros === 0n
+        ? 'Budget Anthropic fixé à 0 : aucune dépense IA autorisée. Saisir un montant dans Admin → Usage pour réactiver les appels.'
+        : `Crédit Anthropic épuisé (${microsToUsdString(spentMicros)} $ / ${microsToUsdString(budgetMicros)} $). Recharge puis mets à jour le montant dans Admin → Usage.` }
   }
   return { state: 'available', budget, spent, blocked: false }
 }
