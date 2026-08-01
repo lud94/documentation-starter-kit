@@ -7,7 +7,8 @@
 import { getKey } from './keystore'
 import { withBuild } from '../version'
 import { recordAiUsage } from './usage'
-import { getUsageAll } from '../supabase/pappersCache'
+import { readUsageDurable } from '../supabase/pappersCache'
+import { writeAllowed } from '../env'
 import { listItems, upsertItem } from '../supabase/store'
 
 export type LlmTask = 'chat' | 'classify' | 'plan' | 'extract' | 'write' | 'research'
@@ -39,14 +40,74 @@ export function pickModel(task: LlmTask): string {
   return getKey(t.override) || t.model
 }
 
-// ── Garde-fou budget : bloque tout appel si le crédit saisi est consommé. ──
-export async function budgetLeft(): Promise<{ budget: number; spent: number; blocked: boolean }> {
-  try {
-    const all = await getUsageAll()
-    const spent = (all['ai:cents'] || 0) / 100
-    const budget = parseFloat(getKey('ANTHROPIC_BUDGET') || '') || 0
-    return { budget, spent, blocked: budget > 0 && spent >= budget }
-  } catch { return { budget: 0, spent: 0, blocked: false } }
+// ── Garde-fou budget — FAIL-SAFE (lot C1) ─────────────────────────────────────
+//
+// Défaut corrigé (classé P0). L'ancienne version était fail-open sur toute sa
+// longueur : `getUsageAll()` renvoie {} quand la table est inaccessible, donc
+// `spent = 0`, donc `blocked = false` ; et le `catch` final renvoyait lui aussi
+// un état non bloquant. Une base momentanément indisponible ne dégradait pas le
+// contrôle de dépense : elle le supprimait.
+//
+// Règle retenue : **un budget positif configuré exige une consommation lue de
+// façon durable.** À défaut, on refuse l'appel payant. Refuser à tort coûte une
+// erreur visible ; autoriser à tort coûte de l'argent réel, silencieusement.
+//
+// ⚠️ PÉRIMÈTRE C1 — ce lot rend le garde-fou fail-safe, il ne résout PAS la
+// concurrence. `bumpUsage()` reste un `select` puis `upsert` NON ATOMIQUE : deux
+// écritures simultanées écrivent toutes deux `cur + by` et l'une écrase l'autre.
+// La lecture reste antérieure à la dépense, sans réservation : N instances
+// concurrentes peuvent encore dépasser le plafond. La réservation atomique
+// (RPC PostgreSQL `on conflict do update set count = count + excluded.count`,
+// pré-charge pessimiste) est le lot **C2**, après A3b — elle exige une migration,
+// donc la baseline de migrations. Le multi-tenant de `prospector_usage`
+// (absence de workspace_id) reste hors périmètre lui aussi.
+export type BudgetState =
+  | 'not_configured'    // aucun plafond saisi : aucun garde-fou, comportement explicite
+  | 'available'         // plafond saisi, consommation lue, marge restante
+  | 'budget_exhausted'  // plafond saisi, consommation lue, plafond atteint
+  | 'usage_unavailable' // plafond saisi, consommation NON lisible durablement → refus
+
+export interface BudgetGuard {
+  state: BudgetState
+  budget: number
+  spent: number | null   // null quand la consommation n'a pas pu être lue
+  blocked: boolean
+  reason?: string        // message destiné à l'utilisateur
+}
+
+// Un seul identifiant machine pour l'état « suivi indisponible » :
+// `usage_unavailable`. L'interface le rend par un libellé distinct de celui du
+// budget épuisé, mais introduire un second code (`usage_tracking_unavailable`)
+// pour la même condition créerait deux vérités à maintenir en parallèle.
+export async function budgetLeft(): Promise<BudgetGuard> {
+  const budget = parseFloat(getKey('ANTHROPIC_BUDGET') || '') || 0
+
+  // Budget absent ou nul : aucun plafond n'a été demandé. On n'invente pas une
+  // protection que personne n'a configurée, et on le dit explicitement.
+  if (!(budget > 0)) return { state: 'not_configured', budget: 0, spent: null, blocked: false }
+
+  // Le compteur doit pouvoir être ÉCRIT, pas seulement lu : si le contrat
+  // d'environnement (lot A2) interdit d'écrire `prospector_usage`, l'appel serait
+  // facturé sans jamais être décompté. On bloque AVANT Anthropic.
+  if (!writeAllowed('prospector_usage')) {
+    return { state: 'usage_unavailable', budget, spent: null, blocked: true,
+      reason: 'Suivi de consommation indisponible : écritures sur le compteur d\'usage suspendues par la configuration d\'environnement. Appels IA bloqués tant qu\'un budget est configuré.' }
+  }
+
+  const read = await readUsageDurable('ai:cents')
+  if (!read.ok) {
+    return { state: 'usage_unavailable', budget, spent: null, blocked: true,
+      reason: read.reason === 'no_client'
+        ? 'Suivi de consommation indisponible : aucune base durable configurée. Le compteur mémoire ne peut pas servir de garde budgétaire (il repart à zéro à chaque instance).'
+        : 'Suivi de consommation indisponible : le compteur d\'usage est illisible. Appels IA bloqués par sécurité.' }
+  }
+
+  const spent = read.value / 100
+  if (spent >= budget) {
+    return { state: 'budget_exhausted', budget, spent, blocked: true,
+      reason: `Crédit Anthropic épuisé (${spent.toFixed(2)} $ / ${budget.toFixed(2)} $). Recharge puis mets à jour le montant dans Admin → Usage.` }
+  }
+  return { state: 'available', budget, spent, blocked: false }
 }
 
 // ── Cache de résultats (évite de repayer la même question) ──
@@ -84,7 +145,17 @@ export interface CallOpts {
   cache?: string                // si fourni : réutilise/enregistre le résultat
 }
 
-export interface CallResult { text: string; cached?: boolean; blocked?: boolean; error?: string; truncated?: boolean }
+export interface CallResult {
+  text: string
+  cached?: boolean
+  blocked?: boolean
+  // Motif du refus, exploitable par l'interface et l'Admin : un crédit épuisé se
+  // corrige en rechargeant, un suivi indisponible se corrige en réparant la base
+  // ou la configuration. Les confondre enverrait l'utilisateur au mauvais endroit.
+  blockedReason?: Extract<BudgetState, 'budget_exhausted' | 'usage_unavailable'>
+  error?: string
+  truncated?: boolean
+}
 
 // ── Envoi TOLÉRANT AUX OPTIONS ────────────────────────────────────────────────
 // Leçon apprise à la dure (deux fois) : une option refusée par l'API — un domaine
@@ -150,8 +221,14 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
   const cacheId = o.cache ? `${o.cache}-${model.replace(/[^a-z0-9]/gi, '')}` : ''
   if (cacheId) { const hit = await cacheGet(cacheId); if (hit) return { text: hit, cached: true } }
 
+  // Le cache est consulté AVANT le garde-fou (plus haut) : un résultat déjà payé
+  // ne coûte rien, le refuser n'économiserait rien et dégraderait le service.
   const guard = await budgetLeft()
-  if (guard.blocked) return { text: '', blocked: true, error: `Crédit Anthropic épuisé (${guard.spent.toFixed(2)} $ / ${guard.budget.toFixed(2)} $). Recharge puis mets à jour le montant dans Admin → Usage.` }
+  if (guard.blocked) {
+    return { text: '', blocked: true,
+      blockedReason: guard.state === 'budget_exhausted' ? 'budget_exhausted' : 'usage_unavailable',
+      error: guard.reason }
+  }
 
   const maxTokens = o.maxTokens || TASK_MODEL[o.task].maxTokens
 

@@ -45,6 +45,38 @@ export async function bumpUsage(key: string, by = 1): Promise<number> {
   } catch { memUsage[key] = (memUsage[key] || 0) + by; return memUsage[key] }
 }
 
+// ── Lecture DURABLE d'un compteur — réservée au garde-fou budgétaire (lot C1) ──
+//
+// Différence essentielle avec getUsage()/getUsageAll() : cette fonction ne se
+// replie JAMAIS sur la mémoire et ne convertit JAMAIS une erreur en zéro. Le
+// repli mémoire est par instance et disparaît au démarrage à froid : l'utiliser
+// comme source d'un plafond de dépense revient à relever ce plafond à chaque
+// instance neuve. Un compteur qui ment est pire qu'un compteur absent.
+//
+// `error` est testé EXPLICITEMENT : supabase-js ne lève pas sur erreur
+// applicative, il renvoie { data: null, error }. C'est ce détail qui rendait
+// getUsageAll() silencieusement permissif (audit budget, chemin (a)).
+// Forme PLATE volontairement, pas une union discriminée : le dépôt compile avec
+// `strict: false`, où TypeScript ne rétrécit pas une union sur `!read.ok`.
+// `value` n'a de sens que si `ok` est vrai — c'est à l'appelant de le vérifier.
+export interface DurableRead {
+  ok: boolean
+  value: number
+  reason?: 'no_client' | 'db_error'
+}
+
+export async function readUsageDurable(key: string): Promise<DurableRead> {
+  const sb = supabase()
+  if (!sb) return { ok: false, value: 0, reason: 'no_client' }
+  try {
+    // `maybeSingle` plutôt que `single` : l'absence de ligne est un compteur à
+    // zéro légitime (aucun appel encore facturé), pas une indisponibilité.
+    const { data, error } = await sb.from(USAGE).select('count').eq('key', key).maybeSingle()
+    if (error) return { ok: false, value: 0, reason: 'db_error' }
+    return { ok: true, value: (data?.count as number) || 0 }
+  } catch { return { ok: false, value: 0, reason: 'db_error' } }
+}
+
 export async function getUsage(key: string): Promise<number> {
   const sb = supabase()
   if (!sb) return memUsage[key] || 0

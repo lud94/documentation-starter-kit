@@ -107,3 +107,34 @@ pas être présenté comme une protection de dépense.
 Les points 1, 2 et 4 sont indépendants et suffisent à supprimer les régressions
 les plus graves. Le point 3 change le modèle de coût et mérite un arbitrage
 séparé. Le point 6 est bloqué par la baseline de migrations.
+
+---
+
+## 6. Suites — ce que C1 traite, ce qu'il ne traite pas
+
+**Lot C1 (implémenté).** Point 1 ci-dessus, plus la fermeture des chemins (a),
+(c partiellement), (d) et (f) :
+
+- `readUsageDurable()` (`lib/supabase/pappersCache.ts`) teste explicitement le
+  champ `error` de `supabase-js` et ne se replie jamais sur la mémoire ;
+- `budgetLeft()` (`lib/prospector/llm.ts`) renvoie quatre états — `not_configured`,
+  `available`, `budget_exhausted`, `usage_unavailable` — et **bloque** dès qu'un
+  budget positif est configuré sans consommation lisible durablement ;
+- `writeAllowed('prospector_usage')` faux bloque **avant** l'appel Anthropic, ce
+  qui referme le chemin (f) introduit par le lot A2 ;
+- `/api/config/usage` et l'écran Admin distinguent visuellement crédit épuisé et
+  suivi indisponible ;
+- 13 cas dans `tests/budget-guard.test.ts`.
+
+**Lot C2 (non fait, après A3b).** La concurrence n'est **pas** résolue par C1 :
+
+- `bumpUsage()` reste un `select` puis `upsert` **non atomique** — deux écritures
+  simultanées écrivent chacune `cur + by` et l'une écrase l'autre (chemin (e)) ;
+- la lecture reste antérieure à la dépense, sans réservation : N instances
+  concurrentes peuvent encore dépasser le plafond (chemin (b)) ;
+- `recordAiUsage()` continue d'avaler ses exceptions (chemin (c)) ; C1 en limite
+  la portée — un échec durable finit par rendre la lecture indisponible, donc
+  bloquante — mais ne le corrige pas à la source.
+
+C2 exige une migration (RPC d'incrément atomique), donc la baseline A3b. Le
+point 6 (`workspace_id` sur `prospector_usage`) reste hors périmètre des deux.

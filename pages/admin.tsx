@@ -49,7 +49,7 @@ export default function AdminPage() {
   const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [usagePeriod, setUsagePeriod] = useState<Period>('month')
   const [pappersCalls, setPappersCalls] = useState<number | null>(null)
-  const [budget, setBudget] = useState<{ anthropic: number; spent: number; remaining: number | null } | null>(null)
+  const [budget, setBudget] = useState<{ anthropic: number; spent: number; remaining: number | null; state?: string; blocked?: boolean; reason?: string | null; degraded?: boolean } | null>(null)
   const [budgetInput, setBudgetInput] = useState('')
   const [budgetSaving, setBudgetSaving] = useState(false)
   const loadUsageMeta = () => fetch('/api/config/usage').then((r) => r.json()).then((d) => { setPappersCalls(d.pappersCalls ?? null); setBudget(d.budget ?? null); if (d.budget?.anthropic) setBudgetInput(String(d.budget.anthropic)) }).catch(() => {})
@@ -151,12 +151,31 @@ export default function AdminPage() {
                 <button onClick={saveBudget} disabled={budgetSaving} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-40">{budgetSaving ? '…' : 'Enregistrer'}</button>
               </div>
             </div>
+            {/* Un suivi indisponible n'est PAS un crédit épuisé : les deux bloquent
+                les appels, mais l'un se corrige en rechargeant, l'autre en réparant
+                la base ou la configuration d'environnement. */}
+            {budget?.state === 'usage_unavailable' && (
+              <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+                <p className="text-xs font-semibold text-amber-800">Suivi de consommation indisponible — appels IA bloqués</p>
+                <p className="text-[11px] text-amber-700 mt-0.5">{budget.reason || 'Le compteur d’usage durable est illisible ou non inscriptible. Les chiffres ci-dessous ne font pas autorité.'}</p>
+              </div>
+            )}
+            {budget?.state === 'budget_exhausted' && (
+              <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2">
+                <p className="text-xs font-semibold text-red-800">Crédit épuisé — appels IA bloqués</p>
+                <p className="text-[11px] text-red-700 mt-0.5">Recharge la clé Anthropic, puis mets à jour le montant chargé ci-dessus.</p>
+              </div>
+            )}
             {budget && budget.anthropic > 0 ? (
               <>
                 <div className="grid grid-cols-3 gap-3 mb-3">
                   <div><p className="text-xs text-gray-400">Chargé</p><p className="text-lg font-bold text-gray-700">${budget.anthropic.toFixed(2)}</p></div>
-                  <div><p className="text-xs text-gray-400">Dépensé (réel)</p><p className="text-lg font-bold text-gray-700">${budget.spent.toFixed(2)}</p></div>
-                  <div><p className="text-xs text-gray-400">Restant estimé</p><p className={`text-lg font-bold ${(budget.remaining ?? 0) < budget.anthropic * 0.15 ? 'text-red-600' : 'gradient-text'}`}>${(budget.remaining ?? 0).toFixed(2)}</p></div>
+                  <div><p className="text-xs text-gray-400">Dépensé{budget.degraded ? ' (non fiable)' : ' (réel)'}</p><p className="text-lg font-bold text-gray-700">${budget.spent.toFixed(2)}</p></div>
+                  {/* `remaining` est null quand la consommation n'a pas pu être lue.
+                      Afficher 0,00 $ ferait passer une panne de suivi pour un crédit épuisé. */}
+                  <div><p className="text-xs text-gray-400">Restant estimé</p>{budget.remaining === null
+                    ? <p className="text-lg font-bold text-gray-400">—</p>
+                    : <p className={`text-lg font-bold ${budget.remaining < budget.anthropic * 0.15 ? 'text-red-600' : 'gradient-text'}`}>${budget.remaining.toFixed(2)}</p>}</div>
                 </div>
                 <div className="bg-gray-100 rounded-full h-2 overflow-hidden">
                   <div className="h-2 rounded-full gradient-brand" style={{ width: `${Math.min(100, (budget.spent / budget.anthropic) * 100)}%` }} />
