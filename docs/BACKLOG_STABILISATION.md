@@ -16,7 +16,7 @@ déployé » serait faux.
 | Lot | État | Portée |
 |---|---|---|
 | **C1 — garde-fou fail-safe** | **Implémenté** (`6b6d213`) | P0 **fortement mitigé**, non fermé |
-| **C2a — réservation atomique** | **En cours** — C2a-0 et C2a-1 livrés | Requis avant le niveau de sécurité financière définitif |
+| **C2a — réservation atomique** | **En cours** — C2a-0 et C2a-1 **fermés** (26/26 tests d'intégration verts, run `30762229894`) | Requis avant le niveau de sécurité financière définitif |
 | **C2c — réconciliation facturation** | Non commencé | Aucun chiffre plateforme n'est une facture avant ce lot |
 | **Usage par `workspace_id`** | Non commencé | Requis avant tout budget client individualisé |
 
@@ -92,17 +92,20 @@ multi-tenant — pas dans C2.
 | A3a — structure de migrations | Livré (`2e17938`) | `supabase/migrations/` volontairement vide |
 | **A3b — baseline de migrations** | **Livré** (`f3bc894`) | Baseline réelle de production ; `schema.sql` et la fixture temporaire supprimés |
 | A2 — contrat d'environnement | Livré (`ab4b9c7`) | `APP_ENV_STRICT` **transitoire** |
-| B — isolation par espace de travail | Livré (`10a8d5f`) | Tests d'intégration **écrits, jamais exécutés** |
-| Outillage CI | Livré (`be0a2f0`, `ef739c1`) | Gardes mutations Supabase + passerelle Anthropic. Workflow d'intégration **jamais exécuté** |
+| B — isolation par espace de travail | **Livré et vérifié** (`10a8d5f`) | 6/6 tests d'intégration verts contre PostgreSQL réel (run `30762229894`) |
+| Outillage CI | Livré (`be0a2f0`, `ef739c1`, `ae13c75`) | Gardes mutations Supabase + passerelle Anthropic. Workflow d'intégration **opérationnel et vert** |
 | A4a / A4b — adoption ESLint | Non commencé | `docs/LINT_BASELINE.md` |
 
 ### Points en attente d'une action extérieure
 
-- **Exécution réelle des tests d'intégration B.** `.github/workflows/integration.yml`
-  est livré mais n'a jamais tourné : `workflow_dispatch` n'est exposé que si le
-  fichier est sur la branche par défaut, et le déclencheur `pull_request` suppose
-  une PR ouverte. **Le lot B n'est pas déclarable déployable** tant que ces six
-  cas n'ont pas été exécutés contre un vrai PostgreSQL.
+- **Tests d'intégration : opérationnels.** Déclenchés par la Draft PR #1,
+  26/26 verts (run `30762229894`). Le lot B est vérifié contre un vrai PostgreSQL.
+  La migration `20260802090000_ai_budget_reservation.sql` est **gelée** : toute
+  évolution passe par une nouvelle migration, jamais par une correction en place.
+- **C2a-1e — application au staging.** Procédure dans
+  `docs/C2A1E_STAGING_PROCEDURE.md`, smoke test dans
+  `scripts/smoke/c2a1_budget_smoke.sql`. **Non exécutée** : la session d'assistance
+  n'a ni jeton Supabase ni rattachement de projet.
 - **`APP_ENV_STRICT` est transitoire.** À activer sur staging, puis en production,
   avant fusion ; le mode permissif sera retiré dans un lot ultérieur. ⚠️ Depuis C1,
   l'activation a une portée plus large qu'avant : avec un budget positif saisi, une
