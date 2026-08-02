@@ -32,9 +32,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 22 : @supabase/supabase-js 2.110.8 déclare `engines.node >= 22`.
+      # Le harnais d'intégration est le seul endroit où ce client tourne vraiment
+      # contre un serveur, donc le seul où un écart de version se paierait.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       - name: Installer les dépendances
@@ -70,6 +73,9 @@ jobs:
           # un succès. Mieux vaut un job rouge qu'une garantie imaginaire.
           if [ -z "$API_URL" ] || [ -z "$SERVICE_KEY" ] || [ -z "$ANON_KEY" ]; then
             echo "Impossible de lire API_URL/SERVICE_ROLE_KEY/ANON_KEY depuis \`supabase status\`." >&2
+            echo "Cause connue : le CLI dérive anon/service_role des artefacts d'auth." >&2
+            echo "Vérifier que supabase/config.toml porte bien [auth] enabled = true." >&2
+            echo "Clés effectivement émises (valeurs masquées) :" >&2
             sed 's/=.*/=<masqué>/' /tmp/supabase.env >&2
             exit 1
           fi
