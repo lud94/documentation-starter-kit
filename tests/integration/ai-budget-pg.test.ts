@@ -30,7 +30,10 @@ async function reserve(id: string, estimate: number, budget: number, fingerprint
     p_agent: 'test', p_model: 'claude-sonnet-5', p_ttl_seconds: ttl,
   })
   if (error) throw new Error(`reserve: ${error.message}`)
-  return (Array.isArray(data) ? data[0] : data) as { state: string; engaged_micros: number }
+  // `result_state` et non `state` : dans un RETURNS TABLE PL/pgSQL, un OUT nommé
+  // `state` entre en collision avec la colonne du même nom (voir la migration).
+  const row = (Array.isArray(data) ? data[0] : data) as { result_state: string; engaged_micros: number }
+  return { state: row.result_state, engaged_micros: Number(row.engaged_micros) }
 }
 const settle = (id: string, micros: number, outcome = 'http_200') =>
   sb.rpc('prospector_ai_settle', { p_id: id, p_settled_micros: micros, p_outcome: outcome })

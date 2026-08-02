@@ -194,7 +194,13 @@ create or replace function public.prospector_ai_reserve(
   p_model            text,
   p_ttl_seconds      integer
 )
-returns table (state text, engaged_micros bigint, budget_micros bigint)
+-- ⚠️ La colonne de sortie s'appelle `result_state`, PAS `state`. Dans une fonction
+-- PL/pgSQL, les colonnes d'un RETURNS TABLE deviennent des variables : un OUT
+-- nomme `state` entre en collision avec prospector_ai_reservations.state des que
+-- le corps ecrit `where state = 'OPEN'`, et PostgreSQL refuse la fonction A
+-- L'EXECUTION avec « column reference "state" is ambiguous ». Constate par le
+-- premier vrai run d'integration, pas par relecture.
+returns table (result_state text, engaged_micros bigint, budget_micros bigint)
 language plpgsql
 security definer
 set search_path = ''
@@ -216,12 +222,12 @@ begin
   --    donc on ignore si l'appel a ete facture. Fait ici plutot que dans une
   --    tache planifiee : pas de second ordonnanceur a maintenir, et pas d'ordre
   --    de verrous supplementaire.
-  update public.prospector_ai_reservations
+  update public.prospector_ai_reservations r
      set state = 'UNRESOLVED', resolved_at = now(), outcome_code = 'expired'
-   where state = 'OPEN' and expires_at <= now();
+   where r.state = 'OPEN' and r.expires_at <= now();
 
   -- 3. Idempotence. Le meme identifiant rejoue doit rendre la MEME decision.
-  select * into v_existing from public.prospector_ai_reservations where id = p_id;
+  select * into v_existing from public.prospector_ai_reservations r where r.id = p_id;
   if found then
     -- Meme identifiant, intention facturable differente : on refuse. C'est un
     -- defaut d'appelant, pas un rejeu — l'accepter ferait partir une seconde
