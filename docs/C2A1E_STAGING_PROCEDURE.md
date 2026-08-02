@@ -78,7 +78,7 @@ where schemaname = 'public' and tablename like 'prospector_ai_%';
 
 **Attendu :** deux tables, `rowsecurity = true` sur les deux, `policies = 0`.
 
-## Étape 5 et 6 — Smoke test et permissions
+## Étape 5 — Smoke SQL : comportement des RPC et **droits du rôle `anon`**
 
 ```sh
 psql "$STAGING_DB_URL" -v ON_ERROR_STOP=1 -f scripts/smoke/c2a1_budget_smoke.sql
@@ -89,8 +89,11 @@ staging.
 
 Le script couvre en un seul passage : `prospector_ai_engaged()`, une réservation
 autorisée, une seconde refusée pour budget insuffisant, un règlement, la cohérence
-engagement/consommation, le refus de la clé `anon` sur les quatre RPC, et la
-non-régression des six tables legacy.
+engagement/consommation, et la non-régression des six tables legacy.
+
+Il vérifie aussi les permissions — mais **au niveau du rôle PostgreSQL**, via
+`SET LOCAL ROLE anon`. C'est une preuve de la clause `REVOKE EXECUTE … FROM anon`,
+pas du chemin d'entrée réel. Voir l'étape 6.
 
 **Le nettoyage n'est pas une étape : c'est la structure.** Tout est enveloppé dans
 une transaction terminée par `ROLLBACK`. Aucune donnée de test ne peut survivre,
@@ -101,15 +104,63 @@ Conséquence assumée : le compteur `prospector_ai_ledger` n'est pas modifié
 durablement. Un smoke test ne doit pas laisser une dépense fictive dans un compteur
 budgétaire.
 
-**Aucun appel Anthropic**, donc aucune clé Anthropic staging requise, et aucune
-dépense.
-
 **Sortie attendue :** une suite de lignes `OK`, puis `SMOKE TEST C2a-1e : VERT`.
 Toute anomalie lève une exception et arrête le script — il est vert ou il s'arrête.
 
+## Étape 6 — Smoke API : **permissions de la clé anon via PostgREST**
+
+```sh
+STAGING_SUPABASE_URL='https://<ref-staging>.supabase.co' \
+STAGING_SUPABASE_ANON_KEY='<clé anon staging>' \
+  npm run smoke:anon
+```
+
+### Pourquoi deux scripts et non un seul
+
+| Script | Ce qu'il prouve | Ce qu'il ne prouve pas |
+|---|---|---|
+| `c2a1_budget_smoke.sql` | Le **rôle PostgreSQL `anon`** n'a pas `EXECUTE` sur les RPC | Que la clé anon soit bien mappée sur ce rôle |
+| `c2a1_anon_api_smoke.mjs` | La **clé anon**, via PostgREST, est refusée | Le comportement métier des RPC (couvert par le premier) |
+
+Le critère d'acceptation porte sur la **clé**. Le rôle peut être correctement privé
+de droits pendant que PostgREST mappe la clé anon vers un autre rôle, ou que la clé
+soit révoquée, mal signée, ou porteuse d'un rôle inattendu. Le premier script prouve
+la serrure, le second prouve la porte.
+
+### Règles de verdict du smoke API
+
+- **Refus de permission** (`42501`, ou clé rejetée) → **succès**, seul cas.
+- **Appel autorisé** (réponse 2xx) → **échec** : régression de permissions.
+- **Appel exécuté puis erreur métier** → **échec** : l'appel a franchi la porte.
+- **Fonction introuvable** (`PGRST202`) → **non concluant, donc échec**. Un objet
+  absent produit exactement le même échec qu'un objet protégé : le compter comme
+  un succès reviendrait à déclarer sécurisée une base où la migration n'a jamais
+  été appliquée.
+- **Cible injoignable** → **non concluant, donc échec**, avec un message qui pointe
+  la variable plutôt qu'une fausse régression.
+
+### Garanties du smoke API
+
+- **Aucune clé de service.** Le script s'arrête (code 2) s'il en détecte une dans
+  l'environnement : sa présence contournerait la RLS et invaliderait le résultat.
+- **La clé anon n'est jamais affichée** — seules sa présence et sa longueur le sont,
+  ce qui suffit à diagnostiquer une variable vide ou tronquée.
+- **Aucune donnée durable, même en cas de régression.** Les paramètres sont choisis
+  pour que chaque appel, s'il était autorisé, s'arrête avant toute écriture :
+  `reserve` reçoit une estimation supérieure au plafond (donc `budget_exhausted`
+  rendu avant l'insert), `settle` un identifiant inexistant (`noop`), `bump` un
+  delta nul. Un test de permissions qui laisse des traces quand il échoue aggrave
+  l'incident qu'il signale.
+
+**Sortie attendue :** quatre lignes `[ OK ]`, puis
+`SMOKE API C2a-1e : VERT`. Aucun appel Anthropic n'est émis par l'une ou l'autre
+des deux étapes : aucune clé Anthropic staging n'est requise, et aucune dépense
+n'est engagée.
+
+
 ## Étape 7 — Non-régression des données applicatives
 
-Le point 6 du script compare les effectifs des six tables legacy avant et après.
+Le point 6 du smoke SQL compare les effectifs des six tables legacy avant et après.
 Contrôle complémentaire, indépendant, à lancer **avant et après** l'étape 2 :
 
 ```sql

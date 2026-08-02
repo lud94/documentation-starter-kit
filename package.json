@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "check:mutations": "node scripts/check-supabase-mutations.mjs",
     "check:gateway": "node scripts/check-anthropic-gateway.mjs",
+    "smoke:anon": "node scripts/smoke/c2a1_anon_api_smoke.mjs",
     "db:new": "supabase migration new",
     "db:status": "supabase migration list",
     "db:push": "supabase db push",

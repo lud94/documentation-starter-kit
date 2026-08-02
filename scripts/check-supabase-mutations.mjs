@@ -33,6 +33,14 @@ const ALLOWED = new Set([
   'lib/supabase/workspaces.ts',
   'lib/supabase/pappersCache.ts',
 
+  // Sonde de PERMISSIONS (C2a-1e). Elle appelle les RPC financières
+  // DÉLIBÉRÉMENT sans privilège, pour prouver qu'elles sont refusées. Passer par
+  // un module de lib/supabase/ lui ferait perdre son objet : ces modules
+  // supposent une clé de service, c'est-à-dire exactement ce que cette sonde
+  // n'a pas. Ses paramètres sont choisis pour qu'aucun appel n'écrive, même
+  // s'il était autorisé.
+  'scripts/smoke/c2a1_anon_api_smoke.mjs',
+
   // ⚠️ DÉROGATION CONNUE — écrit `prospector_settings` sans passer par
   // lib/supabase/settings.ts (route de diagnostic de persistance). À supprimer
   // ou à faire passer par le module lors d'un lot ultérieur ; référencée ici
