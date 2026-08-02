@@ -139,20 +139,68 @@ la serrure, le second prouve la porte.
 - **Cible injoignable** → **non concluant, donc échec**, avec un message qui pointe
   la variable plutôt qu'une fausse régression.
 
-### Garanties du smoke API
+### Précondition à vérifier AVANT de lancer le smoke API
+
+Avec la clé de service, dans l'éditeur SQL staging :
+
+```sql
+select count(*) as open_echues
+from prospector_ai_reservations
+where state = 'OPEN' and expires_at <= now();
+```
+
+**Attendu : `0`.** Voir la section « effets de bord » ci-dessous — c'est cette
+valeur qui rend le balayage de `reserve` sans effet si la permission était ouverte.
+Tant que C2a-2 n'existe pas, la table est vide et le compte est trivialement nul.
+
+### Garanties du smoke API — et la limite qui n'en est pas une
 
 - **Aucune clé de service.** Le script s'arrête (code 2) s'il en détecte une dans
   l'environnement : sa présence contournerait la RLS et invaliderait le résultat.
 - **La clé anon n'est jamais affichée** — seules sa présence et sa longueur le sont,
   ce qui suffit à diagnostiquer une variable vide ou tronquée.
-- **Aucune donnée durable, même en cas de régression.** Les paramètres sont choisis
-  pour que chaque appel, s'il était autorisé, s'arrête avant toute écriture :
-  `reserve` reçoit une estimation supérieure au plafond (donc `budget_exhausted`
-  rendu avant l'insert), `settle` un identifiant inexistant (`noop`), `bump` un
-  delta nul. Un test de permissions qui laisse des traces quand il échoue aggrave
-  l'incident qu'il signale.
 
-**Sortie attendue :** quatre lignes `[ OK ]`, puis
+#### Effets de bord : ce qui est garanti, et ce qui ne l'est pas
+
+PostgreSQL vérifie `EXECUTE` **avant** d'exécuter le corps. Le risque d'écriture
+n'existe donc que dans le cas de régression — permission ouverte.
+
+**Cinq sondes sur six ne peuvent rien écrire, même autorisées.** Chacune reçoit un
+argument invalide rejeté à la *première instruction* de la fonction, avant tout
+verrou et toute écriture — vérifié ligne à ligne dans la migration :
+`engaged()` (uniquement des `SELECT`), `bump(-1)`, `settle(…, -1, …)`,
+`resolve(…, 'INVALID')`, `reconcile(…, 'INVALID')`.
+
+**`prospector_ai_reserve()` n'offre pas cette garantie.** Son corps écrit avant de
+pouvoir rendre un verdict de refus, dans cet ordre :
+
+1. `insert into prospector_ai_ledger … on conflict do nothing` ;
+2. `select … for update` — verrou, sans écriture ;
+3. `update prospector_ai_reservations set state='UNRESOLVED' where state='OPEN' and expires_at <= now()`
+   — **balayage paresseux, mutant** ;
+4. seulement ensuite, le calcul du budget et `budget_exhausted`.
+
+L'étape 3 est **inconditionnelle vis-à-vis des paramètres** : aucun choix
+d'arguments ne la contourne. La migration étant gelée, elle n'est pas réordonnée
+pour arranger le test.
+
+**Ce qui réduit le risque à une valeur caractérisée, à défaut de le supprimer :**
+
+- **Les cinq sondes sûres tournent d'abord, et le script s'arrête si l'une d'elles
+  échoue ou reste non concluante.** `reserve` n'est jamais appelée tant qu'un doute
+  subsiste. L'état résiduel se réduit donc à « anon refusé sur les cinq, mais ouvert
+  sur `reserve` seule » — ce qui suppose un `GRANT` partiel fabriqué à la main.
+- **`Prefer: tx=rollback`** est envoyé sur la sonde `reserve`, et l'en-tête
+  `Preference-Applied` de la réponse est **inspecté puis rapporté**. Si PostgREST
+  l'honore, toute écriture éventuelle est annulée avec la transaction. Le script
+  dit lequel des deux cas s'est produit ; il ne le suppose pas.
+- **Précondition ci-dessus** : sans réservation `OPEN` échue, l'étape 3 ne trouve
+  aucune ligne et n'écrit rien.
+
+Ces trois points rendent l'écriture improbable. Ils ne la rendent pas impossible,
+et la formule « aucune donnée durable » serait donc fausse pour `reserve`.
+
+**Sortie attendue :** six lignes `[ OK ]`, puis
 `SMOKE API C2a-1e : VERT`. Aucun appel Anthropic n'est émis par l'une ou l'autre
 des deux étapes : aucune clé Anthropic staging n'est requise, et aucune dépense
 n'est engagée.
