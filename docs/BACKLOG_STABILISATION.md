@@ -71,8 +71,20 @@ le budget que `if p_budget_micros > 0`, donc `budget_exhausted` y est
 inatteignable par construction. La décision hypothétique `would_have_blocked`
 est calculée à part, à partir de `AI_BUDGET_OBSERVE_LIMIT` — variable
 **strictement informative**, qui n'emprunte aucun chemin capable de refuser un
-appel. Une fenêtre d'observation se mène **`ANTHROPIC_BUDGET` absent**, sans quoi
-le garde C1 écrête le trafic et la mesure sous-estime le taux de refus futur.
+appel. En `OBSERVE`, le garde **C1 est neutralisé dans `callClaude()`** : sans
+cela un `ANTHROPIC_BUDGET` oublié refuserait des appels en amont de la
+passerelle, et la fenêtre mesurerait un trafic déjà écrêté — donc un taux de
+refus sous-estimé, l'erreur dans le sens le plus dangereux pour une calibration.
+La présence de la variable est signalée comme configuration incohérente. `OFF` et
+`ENFORCE` conservent C1 inchangé.
+
+**Le zéro n'est pas une absence.** `ANTHROPIC_BUDGET=0` signifie « aucune dépense
+autorisée » (contrat C1), alors que `p_budget_micros = 0` signifie « aucun
+plafond » côté RPC. Les confondre inverserait la sémantique. Le cas est donc
+tranché dans la passerelle, avant toute RPC et tout `fetch` — ce qui ferme le
+contournement des appelants directs d'`anthropicPost()`, `/api/ai/diagnose` en
+tête, que C1 ne couvrait pas. Quatre cas distincts : absent = aucun plafond ;
+`0` = hard stop ; `> 0` = plafond transmis ; illisible = fail closed.
 
 **Coût non bornable.** `web_fetch` n'a pas de coût d'outil : seuls les tokens du
 contenu récupéré sont facturés. Ils ne sont bornables que par
@@ -82,6 +94,20 @@ L'estimation porte donc `complete: false` et nomme la composante manquante ; la
 valeur 0 correspondante ne doit **jamais** être lue comme un coût nul. En
 `OBSERVE` l'appel passe ; en `ENFORCE` avec un plafond positif il est refusé,
 plutôt que d'arbitrer un plafond sur une estimation qui n'est pas un majorant.
+Même règle pour un **type d'outil serveur non modélisé** : seuls `web_search` et
+`web_fetch` ont un modèle de coût supporté ; tout autre type rend l'estimation
+incomplète, car il peut se facturer au token, à la seconde ou au volume.
+
+`RELEASED` n'est accordé qu'aux statuts dont la non-facturation est établie
+(400, 401, 403, 404, 413, 422, 429) — **une liste, pas un intervalle** : un
+`status < 500 ⇒ RELEASED` universel libérerait des codes dont on ne sait rien.
+Tout le reste, y compris un 4xx non répertorié et toute exception de transport,
+tombe en `UNRESOLVED`.
+
+`/api/ai/diagnose` : dès qu'**une** sonde est refusée par le garde, le verdict
+parle du budget et de rien d'autre. Sans ce tri, la sonde `web_fetch` — qui ne
+déclare pas `max_content_tokens`, donc refusée en `ENFORCE` sous plafond — se
+serait lue comme une incapacité de la clé Anthropic, jamais sollicitée.
 
 Télémétrie de calibration : journaux structurés (marqueur `c2a2.telemetry`),
 corrélés à la comptabilité par `reservation_id`. Aucune donnée métier, aucun

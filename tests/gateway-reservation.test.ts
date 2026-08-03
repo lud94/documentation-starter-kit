@@ -78,6 +78,26 @@ describe('mode OFF (défaut d\'exécution)', () => {
     expect(settle).not.toHaveBeenCalled()
   })
 
+  it('transport historique : aucun signal d\'annulation posé en OFF', async () => {
+    // Le durcissement du transport ne fait pas partie de ce lot. OFF reste le
+    // comportement historique, y compris son absence de délai maximal.
+    await anthropicPost('k', BODY())
+    expect(fetchMock.mock.calls[0][1].signal).toBeUndefined()
+  })
+
+  it('OBSERVE et ENFORCE posent en revanche un délai maximal', async () => {
+    for (const mode of ['OBSERVE', 'ENFORCE']) {
+      vi.resetModules()
+      process.env.AI_BUDGET_RESERVATION = mode
+      const g = globalThis as any; g.__prospectorKeys.clear()
+      const m = await import('../lib/prospector/llm')
+      fetchMock.mockClear()
+      await m.anthropicPost('k', BODY())
+      expect(fetchMock.mock.calls[0][1].signal).toBeDefined()
+    }
+    delete process.env.AI_BUDGET_RESERVATION
+  })
+
   it('valeur non reconnue → OFF, JAMAIS ENFORCE', async () => {
     for (const v of ['ON', 'true', '1', 'enforce ', 'OBSERVER', '']) {
       vi.resetModules()
@@ -174,6 +194,57 @@ describe('mode ENFORCE', () => {
     expect(r.blocked).toBe(true)
   })
 
+  // ── Budget explicitement à zéro — P0 ───────────────────────────────────────
+  // `readBudgetConfig` distingue « absent » de « 0 ». Le RPC, lui, lit 0 comme
+  // « aucun plafond ». Confondre les deux transformerait un hard stop en
+  // autorisation illimitée pour tout appelant direct d'anthropicPost.
+  it('ANTHROPIC_BUDGET=0 → hard stop : aucun fetch, aucune RPC', async () => {
+    process.env.ANTHROPIC_BUDGET = '0'
+    const g = globalThis as any; g.__prospectorKeys.clear()
+    vi.resetModules()
+    const m = await import('../lib/prospector/llm')
+    const r = await m.anthropicPost('k', BODY())
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(reserve).not.toHaveBeenCalled()      // le RPC ne doit PAS arbitrer ce cas
+    expect(r.blocked).toBe(true)
+    expect(r.blockedReason).toBe('budget_exhausted')
+  })
+
+  it.each(['0', '0.0', '0,000000', '0.000000'])(
+    'ANTHROPIC_BUDGET=« %s » → hard stop', async (v) => {
+      process.env.ANTHROPIC_BUDGET = v
+      const g = globalThis as any; g.__prospectorKeys.clear()
+      vi.resetModules()
+      const m = await import('../lib/prospector/llm')
+      const r = await m.anthropicPost('k', BODY())
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(r.blockedReason).toBe('budget_exhausted')
+    })
+
+  it('ANTHROPIC_BUDGET ABSENT → aucun plafond demandé : l\'appel part', async () => {
+    // Le contraste avec le cas ci-dessus est tout l'objet de la correction.
+    const r = await anthropicPost('k', BODY())
+    expect(r.ok).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(reserve.mock.calls[0][0].budgetMicros).toBe(0n)
+  })
+
+  it('sonde type /api/ai/diagnose avec budget 0 → aucun appel émis', async () => {
+    // Reproduit exactement la forme d'appel de la route de diagnostic, qui
+    // n'est PAS couverte par C1 : elle n'passe pas par callClaude().
+    process.env.ANTHROPIC_BUDGET = '0'
+    const g = globalThis as any; g.__prospectorKeys.clear()
+    vi.resetModules()
+    const m = await import('../lib/prospector/llm')
+    const r = await m.anthropicPost('k', {
+      model: 'claude-sonnet-5', max_tokens: 64,
+      messages: [{ role: 'user', content: 'Réponds juste: OK' }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 1 }],
+    }, { agent: 'diagnose', task: 'research' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(r.blocked).toBe(true)
+  })
+
   it('transmet le plafond réel au RPC', async () => {
     process.env.ANTHROPIC_BUDGET = '2.50'
     const g = globalThis as any; g.__prospectorKeys.clear()
@@ -258,6 +329,26 @@ describe('classification', () => {
     fetchMock.mockResolvedValue(httpErr(status))
     await anthropicPost('k', BODY())
     expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', `http_${status}`)
+  })
+
+  // `status < 500 ⇒ RELEASED` était un intervalle, pas une preuve : il libérait
+  // des statuts dont on ne sait rien. RELEASED se mérite, statut par statut.
+  it.each([402, 405, 409, 418, 451, 499])(
+    'HTTP %i non répertorié → UNRESOLVED, pas RELEASED', async (status) => {
+      fetchMock.mockResolvedValue(httpErr(status))
+      await anthropicPost('k', BODY())
+      expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', `http_${status}`)
+    })
+
+  it('aucun 4xx non répertorié ne produit jamais RELEASED', async () => {
+    for (let s = 400; s < 500; s++) {
+      resolveReservation.mockClear()
+      fetchMock.mockResolvedValue(httpErr(s))
+      await anthropicPost('k', BODY())
+      const [, state] = resolveReservation.mock.calls[0]
+      if ([400, 401, 403, 404, 413, 422, 429].includes(s)) expect(state).toBe('RELEASED')
+      else expect(state).toBe('UNRESOLVED')
+    }
   })
 
   it('timeout → UNRESOLVED', async () => {
@@ -349,9 +440,17 @@ describe('readToolShape', () => {
     expect(s.webSearchMaxUses).toBe(8)
   })
 
-  it('outil serveur inconnu → facturé à l\'usage (borne majorante)', () => {
+  it('outil serveur inconnu → signalé comme non modélisé', () => {
     const s = readToolShape({ tools: [{ type: 'code_execution_20990101', name: 'x', max_uses: 4 }] })
-    expect(s.webSearchMaxUses).toBe(4)
+    expect(s.unknownServerToolTypes).toEqual(['code_execution_20990101'])
+  })
+
+  it('web_search et web_fetch ne sont PAS des types inconnus', () => {
+    const s = readToolShape({ tools: [
+      { type: 'web_search_20250305', name: 'web_search', max_uses: 1 },
+      { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 1, max_content_tokens: 100 },
+    ] })
+    expect(s.unknownServerToolTypes).toEqual([])
   })
 
   it('aucun outil → tout à zéro, rien de déclaré', () => {
@@ -359,6 +458,35 @@ describe('readToolShape', () => {
     expect(s).toEqual({
       webSearchMaxUses: 0, webFetchMaxUses: 0,
       webFetchDeclared: false, webFetchMaxContentTokens: undefined,
+      unknownServerToolTypes: [],
     })
+  })
+})
+
+// ── Outil serveur non modélisé : refusé en ENFORCE sous plafond ───────────────
+describe('outil serveur non modélisé', () => {
+  const withUnknown = () => ({
+    ...BODY(), tools: [{ type: 'code_execution_20990101', name: 'x', max_uses: 4 }],
+  } as any)
+
+  it('ENFORCE + plafond positif → refusé, l\'estimation n\'est pas un majorant', async () => {
+    process.env.AI_BUDGET_RESERVATION = 'ENFORCE'
+    process.env.ANTHROPIC_BUDGET = '5'
+    const g = globalThis as any; g.__prospectorKeys.clear()
+    vi.resetModules()
+    const m = await import('../lib/prospector/llm')
+    const r = await m.anthropicPost('k', withUnknown())
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(r.blockedDetail).toContain('unknown_server_tool')
+  })
+
+  it('OBSERVE → autorisé, mais mesuré comme incomplet', async () => {
+    process.env.AI_BUDGET_RESERVATION = 'OBSERVE'
+    const g = globalThis as any; g.__prospectorKeys.clear()
+    vi.resetModules()
+    const m = await import('../lib/prospector/llm')
+    const r = await m.anthropicPost('k', withUnknown())
+    expect(r.ok).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

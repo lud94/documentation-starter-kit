@@ -226,10 +226,17 @@ export interface GatewayResult {
 // d'erreur bruts. `callClaude()` reste le chemin nominal.
 export const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages'
 
-// Délai maximal d'une requête. Choisi SOUS le `maxDuration = 60` des routes
-// lourdes, pour que la résolution comptable ait le temps de s'écrire avant le
-// gel de la fonction. Sans lui, la classe « timeout » serait inatteignable et
-// une requête pendante bloquerait le budget jusqu'au gel — sans diagnostic.
+// Délai maximal d'une requête — appliqué UNIQUEMENT en OBSERVE et ENFORCE.
+//
+// Il y est nécessaire : sans lui, la classe « timeout » serait inatteignable et
+// une réservation resterait OPEN jusqu'au gel de la fonction, sans que la
+// résolution comptable ait pu s'écrire. Choisi SOUS le `maxDuration = 60` des
+// routes lourdes pour lui laisser cette marge.
+//
+// ⚠️ PAS EN OFF. Le poser aussi sur le chemin historique changeait le transport
+// hors du périmètre de ce lot — un durcissement peut-être souhaitable, mais qui
+// n'a rien à voir avec la comptabilité budgétaire et qui doit être instruit
+// séparément. OFF reste le comportement historique, y compris ses défauts.
 export const REQUEST_TIMEOUT_MS = 50_000
 
 // Durée de vie d'une réservation. Généreuse par rapport au délai ci-dessus : une
@@ -246,12 +253,15 @@ interface ToolShape {
   webFetchMaxUses: number
   webFetchDeclared: boolean
   webFetchMaxContentTokens: number | undefined  // undefined ⇒ NON BORNÉ
+  /** Types serveur dont le modèle de coût n'est pas supporté. */
+  unknownServerToolTypes: string[]
 }
 
 export function readToolShape(body: any): ToolShape {
   const out: ToolShape = {
     webSearchMaxUses: 0, webFetchMaxUses: 0,
     webFetchDeclared: false, webFetchMaxContentTokens: undefined,
+    unknownServerToolTypes: [],
   }
   const tools = Array.isArray(body?.tools) ? body.tools : []
   let fetchContentTotal = 0
@@ -274,11 +284,17 @@ export function readToolShape(body: any): ToolShape {
       } else {
         anyFetchUnbounded = true
       }
-    } else {
-      // `web_search` et tout autre outil SERVEUR non répertorié : facturé à
-      // l'usage. Appliquer le tarif de la recherche web à un outil inconnu est
-      // une borne prudente, pas une approximation — elle majore.
+    } else if (type.startsWith('web_search')) {
       out.webSearchMaxUses += uses
+    } else {
+      // Outil serveur dont le modèle de coût n'est PAS supporté. La part est
+      // comptée au tarif de la recherche web à titre indicatif, mais ce n'est
+      // pas un majorant : un outil inconnu peut se facturer au token, à la
+      // seconde ou au volume. L'estimation est donc marquée incomplète —
+      // supposer un modèle de prix puis le présenter comme borné serait
+      // exactement le faux zéro qu'on s'interdit ailleurs.
+      out.webSearchMaxUses += uses
+      if (!out.unknownServerToolTypes.includes(type)) out.unknownServerToolTypes.push(type)
     }
   }
 
@@ -300,11 +316,23 @@ async function rawPost(key: string, payload: string): Promise<GatewayResult> {
     method: 'POST',
     headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
     body: payload,
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
   if (!r.ok) return { ok: false, status: r.status, data: null, text: await r.text() }
   return { ok: true, status: r.status, data: await r.json(), text: '' }
 }
+
+// ── Statuts 4xx dont la NON-FACTURATION est raisonnablement établie ──────────
+//
+// Ce sont des rejets à l'admission : requête malformée, clé invalide, droit
+// manquant, route inconnue, charge trop grosse, entité non traitable, quota
+// refusé avant traitement. Aucun calcul n'a eu lieu.
+//
+// ⚠️ LISTE, PAS INTERVALLE. Un `status < 500 ⇒ RELEASED` universel accorderait
+// la libération à des statuts dont on ne sait rien — un 402, un 451, un code
+// propriétaire futur, ou un intermédiaire réseau répondant 4xx après que la
+// requête a atteint Anthropic. `RELEASED` exige une preuve ; un statut non
+// reconnu n'en est pas une et tombe donc en UNRESOLVED, comme le reste.
+const RELEASABLE_STATUSES = new Set([400, 401, 403, 404, 413, 422, 429])
 
 // Classification d'une exception de transport.
 //
@@ -343,6 +371,7 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
     webSearchMaxUses: shape.webSearchMaxUses,
     webFetchDeclared: shape.webFetchDeclared,
     webFetchMaxContentTokens: shape.webFetchMaxContentTokens,
+    unknownServerToolTypes: shape.unknownServerToolTypes,
   })
 
   const enforce = mode === 'ENFORCE'
@@ -392,7 +421,23 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
   // Le comportement final d'activation sera arrêté après les mesures OBSERVE et
   // la définition des bornes `web_fetch` — ce refus est la position fail-safe
   // par défaut, pas une décision produit définitive.
-  if (enforce && !est.complete && budget.configured) {
+  // ── ENFORCE : un plafond SAISI À ZÉRO est un refus, pas une absence ────────
+  // `readBudgetConfig` distingue « absent » de « 0 », et le contrat de C1 dit
+  // qu'un 0 saisi signifie « aucune dépense autorisée ». Le RPC, lui, lit
+  // `p_budget_micros = 0` comme « aucun plafond » : lui déléguer ce cas
+  // inverserait la sémantique et transformerait un hard stop en autorisation
+  // illimitée. On tranche donc ICI, avant toute RPC et avant tout `fetch`.
+  // C'est ce qui ferme le contournement des appelants directs d'anthropicPost
+  // (dont /api/ai/diagnose), que C1 ne couvrait pas.
+  if (enforce && budget.zero) {
+    done('NOT_RESERVED', 'budget_zero')
+    return { ok: false, status: 0, data: null, text: '', blocked: true,
+      blockedReason: 'budget_exhausted',
+      blockedDetail: 'Budget Anthropic fixé à 0 : aucune dépense IA autorisée. '
+        + 'Saisir un montant dans Admin → Usage pour réactiver les appels.' }
+  }
+
+  if (enforce && !est.complete && budget.positive) {
     done('NOT_RESERVED', 'estimate_incomplete')
     return { ok: false, status: 0, data: null, text: '', blocked: true,
       blockedReason: 'usage_unavailable',
@@ -482,7 +527,7 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
   if (!r.ok) {
     let text = ''
     try { text = await r.text() } catch { /* le statut suffit à classer */ }
-    if (r.status < 500) {
+    if (RELEASABLE_STATUSES.has(r.status)) {
       await closeReleased(id, `http_${r.status}`)
       done('RELEASED', `http_${r.status}`)
     } else {
@@ -621,11 +666,24 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
 
   // Le cache est consulté AVANT le garde-fou (plus haut) : un résultat déjà payé
   // ne coûte rien, le refuser n'économiserait rien et dégraderait le service.
-  const guard = await budgetLeft()
-  if (guard.blocked) {
-    return { text: '', blocked: true,
-      blockedReason: guard.state === 'budget_exhausted' ? 'budget_exhausted' : 'usage_unavailable',
-      error: guard.reason }
+  //
+  // ⚠️ OBSERVE NEUTRALISE C1 — et c'est la condition d'une mesure honnête.
+  // Sans cela, un `ANTHROPIC_BUDGET` oublié ferait refuser des appels ICI, avant
+  // même que la passerelle soit atteinte : la fenêtre d'observation mesurerait
+  // un trafic déjà écrêté, donc un `would_have_blocked` sous-estimé — l'erreur
+  // dans le sens le plus dangereux pour une calibration. L'avertissement de
+  // configuration incohérente est émis à la place du refus.
+  // OFF et ENFORCE conservent C1 tel quel : aucune régression du garde-fou.
+  const mode = budgetMode()
+  if (mode === 'OBSERVE') {
+    warnIfObserveBiased(mode)
+  } else {
+    const guard = await budgetLeft()
+    if (guard.blocked) {
+      return { text: '', blocked: true,
+        blockedReason: guard.state === 'budget_exhausted' ? 'budget_exhausted' : 'usage_unavailable',
+        error: guard.reason }
+    }
   }
 
   const maxTokens = o.maxTokens || TASK_MODEL[o.task].maxTokens

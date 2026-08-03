@@ -176,11 +176,27 @@ export interface EstimateInput {
    * `webFetchDeclared` est vrai ⇒ composante NON ESTIMABLE, jamais zéro.
    */
   webFetchMaxContentTokens?: number
+  /**
+   * Types d'outils serveur rencontrés dont le modèle de coût n'est pas supporté.
+   * Non vide ⇒ estimation INCOMPLÈTE, quelle que soit la valeur calculée.
+   */
+  unknownServerToolTypes?: string[]
   webSearchMicrosPerUse?: bigint
 }
 
 /** Identifiants de composantes non estimables — stables, exploités en télémétrie. */
 export const INCOMPLETE_WEB_FETCH_CONTENT = 'web_fetch_content'
+export const INCOMPLETE_UNKNOWN_SERVER_TOOL = 'unknown_server_tool'
+
+/**
+ * Types d'outils serveur dont le modèle de coût est EXPLICITEMENT supporté.
+ * Tout autre type est facturé à titre indicatif au tarif de la recherche web,
+ * mais rend l'estimation INCOMPLÈTE : un outil inconnu peut se facturer d'une
+ * façon que ce fichier ne modélise pas (au token, à la seconde, au Go). Le
+ * traiter comme une recherche web et déclarer l'estimation complète reviendrait
+ * à présenter une supposition comme un majorant.
+ */
+export const SUPPORTED_SERVER_TOOL_PREFIXES = ['web_search', 'web_fetch']
 
 export interface EstimateBreakdown {
   inputMicros: bigint         // corps réellement sérialisé
@@ -217,6 +233,11 @@ export function estimateBreakdown(o: EstimateInput): EstimateBreakdown {
     } else {
       fetchContentMicros = tokenCostMicros(n(o.webFetchMaxContentTokens), p.inPerM)
     }
+  }
+  // Outil serveur non modélisé : la part calculée reste dans `toolMicros` à
+  // titre indicatif, mais elle ne prétend plus majorer quoi que ce soit.
+  if (o.unknownServerToolTypes && o.unknownServerToolTypes.length) {
+    incomplete.push(INCOMPLETE_UNKNOWN_SERVER_TOOL)
   }
 
   const inputMicros = tokenCostMicros(inTokens, p.inPerM)

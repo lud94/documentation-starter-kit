@@ -66,18 +66,43 @@ export function observeLimit(): ObserveLimit {
  * `invalid` est distingué d'`absent` : une saisie cassée FERME (cohérent avec
  * `budgetLeft`), une saisie absente signifie « aucun plafond demandé ».
  */
+/**
+ * ⚠️ QUATRE cas, jamais trois — le zéro est le piège.
+ *
+ * `readBudgetConfig` distingue déjà « absent » de « 0 saisi », et le contrat de
+ * C1 est explicite : **un budget saisi à 0 signifie « aucune dépense
+ * autorisée », pas « dépense illimitée »** (`budgetLeft`, cas `budgetMicros === 0n`).
+ *
+ * Or `prospector_ai_reserve` interprète `p_budget_micros = 0` comme « aucun
+ * plafond » (migration gelée, ligne 68). Confondre les deux zéros — celui de la
+ * saisie et celui du RPC — retournerait la sémantique : un hard stop deviendrait
+ * une autorisation illimitée. `callClaude` était couvert par C1, mais les
+ * appelants directs d'`anthropicPost` (dont `/api/ai/diagnose`) ne l'étaient pas.
+ *
+ * D'où `zero`, porté séparément : c'est un refus, il se traite AVANT le RPC et
+ * ne lui est jamais délégué.
+ */
 export interface EnforceBudget {
-  ok: boolean
-  micros: bigint          // 0n ⇒ aucun plafond ⇒ `reserve` ne peut pas refuser
-  configured: boolean     // un plafond POSITIF a été demandé
+  ok: boolean             // faux ⇔ saisie illisible ⇒ fail closed
+  micros: bigint
+  configured: boolean     // un plafond a été SAISI (zéro compris)
+  positive: boolean       // un plafond STRICTEMENT POSITIF a été saisi
+  zero: boolean           // plafond saisi à 0 ⇒ hard stop, aucune dépense
   invalidReason?: string
 }
 
 export function enforceBudget(): EnforceBudget {
   const cfg = readBudgetConfig(getKey('ANTHROPIC_BUDGET'))
-  if (cfg.kind === 'invalid') return { ok: false, micros: 0n, configured: false, invalidReason: cfg.reason }
-  if (cfg.kind === 'absent') return { ok: true, micros: 0n, configured: false }
-  return { ok: true, micros: cfg.micros, configured: cfg.micros > 0n }
+  if (cfg.kind === 'invalid') {
+    return { ok: false, micros: 0n, configured: false, positive: false, zero: false, invalidReason: cfg.reason }
+  }
+  if (cfg.kind === 'absent') {
+    return { ok: true, micros: 0n, configured: false, positive: false, zero: false }
+  }
+  return {
+    ok: true, micros: cfg.micros, configured: true,
+    positive: cfg.micros > 0n, zero: cfg.micros === 0n,
+  }
 }
 
 /**
@@ -93,9 +118,10 @@ export function warnIfObserveBiased(mode: BudgetMode): void {
   if (!b.configured && b.ok) return
   biasWarned = true
   console.warn(
-    '[c2a2] OBSERVE biaisé : ANTHROPIC_BUDGET est posé, donc le garde C1 peut refuser '
-    + 'des appels avant la mesure. Les taux observés ne sont pas représentatifs. '
-    + 'Retirer ANTHROPIC_BUDGET pendant la fenêtre d\'observation.',
+    '[c2a2] OBSERVE : ANTHROPIC_BUDGET est posé. En OBSERVE le garde C1 est '
+    + 'NEUTRALISÉ pour que la mesure ne soit pas écrêtée — cette variable ne '
+    + 'protège donc rien pendant la fenêtre d\'observation, et sa présence est '
+    + 'une configuration incohérente. La retirer.',
   )
 }
 

@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { estimateBreakdown, estimateMicros, INCOMPLETE_WEB_FETCH_CONTENT } from '../lib/prospector/money'
+import {
+  estimateBreakdown, estimateMicros,
+  INCOMPLETE_WEB_FETCH_CONTENT, INCOMPLETE_UNKNOWN_SERVER_TOOL,
+} from '../lib/prospector/money'
 import { budgetMode, observeLimit, enforceBudget } from '../lib/prospector/budgetMode'
 
 // Lot C2a-2 — correction du modèle de coût des outils serveur, et lecture des
@@ -43,6 +46,26 @@ describe('web_search et web_fetch ne se facturent pas pareil', () => {
     const e = estimateBreakdown({ ...BASE, webSearchMaxUses: 3 })
     expect(e.complete).toBe(true)
     expect(e.incomplete).toEqual([])
+  })
+
+  it('outil serveur non modélisé → incomplet, même si un montant est calculé', () => {
+    const e = estimateBreakdown({ ...BASE, webSearchMaxUses: 4, unknownServerToolTypes: ['code_execution_x'] })
+    expect(e.complete).toBe(false)
+    expect(e.incomplete).toEqual([INCOMPLETE_UNKNOWN_SERVER_TOOL])
+    // Le montant indicatif existe, mais il ne prétend plus majorer.
+    expect(e.toolMicros).toBe(40_000n)
+  })
+
+  it('les deux causes d\'incomplétude se cumulent', () => {
+    const e = estimateBreakdown({
+      ...BASE, webFetchDeclared: true, unknownServerToolTypes: ['x'],
+    })
+    expect(e.incomplete).toEqual([INCOMPLETE_WEB_FETCH_CONTENT, INCOMPLETE_UNKNOWN_SERVER_TOOL])
+  })
+
+  it('liste vide d\'outils inconnus → toujours complet', () => {
+    const e = estimateBreakdown({ ...BASE, webSearchMaxUses: 1, unknownServerToolTypes: [] })
+    expect(e.complete).toBe(true)
   })
 
   it('les composantes s\'additionnent exactement au total', () => {
@@ -119,16 +142,35 @@ describe('lecture du mode et des seuils', () => {
     expect(observeLimit()).toEqual({ ok: false, micros: 0n })
   })
 
-  it('ANTHROPIC_BUDGET absent → aucun plafond demandé, mais lecture valide', () => {
-    expect(enforceBudget()).toEqual({ ok: true, micros: 0n, configured: false })
+  // ⚠️ Les deux cas ci-dessous rendent tous deux `micros: 0n` et doivent
+  // pourtant produire des comportements OPPOSÉS. C'est tout l'objet de la
+  // distinction `configured` / `positive` / `zero` : le RPC lit 0 comme
+  // « aucun plafond », alors qu'un 0 SAISI veut dire « aucune dépense ».
+  it('ANTHROPIC_BUDGET absent → aucun plafond demandé', () => {
+    expect(enforceBudget()).toEqual({
+      ok: true, micros: 0n, configured: false, positive: false, zero: false,
+    })
   })
 
-  it('ANTHROPIC_BUDGET = 0 → plafond valide mais non « positif »', () => {
+  it('ANTHROPIC_BUDGET = 0 → plafond SAISI, hard stop', () => {
     process.env.ANTHROPIC_BUDGET = '0'
+    expect(enforceBudget()).toEqual({
+      ok: true, micros: 0n, configured: true, positive: false, zero: true,
+    })
+  })
+
+  it('ANTHROPIC_BUDGET > 0 → plafond réel, ni zéro ni absent', () => {
+    process.env.ANTHROPIC_BUDGET = '2.50'
+    expect(enforceBudget()).toEqual({
+      ok: true, micros: 2_500_000n, configured: true, positive: true, zero: false,
+    })
+  })
+
+  it('ANTHROPIC_BUDGET illisible → fail closed, jamais un zéro trompeur', () => {
+    process.env.ANTHROPIC_BUDGET = '20 euros'
     const b = enforceBudget()
-    expect(b.ok).toBe(true)
-    expect(b.micros).toBe(0n)
-    expect(b.configured).toBe(false)
+    expect(b.ok).toBe(false)
+    expect(b.zero).toBe(false)   // ne doit PAS se confondre avec le hard stop
   })
 
   it('ANTHROPIC_BUDGET illisible → lecture invalide (ferme côté appelant)', () => {
