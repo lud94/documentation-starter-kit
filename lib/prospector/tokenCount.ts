@@ -49,13 +49,26 @@ import { ANTHROPIC_COUNT_TOKENS_ENDPOINT } from './llm'
 /** Délai maximal. Le comptage ne génère rien : il doit être bref ou abandonné. */
 export const COUNT_TOKENS_TIMEOUT_MS = 10_000
 
-/** Sous-ensemble de la requête Messages qui influe sur le comptage d'entrée. */
+/**
+ * Sous-ensemble de la requête Messages qui influe sur le comptage d'entrée.
+ *
+ * Aligné sur le schéma réel du point de terminaison, qui accepte exactement :
+ * `messages`, `model`, `cache_control`, `output_config`, `system`, `thinking`,
+ * `tool_choice`, `tools`. `max_tokens` n'y figure pas.
+ *
+ * `cache_control` (top-level) n'est délibérément pas repris : Prospector ne
+ * l'emploie qu'IMBRIQUÉ dans `system[0]`, où il voyage donc déjà avec `system`.
+ * Et la documentation précise que le comptage n'applique de toute façon aucune
+ * logique de cache. L'ajouter serait un champ sans justification.
+ */
 export interface CountTokensInput {
   model: string
   messages: any[]
   system?: any
   tools?: any[]
   thinking?: any
+  output_config?: any
+  tool_choice?: any
 }
 
 // Forme PLATE, pas une union discriminée : le dépôt compile avec
@@ -71,12 +84,21 @@ export interface CountTokensResult {
 }
 
 /**
- * Extrait d'un corps Messages les seuls champs qui influent sur le comptage.
+ * Extrait d'un corps Messages les champs qui influent sur le comptage d'entrée.
  *
- * `max_tokens` est délibérément EXCLU : il borne la sortie, que ce point de
- * terminaison ne compte pas. `output_config` l'est aussi — il ne modifie pas
- * l'entrée. Envoyer moins, c'est éviter qu'une évolution du corps fasse
- * silencieusement diverger le comptage de la requête réelle.
+ * ⚠️ DÉFAUT DE CONTRAT CORRIGÉ (lot C2a-2c-1). La version initiale excluait
+ * `output_config` en affirmant qu'il « ne modifie pas l'entrée ». C'était faux
+ * deux fois : le point de terminaison l'accepte, et `callClaude()` en envoie un
+ * réellement — `output_config = { effort: task === 'research' ? 'medium' : 'low' }`
+ * sur tout modèle qui supporte `effort`. La requête précomptée pouvait donc
+ * différer de la requête réellement émise, ce qui vide de son sens un instrument
+ * dont le seul objet est de précompter la vraie requête.
+ *
+ * `max_tokens` reste EXCLU, et c'est correct : il borne la SORTIE, et le schéma
+ * du point de terminaison ne l'accepte pas.
+ *
+ * Rien d'autre n'est ajouté. Le seul champ accepté qui manque encore est
+ * `cache_control` top-level, que Prospector n'emploie pas à ce niveau.
  */
 export function countTokensInputFromBody(body: any): CountTokensInput {
   const out: CountTokensInput = {
@@ -86,6 +108,8 @@ export function countTokensInputFromBody(body: any): CountTokensInput {
   if (body?.system !== undefined) out.system = body.system
   if (Array.isArray(body?.tools) && body.tools.length) out.tools = body.tools
   if (body?.thinking !== undefined) out.thinking = body.thinking
+  if (body?.output_config !== undefined) out.output_config = body.output_config
+  if (body?.tool_choice !== undefined) out.tool_choice = body.tool_choice
   return out
 }
 

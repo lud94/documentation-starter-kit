@@ -125,10 +125,9 @@ describe('extraction depuis un corps Messages', () => {
     expect(i.system).toBeDefined()
   })
 
-  it('exclut max_tokens et output_config — ils ne comptent pas d\'entrée', () => {
+  it('exclut max_tokens — il borne la SORTIE et le schéma ne l\'accepte pas', () => {
     const i: any = countTokensInputFromBody(BODY())
     expect(i.max_tokens).toBeUndefined()
-    expect(i.output_config).toBeUndefined()
   })
 
   it('transmet les outils : c\'est ce qui rend l\'overhead de déclaration visible', () => {
@@ -142,10 +141,72 @@ describe('extraction depuis un corps Messages', () => {
     expect(i.system).toBeUndefined()
     expect(i.tools).toBeUndefined()
     expect(i.thinking).toBeUndefined()
+    expect(i.output_config).toBeUndefined()
+    expect(i.tool_choice).toBeUndefined()
   })
 
   it('corps vide → forme exploitable, refusée en amont par countTokens', () => {
     const i = countTokensInputFromBody(null)
     expect(i).toEqual({ model: '', messages: [] })
+  })
+})
+
+// ── Lot C2a-2c-1 : la requête précomptée doit être celle qui sera émise ───────
+describe('output_config et tool_choice — défaut de contrat corrigé', () => {
+  it('transmet output_config.effort — ce que callClaude envoie RÉELLEMENT', () => {
+    // `callClaude()` pose `output_config = { effort: 'medium' | 'low' }` sur
+    // tout modèle qui supporte `effort`. L'omettre faisait précompter une
+    // requête différente de la requête réelle.
+    const i = countTokensInputFromBody({ ...BODY(), output_config: { effort: 'medium' } })
+    expect(i.output_config).toEqual({ effort: 'medium' })
+  })
+
+  it('transmet output_config.format quand il est présent', () => {
+    const format = { type: 'json_schema', schema: { type: 'object', properties: {} } }
+    const i = countTokensInputFromBody({ ...BODY(), output_config: { format } })
+    expect(i.output_config).toEqual({ format })
+  })
+
+  it('transmet output_config complet, sans le remodeler', () => {
+    const oc = { effort: 'low', format: { type: 'json_schema', schema: {} } }
+    const i = countTokensInputFromBody({ ...BODY(), output_config: oc })
+    expect(i.output_config).toEqual(oc)
+  })
+
+  it('transmet tool_choice quand il est présent', () => {
+    const i = countTokensInputFromBody({ ...BODY(), tool_choice: { type: 'tool', name: 'web_search' } })
+    expect(i.tool_choice).toEqual({ type: 'tool', name: 'web_search' })
+  })
+
+  it('le corps réel de callClaude est reproduit à l\'identique, max_tokens excepté', () => {
+    // Forme exacte assemblée par callClaude pour une tâche `research`.
+    const real = {
+      model: 'claude-sonnet-5',
+      max_tokens: 8000,
+      system: [{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: 'thèse' }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 10 }],
+      output_config: { effort: 'medium' },
+    }
+    const i: any = countTokensInputFromBody(real)
+
+    expect(i.model).toBe(real.model)
+    expect(i.messages).toEqual(real.messages)
+    expect(i.system).toEqual(real.system)          // cache_control imbriqué inclus
+    expect(i.tools).toEqual(real.tools)
+    expect(i.output_config).toEqual(real.output_config)
+    expect(i.max_tokens).toBeUndefined()
+
+    // Aucun champ hors du schéma du point de terminaison.
+    const ACCEPTED = ['model', 'messages', 'system', 'tools', 'thinking', 'output_config', 'tool_choice']
+    expect(Object.keys(i).every((k) => ACCEPTED.includes(k))).toBe(true)
+  })
+
+  it('ce qui est extrait part bien dans la requête de comptage', async () => {
+    const input = countTokensInputFromBody({ ...BODY(), output_config: { effort: 'low' } })
+    await countTokens('k', input)
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(sent.output_config).toEqual({ effort: 'low' })
+    expect(sent.max_tokens).toBeUndefined()
   })
 })
