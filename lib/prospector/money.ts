@@ -109,6 +109,27 @@ export function priceFor(model: string): TokenPrice {
 export const DEFAULT_WEB_SEARCH_MICROS_PER_USE = 10_000n // 0,01 $ par recherche
 export const DEFAULT_MAX_USES_WHEN_UNSET = 8n            // borne prudente si max_uses absent
 
+// ⚠️ CORRECTION C2a-2 — `web_search` et `web_fetch` ne se facturent PAS pareil.
+//
+// Jusqu'ici l'estimation prenait une somme AGRÉGÉE de `max_uses` et la
+// multipliait par le tarif de la recherche web. Sur `signals.ts`
+// (`web_search: 10` + `web_fetch: 6`) cela donnait 16 × 0,01 $ = 0,16 $ de part
+// outil, alors que le modèle de coût réel est :
+//   • `web_search` — facturé PAR RECHERCHE, plus les tokens injectés ;
+//   • `web_fetch`  — AUCUN coût d'outil, uniquement les tokens du contenu
+//     récupéré, facturés en ENTRÉE au tarif du modèle.
+// Le montant correct pour ce site est donc 0,10 $, pas 0,16 $ : l'ancienne
+// formule sur-provisionnait cette part de 60 %. Ce n'était pas une prudence
+// assumée, c'était une erreur de modèle.
+//
+// CONSÉQUENCE QU'ON NE MASQUE PAS. Borner `web_fetch` suppose de connaître
+// `max_content_tokens`. Quand il n'est pas déclaré — c'est le cas AUJOURD'HUI
+// sur les deux seuls sites qui utilisent l'outil — le volume d'entrée injecté
+// est NON BORNÉ, donc non estimable. Le contrat retenu est alors :
+// `complete = false` et la composante nommée dans `incomplete`. La valeur
+// numérique correspondante reste 0, mais elle ne doit JAMAIS être lue comme
+// « coût nul » : c'est `complete` qui porte la vérité, pas le montant.
+
 // ── Coût d'un volume de tokens ────────────────────────────────────────────────
 export function tokenCostMicros(tokens: bigint, perMillion: bigint): bigint {
   if (tokens <= 0n) return 0n
@@ -139,21 +160,84 @@ export interface EstimateInput {
   model: string
   maxTokens: number
   bodyBytes: number
-  serverToolMaxUses?: number      // somme des max_uses des outils serveur déclarés
+  /**
+   * @deprecated C2a-2 — remplacé par `webSearchMaxUses`. Conservé et traité
+   * comme tel : il est couvert par les tests C2a-1, et le retirer dans le même
+   * lot mélangerait une correction de modèle et une rupture d'interface.
+   */
+  serverToolMaxUses?: number
+  /** Somme des `max_uses` des outils facturés à l'usage (recherche web). */
+  webSearchMaxUses?: number
+  /** `web_fetch` figure-t-il dans la requête ? Décide de l'estimabilité. */
+  webFetchDeclared?: boolean
+  /**
+   * Borne TOTALE de contenu récupérable par `web_fetch`, en tokens
+   * (`max_content_tokens` × `max_uses`). `undefined` alors que
+   * `webFetchDeclared` est vrai ⇒ composante NON ESTIMABLE, jamais zéro.
+   */
+  webFetchMaxContentTokens?: number
   webSearchMicrosPerUse?: bigint
 }
 
-export function estimateMicros(o: EstimateInput): bigint {
+/** Identifiants de composantes non estimables — stables, exploités en télémétrie. */
+export const INCOMPLETE_WEB_FETCH_CONTENT = 'web_fetch_content'
+
+export interface EstimateBreakdown {
+  inputMicros: bigint         // corps réellement sérialisé
+  outputMicros: bigint        // max_tokens — plafond dur, donc majorant exact
+  toolMicros: bigint          // outils facturés à l'usage
+  fetchContentMicros: bigint  // contenu web_fetch, SI borné
+  totalMicros: bigint
+  /** Faux ⇔ au moins une composante du coût maximal n'est pas bornable. */
+  complete: boolean
+  /** Composantes non estimables, nommées. Vide ⇔ `complete`. */
+  incomplete: string[]
+}
+
+export function estimateBreakdown(o: EstimateInput): EstimateBreakdown {
   const p = priceFor(o.model)
+  const n = (v: number | undefined) => BigInt(Math.max(0, Math.trunc(v || 0)))
+
   const inTokens = ceilDiv(BigInt(Math.max(0, Math.trunc(o.bodyBytes))), 3n)
   const outTokens = BigInt(Math.max(0, Math.trunc(o.maxTokens)))
-  const uses = o.serverToolMaxUses === undefined
-    ? 0n
-    : BigInt(Math.max(0, Math.trunc(o.serverToolMaxUses)))
+
+  // `serverToolMaxUses` (hérité) et `webSearchMaxUses` désignent la même chose ;
+  // on additionne plutôt que d'en privilégier un, pour qu'un appelant de
+  // transition qui renseignerait les deux ne voie pas une part disparaître.
+  const searchUses = n(o.serverToolMaxUses) + n(o.webSearchMaxUses)
   const perUse = o.webSearchMicrosPerUse ?? DEFAULT_WEB_SEARCH_MICROS_PER_USE
-  return tokenCostMicros(inTokens, p.inPerM)
-    + tokenCostMicros(outTokens, p.outPerM)
-    + uses * perUse
+
+  const incomplete: string[] = []
+  let fetchContentMicros = 0n
+  if (o.webFetchDeclared) {
+    if (o.webFetchMaxContentTokens === undefined) {
+      // NON ESTIMABLE. On ne fabrique pas de borne : inventer un
+      // `max_content_tokens` produirait un chiffre faux présenté comme exact.
+      incomplete.push(INCOMPLETE_WEB_FETCH_CONTENT)
+    } else {
+      fetchContentMicros = tokenCostMicros(n(o.webFetchMaxContentTokens), p.inPerM)
+    }
+  }
+
+  const inputMicros = tokenCostMicros(inTokens, p.inPerM)
+  const outputMicros = tokenCostMicros(outTokens, p.outPerM)
+  const toolMicros = searchUses * perUse
+
+  return {
+    inputMicros, outputMicros, toolMicros, fetchContentMicros,
+    totalMicros: inputMicros + outputMicros + toolMicros + fetchContentMicros,
+    complete: incomplete.length === 0,
+    incomplete,
+  }
+}
+
+/**
+ * Total seul. ⚠️ Ne dit RIEN de l'estimabilité : un appel `web_fetch` sans
+ * `max_content_tokens` rend ici un total qui n'est pas un majorant. Toute
+ * décision d'arbitrage doit passer par `estimateBreakdown()` et lire `complete`.
+ */
+export function estimateMicros(o: EstimateInput): bigint {
+  return estimateBreakdown(o).totalMicros
 }
 
 // ── RÈGLEMENT (après l'appel) — coût CALCULÉ, pas facture ────────────────────

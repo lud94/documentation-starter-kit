@@ -14,11 +14,16 @@ export const config = { maxDuration: 60 }
 // jamais comptés dans prospector_usage. Petits (max_tokens: 64) mais réels, et la
 // route est atteignable depuis l'Admin. Tout passe désormais par anthropicPost(),
 // la passerelle unique — c'est là que C2a posera la réservation.
-async function probe(key: string, model: string, extra: any): Promise<{ ok: boolean; detail?: string }> {
+// Depuis C2a-2, ces quatre sondes sont réservées et comptées comme n'importe
+// quel appel : elles passent par la passerelle, qui pose la réservation. Un refus
+// budgétaire est rapporté DISTINCTEMENT d'un échec de capacité — sinon l'écran
+// dirait « la clé est en cause » alors que c'est le plafond.
+async function probe(key: string, model: string, extra: any): Promise<{ ok: boolean; blocked?: boolean; detail?: string }> {
   try {
     const r = await anthropicPost(key, {
       model, max_tokens: 64, messages: [{ role: 'user', content: 'Réponds juste: OK' }], ...extra,
-    })
+    }, { agent: 'diagnose', task: 'research' })
+    if (r.blocked) return { ok: false, blocked: true, detail: (r.blockedDetail || 'Appel refusé par le garde budgétaire.').slice(0, 220) }
     if (r.ok) return { ok: true }
     return { ok: false, detail: r.text.slice(0, 220) }
   } catch (e: any) {
@@ -52,7 +57,10 @@ export default async function handler(_req: NextApiRequest, res: NextApiResponse
       'lecture de page (web_fetch)': fetchTool,
     },
     // Ce que ça implique concrètement pour la recherche par signal.
-    verdict: !base.ok
+    verdict: base.blocked
+      ? 'Appels IA refusés par le garde budgétaire — ce n\'est PAS un problème de clé ni de modèle. '
+        + 'Vérifier le plafond et le passif d\'engagements dans Admin → Usage.'
+      : !base.ok
       ? 'La clé ou le modèle sont en cause : rien ne peut fonctionner tant que « appel simple » échoue.'
       : !search.ok
         ? "La recherche web est refusée sur cette clé : la veille par signal ne peut pas fonctionner. Active l'outil de recherche web côté Anthropic, ou branche Exa."

@@ -33,6 +33,12 @@ const ALLOWED = new Set([
   'lib/supabase/workspaces.ts',
   'lib/supabase/pappersCache.ts',
 
+  // Lot C2a-2 — SEUL module autorisé à appeler les RPC financières
+  // `prospector_ai_*`. Il applique `writeAllowed()` avant réservation et
+  // n'expose que des formes plates dont aucune exception ne s'échappe. Toute
+  // autre `.rpc()` financière ailleurs est une violation, pas une variante.
+  'lib/supabase/aiBudget.ts',
+
   // Sonde de PERMISSIONS (C2a-1e). Elle appelle les RPC financières
   // DÉLIBÉRÉMENT sans privilège, pour prouver qu'elles sont refusées. Passer par
   // un module de lib/supabase/ lui ferait perdre son objet : ces modules

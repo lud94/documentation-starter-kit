@@ -16,7 +16,7 @@ déployé » serait faux.
 | Lot | État | Portée |
 |---|---|---|
 | **C1 — garde-fou fail-safe** | **Implémenté** (`6b6d213`) | P0 **fortement mitigé**, non fermé |
-| **C2a — réservation atomique** | **En cours** — C2a-0 et C2a-1 **fermés** (26/26 tests d'intégration verts, run `30762229894`) | Requis avant le niveau de sécurité financière définitif |
+| **C2a — réservation atomique** | **En cours** — C2a-0, C2a-1, C2a-1e **fermés** ; **C2a-2 implémenté**, mode `OFF` | Requis avant le niveau de sécurité financière définitif |
 | **C2c — réconciliation facturation** | Non commencé | Aucun chiffre plateforme n'est une facture avant ce lot |
 | **Usage par `workspace_id`** | Non commencé | Requis avant tout budget client individualisé |
 
@@ -54,6 +54,45 @@ Ce que C2 ferme et que C1 laisse ouvert :
 **Tant que C2 n'est pas fait, `ANTHROPIC_BUDGET` ne doit pas être présenté comme
 une garantie de dépense.** C'est une protection sérieuse en usage mono-instance
 nominal, pas un plafond opposable.
+
+### C2a-2 — réservation dans la passerelle : implémenté, non activé
+
+`AI_BUDGET_RESERVATION` accepte trois valeurs : `OFF` (défaut d'exécution),
+`OBSERVE`, `ENFORCE`. **Aucun environnement n'est activé** — le défaut du code
+est `OFF`, et toute valeur non reconnue vaut `OFF`, jamais `ENFORCE`.
+
+Une réservation est posée par **vraie requête HTTP Anthropic**, dans
+`anthropicPost()` — donc y compris pour `/api/ai/diagnose`, qui échappait au
+comptage. Un `callClaude()` pathologique (4 tours × 4 tentatives de dégradation)
+produit jusqu'à 16 réservations, ce qui est le nombre exact de dépenses.
+
+`OBSERVE` transmet un plafond **nul** au RPC : `prospector_ai_reserve` ne teste
+le budget que `if p_budget_micros > 0`, donc `budget_exhausted` y est
+inatteignable par construction. La décision hypothétique `would_have_blocked`
+est calculée à part, à partir de `AI_BUDGET_OBSERVE_LIMIT` — variable
+**strictement informative**, qui n'emprunte aucun chemin capable de refuser un
+appel. Une fenêtre d'observation se mène **`ANTHROPIC_BUDGET` absent**, sans quoi
+le garde C1 écrête le trafic et la mesure sous-estime le taux de refus futur.
+
+**Coût non bornable.** `web_fetch` n'a pas de coût d'outil : seuls les tokens du
+contenu récupéré sont facturés. Ils ne sont bornables que par
+`max_content_tokens` — **qui n'est déclaré sur aucun des deux sites** qui
+utilisent l'outil (`lib/prospector/signals.ts`, `pages/api/ai/diagnose.ts`).
+L'estimation porte donc `complete: false` et nomme la composante manquante ; la
+valeur 0 correspondante ne doit **jamais** être lue comme un coût nul. En
+`OBSERVE` l'appel passe ; en `ENFORCE` avec un plafond positif il est refusé,
+plutôt que d'arbitrer un plafond sur une estimation qui n'est pas un majorant.
+
+Télémétrie de calibration : journaux structurés (marqueur `c2a2.telemetry`),
+corrélés à la comptabilité par `reservation_id`. Aucune donnée métier, aucun
+prompt, aucune réponse, aucune clé. **La table financière reste la source de
+vérité** ; un agrégat tiré des journaux doit se recouper avec
+`sum(settled_micros)`, faute de quoi ce sont les journaux qui sont invalides.
+
+Reste ouvert avant `ENFORCE` : bornes `max_content_tokens` à définir, plafond
+représentatif à dériver des mesures, réglages surdimensionnés à instruire
+(`signals.ts` lance 6 passes `research` en parallèle). Aucun de ces réglages
+métier n'est modifié par ce lot.
 
 ### C2c — réconciliation avec la facturation Anthropic
 
