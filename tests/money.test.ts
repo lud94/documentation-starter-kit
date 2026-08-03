@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   readBudgetConfig, ceilDiv, tokenCostMicros, cachedTokenCostMicros,
-  estimateMicros, settleMicros, priceFor, microsToUsdString, legacyCentsToMicros,
+  estimateMicros, estimateBreakdown, settleMicros, priceFor, microsToUsdString, legacyCentsToMicros,
   MICROS_PER_USD,
 } from '../lib/prospector/money'
 import { requestFingerprint } from '../lib/prospector/fingerprint'
@@ -127,11 +127,33 @@ describe('le défaut historique : l’appel Haiku compté zéro', () => {
   })
 })
 
-describe('estimation — majorant volontaire', () => {
-  it('la sortie est bornée par max_tokens, l’entrée sur-estimée', () => {
+describe('estimation — sortie bornée, entrée seulement indicative', () => {
+  it('applique bien le ratio indicatif de 3 octets par token', () => {
+    // ⚠️ Ce cas vérifie le CALCUL, pas une propriété de borne. Le lot C2a-2c a
+    // retiré cette prétention : mesuré sur staging, un corps de 2 400 octets a
+    // produit 945 tokens réels contre 800 estimés — l'entrée est SOUS-estimée
+    // de 18 %, pas sur-estimée. Voir l'en-tête de money.ts et le cas ci-dessous.
     const e = estimateMicros({ model: 'claude-sonnet-5', maxTokens: 1000, bodyBytes: 3000 })
-    // entrée : 3000/3 = 1000 tokens × 3 µUSD ; sortie : 1000 × 15 µUSD
     expect(e).toBe(1_000n * 3n + 1_000n * 15n)
+  })
+
+  it('bodyBytes/3 N’EST PAS une borne de l’entrée — cas staging reproduit', () => {
+    // Sonnet, sans outil, corps de 2 400 octets. Réel mesuré : 945 tokens.
+    const e = estimateBreakdown({ model: 'claude-sonnet-5', maxTokens: 0, bodyBytes: 2400 })
+    const estimatedInputTokens = 2400n / 3n                     // 800
+    const REAL_INPUT_TOKENS_MEASURED_ON_STAGING = 945n
+    expect(estimatedInputTokens).toBeLessThan(REAL_INPUT_TOKENS_MEASURED_ON_STAGING)
+    // Et la part d'entrée chiffrée est donc, elle aussi, inférieure au réel.
+    const realInputMicros = REAL_INPUT_TOKENS_MEASURED_ON_STAGING * 3n
+    expect(e.inputMicros).toBeLessThan(realInputMicros)
+    // Aucune composante n'est déclarée non bornable pour autant : l'imprécision
+    // de l'heuristique n'est pas une non-bornabilité, c'est une imprécision.
+    expect(e.unbounded).toEqual([])
+  })
+
+  it('la sortie, elle, est bien bornée par max_tokens', () => {
+    const a = estimateBreakdown({ model: 'claude-sonnet-5', maxTokens: 1000, bodyBytes: 0 })
+    expect(a.outputMicros).toBe(1_000n * 15n)   // plafond dur côté Anthropic
   })
 
   it('l’estimation dépasse le règlement quand la réponse est plus courte', () => {

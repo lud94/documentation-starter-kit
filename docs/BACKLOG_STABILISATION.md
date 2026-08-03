@@ -120,6 +120,68 @@ représentatif à dériver des mesures, réglages surdimensionnés à instruire
 (`signals.ts` lance 6 passes `research` en parallèle). Aucun de ces réglages
 métier n'est modifié par ce lot.
 
+### C2a-2c — instruments de calibration, aucune politique changée
+
+**Ce que les mesures staging ont réfuté.** `bodyBytes / 3` n'est pas un majorant :
+Sonnet sans outil, corps de 2 400 octets → 800 tokens estimés contre **945
+réels** (−18 %). Le ratio de 3 octets par token est une moyenne de prose
+anglaise ; nos corps sont du JSON structuré en français. **Aucun coefficient
+n'est réajusté** — corriger « /3 » sur cinq observations remplacerait une erreur
+mesurée par une autre, non mesurée. La valeur reste, explicitement étiquetée
+indicative.
+
+**Déclarer un outil serveur coûte, même sans exécution.** Même sonde, même
+prompt (~59 tokens de corps) : `web_search` déclaré → 2 809 tokens d'entrée ;
+`web_fetch` déclaré → 4 619. Aucune page n'a été récupérée dans le second cas —
+`output_tokens = 4`, et `web_fetch` ne peut fetcher qu'une URL déjà présente dans
+la conversation, or le prompt n'en contenait aucune. **Déclaré ≠ exécuté.**
+
+**Ce que la documentation Anthropic établit**, vérifié à la source :
+
+| Composante | Bornable avant l'appel ? | Par quoi |
+|---|---|---|
+| Sortie | oui | `max_tokens`, plafond dur |
+| Frais `web_search` | oui | `max_uses` × 0,01 $ (*$10 per 1,000 searches*) |
+| **Tokens de résultats `web_search`** | **non** | aucun paramètre ne les borne |
+| `web_fetch` — contenu texte | oui si `max_content_tokens` posé | approximatif |
+| **`web_fetch` — contenu binaire (PDF)** | **non** | *« The limit applies to text content, not to binary content such as PDFs »* — ~125 000 tokens pour 500 kB |
+
+`web_fetch` n'a **aucun frais par requête** (*« no additional charges beyond
+standard token costs »*) : son compteur est un signal d'usage, jamais un coût.
+
+**Deux listes désormais distinctes**, et c'est délibéré :
+`unbounded` porte la vérité complète ; `incomplete` porte le sous-ensemble sur
+lequel la porte `ENFORCE` refuse **aujourd'hui**, contrat C2a-2b **conservé à
+l'identique**. `incomplete ⊆ unbounded`, l'inclusion étant stricte dès qu'un
+`web_search` ou un `web_fetch` borné en texte est déclaré. **L'écart entre les
+deux est la décision différée** : `ENFORCE` doit-il devenir un plafond dur
+strict, un garde opérationnel tolérant, ou deux niveaux distincts ? Ce lot livre
+l'instrument de mesure, pas l'arbitrage.
+
+**Précomptage fournisseur** (`lib/prospector/tokenCount.ts`,
+`POST /v1/messages/count_tokens`) : gratuit, pool de limites de débit
+indépendant, il voit l'entrée réelle **et** l'overhead de déclaration des outils
+(*« Server tool token counts only apply to the first sampling call »*).
+⚠️ **Ce n'est pas une borne** — Anthropic le donne pour une *estimation* pouvant
+différer légèrement. **Aucun chemin de requête ne l'appelle dans ce lot** : ni en
+`OFF`, ni en `OBSERVE`, ni devant un appel Messages, et il ne change aucune
+décision `ENFORCE`. La politique d'appel sera arbitrée séparément. Sonde
+`scripts/smoke/c2a2c_token_count_probe.mjs` (T1/T2/T3), livrée **non exécutée**.
+
+**Écart de mesure connu, non corrigé :** la documentation dit qu'une recherche en
+erreur n'est pas facturée, sans dire si `web_search_requests` l'inclut. Le
+règlement peut donc sur-régler — sens conservateur, jamais un sous-comptage. La
+télémétrie porte désormais de quoi trancher (compteur fournisseur vs blocs
+réussis/en erreur).
+
+**Versions des outils**, constatées et **non modifiées** : Prospector utilise
+`web_search_20250305` (basique, **sans filtrage dynamique** — donc tous les
+résultats entrent dans le contexte, ce qui est précisément la composante non
+bornée) et `web_fetch_20260209` (filtrage dynamique). Dernières documentées :
+`web_search_20260318` et `web_fetch_20260318`. `response_inclusion: "excluded"`
+(20260318+) supprimerait les blocs de résultat de la réponse — raison
+supplémentaire de faire des compteurs fournisseur la source primaire.
+
 ### C2c — réconciliation avec la facturation Anthropic
 
 **Non commencé.** Deux besoins distincts, réunis parce qu'ils dépendent tous deux

@@ -459,7 +459,55 @@ describe('readToolShape', () => {
       webSearchMaxUses: 0, webFetchMaxUses: 0,
       webFetchDeclared: false, webFetchMaxContentTokens: undefined,
       unknownServerToolTypes: [],
+      serverToolTypes: [], webSearchDeclared: false,   // ajoutés en C2a-2c
     })
+  })
+})
+
+// ── C2a-2c : la politique ENFORCE n'a PAS changé ─────────────────────────────
+// Ce lot ajoute des instruments (précomptage, observabilité, liste `unbounded`)
+// sans toucher à la porte. Ces cas verrouillent l'absence de dérive.
+describe('non-régression de la porte ENFORCE (C2a-2c)', () => {
+  beforeEach(() => {
+    process.env.AI_BUDGET_RESERVATION = 'ENFORCE'
+    process.env.ANTHROPIC_BUDGET = '5'
+  })
+
+  const run = async (tools?: any[]) => {
+    const g = globalThis as any; g.__prospectorKeys.clear()
+    vi.resetModules()
+    const m = await import('../lib/prospector/llm')
+    return m.anthropicPost('k', tools ? { ...BODY(), tools } : BODY())
+  }
+
+  it('web_search seul → TOUJOURS autorisé sous plafond positif', async () => {
+    // Les tokens de résultats sont non bornables et désormais déclarés comme
+    // tels dans `unbounded` — cela NE DOIT PAS bloquer. Sinon ENFORCE
+    // deviendrait inutilisable sur presque toute la surface IA.
+    const r = await run([{ type: 'web_search_20250305', name: 'web_search', max_uses: 10 }])
+    expect(r.ok).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('web_fetch AVEC max_content_tokens → toujours autorisé', async () => {
+    const r = await run([{ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6, max_content_tokens: 5000 }])
+    expect(r.ok).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('web_fetch SANS max_content_tokens → toujours refusé', async () => {
+    const r = await run([{ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6 }])
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(r.blocked).toBe(true)
+  })
+
+  it('aucun appel de précomptage n\'est émis depuis la passerelle', async () => {
+    // L'instrument est livré, sa politique ne l'est pas : rien ne doit toucher
+    // /v1/messages/count_tokens dans le chemin de requête.
+    await run([{ type: 'web_search_20250305', name: 'web_search', max_uses: 1 }])
+    for (const [url] of fetchMock.mock.calls) {
+      expect(String(url)).not.toContain('count_tokens')
+    }
   })
 })
 

@@ -25,7 +25,21 @@ const HOST = 'api.anthropic.com'
 const ALLOWED = new Set([
   'lib/prospector/llm.ts',                  // anthropicPost() — la passerelle
   'scripts/check-anthropic-gateway.mjs',    // ce fichier décrit le motif
+
+  // ⚠️ DÉROGATION DOCUMENTÉE (lot C2a-2c) — sonde de PRÉCOMPTAGE.
+  // Elle ne vise que `/v1/messages/count_tokens` : gratuit, aucune génération,
+  // aucune dépense. Le trou que ce contrôle ferme est celui des appels PAYANTS
+  // non comptés ; celui-ci n'en est pas un. Le script refuse de démarrer si son
+  // point de terminaison ne se termine pas par `/count_tokens`.
+  // NON exécutée par la CI : son lancement est une décision d'exploitant.
+  'scripts/smoke/c2a2c_token_count_probe.mjs',
 ])
+
+// À NOTER pour la revue : `lib/prospector/tokenCount.ts` joint aussi Anthropic,
+// mais SANS littéral d'hôte — il importe la constante exportée par la
+// passerelle. Il n'a donc pas besoin d'être listé ici, et il ne peut pas servir
+// à émettre une requête facturable sans introduire ce littéral, que ce contrôle
+// verrait immédiatement.
 
 function walk(dir, acc = []) {
   let entries

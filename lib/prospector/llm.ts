@@ -226,6 +226,15 @@ export interface GatewayResult {
 // d'erreur bruts. `callClaude()` reste le chemin nominal.
 export const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages'
 
+// Point de terminaison de PRÉCOMPTAGE (lot C2a-2c). Il vit ici, dans le seul
+// fichier autorisé à porter un littéral d'hôte Anthropic, pour que le contrôle
+// CI `check-anthropic-gateway.mjs` reste à deux entrées.
+//
+// ⚠️ Il n'émet AUCUNE génération et n'est PAS facturé : ce n'est pas une brèche
+// dans la passerelle unique, qui existe pour empêcher les appels PAYANTS non
+// comptés. Consommé par `lib/prospector/tokenCount.ts`.
+export const ANTHROPIC_COUNT_TOKENS_ENDPOINT = 'https://api.anthropic.com/v1/messages/count_tokens'
+
 // Délai maximal d'une requête — appliqué UNIQUEMENT en OBSERVE et ENFORCE.
 //
 // Il y est nécessaire : sans lui, la classe « timeout » serait inatteignable et
@@ -255,13 +264,17 @@ interface ToolShape {
   webFetchMaxContentTokens: number | undefined  // undefined ⇒ NON BORNÉ
   /** Types serveur dont le modèle de coût n'est pas supporté. */
   unknownServerToolTypes: string[]
+  /** DÉCLARÉ — tous les types d'outils serveur présents, dédupliqués. */
+  serverToolTypes: string[]
+  /** `web_search` figure-t-il dans la requête ? */
+  webSearchDeclared: boolean
 }
 
 export function readToolShape(body: any): ToolShape {
   const out: ToolShape = {
     webSearchMaxUses: 0, webFetchMaxUses: 0,
     webFetchDeclared: false, webFetchMaxContentTokens: undefined,
-    unknownServerToolTypes: [],
+    unknownServerToolTypes: [], serverToolTypes: [], webSearchDeclared: false,
   }
   const tools = Array.isArray(body?.tools) ? body.tools : []
   let fetchContentTotal = 0
@@ -270,6 +283,7 @@ export function readToolShape(body: any): ToolShape {
   for (const t of tools) {
     const type = String(t?.type || '')
     if (!type) continue // outil client (nom + schéma) : aucun coût d'outil serveur
+    if (!out.serverToolTypes.includes(type)) out.serverToolTypes.push(type)
     const uses = Number.isFinite(t?.max_uses) && t.max_uses >= 0
       ? Math.trunc(t.max_uses)
       : Number(DEFAULT_MAX_USES_WHEN_UNSET)
@@ -285,6 +299,7 @@ export function readToolShape(body: any): ToolShape {
         anyFetchUnbounded = true
       }
     } else if (type.startsWith('web_search')) {
+      out.webSearchDeclared = true
       out.webSearchMaxUses += uses
     } else {
       // Outil serveur dont le modèle de coût n'est PAS supporté. La part est
@@ -299,6 +314,89 @@ export function readToolShape(body: any): ToolShape {
   }
 
   if (out.webFetchDeclared && !anyFetchUnbounded) out.webFetchMaxContentTokens = fetchContentTotal
+  return out
+}
+
+// ── Observabilité des outils serveur (lot C2a-2c) ────────────────────────────
+//
+// Quatre faits DISTINCTS, qu'il ne faut jamais confondre — la sonde de
+// diagnostic staging l'a montré : `web_fetch` déclaré, 4 619 tokens d'entrée
+// facturés, et pourtant AUCUNE page récupérée (le prompt ne contenait aucune
+// URL, et `web_fetch` ne peut fetcher qu'une URL déjà présente).
+//
+//   DECLARED  — l'outil figure dans `body.tools`            (source : requête)
+//   REPORTED  — `usage.server_tool_use.*_requests`          (source : FOURNISSEUR)
+//   SUCCESS   — bloc `*_tool_result` sans erreur            (source : réponse)
+//   ERROR     — bloc `*_tool_result` portant un `error_code` (source : réponse)
+//
+// La source PRIMAIRE de l'usage effectif est le compteur fournisseur. Les blocs
+// sont des compléments : eux seuls distinguent succès et erreur, et eux seuls
+// révèlent un contenu binaire. Raison supplémentaire de ne pas en faire la
+// source primaire : `response_inclusion: "excluded"` (versions 20260318+)
+// SUPPRIME ces blocs de la réponse — un comptage qui n'en dépendrait que
+// deviendrait aveugle à la première montée de version.
+export interface ServerToolUsage {
+  /** Compteurs FOURNISSEUR. `null` = champ absent, jamais confondu avec 0. */
+  webSearchRequests: number | null
+  webFetchRequests: number | null
+  /** Blocs de résultat observés dans CETTE réponse. */
+  webSearchResults: number
+  webSearchErrors: number
+  webFetchResults: number
+  webFetchErrors: number
+  /** Codes d'erreur rencontrés, dédupliqués. Aucun contenu, aucune URL. */
+  errorCodes: string[]
+  /** Blocs `server_tool_use` observés, par nom d'outil. */
+  invocations: number
+  /**
+   * Un résultat `web_fetch` a rapporté du contenu BINAIRE (PDF).
+   * C'est l'exposition que `max_content_tokens` ne borne pas.
+   */
+  webFetchBinaryResults: number
+}
+
+export function readServerToolUsage(data: any): ServerToolUsage {
+  const out: ServerToolUsage = {
+    webSearchRequests: null, webFetchRequests: null,
+    webSearchResults: 0, webSearchErrors: 0,
+    webFetchResults: 0, webFetchErrors: 0,
+    errorCodes: [], invocations: 0, webFetchBinaryResults: 0,
+  }
+
+  const stu = data?.usage?.server_tool_use
+  if (stu && typeof stu === 'object') {
+    if (Number.isFinite(stu.web_search_requests)) out.webSearchRequests = Math.trunc(stu.web_search_requests)
+    if (Number.isFinite(stu.web_fetch_requests)) out.webFetchRequests = Math.trunc(stu.web_fetch_requests)
+  }
+
+  const blocks = Array.isArray(data?.content) ? data.content : []
+  for (const b of blocks) {
+    const type = String(b?.type || '')
+    if (type === 'server_tool_use') { out.invocations++; continue }
+
+    const isSearch = type === 'web_search_tool_result'
+    const isFetch = type === 'web_fetch_tool_result'
+    if (!isSearch && !isFetch) continue
+
+    // Sur erreur, `content` est un OBJET d'erreur ; sur succès c'est une liste
+    // (recherche) ou un objet `web_fetch_result` (fetch). On teste le type
+    // d'erreur explicitement plutôt que de deviner d'après la forme.
+    const c = b?.content
+    const errCode = !Array.isArray(c) && typeof c?.error_code === 'string' ? c.error_code : ''
+    if (errCode) {
+      if (isSearch) out.webSearchErrors++; else out.webFetchErrors++
+      if (!out.errorCodes.includes(errCode)) out.errorCodes.push(errCode)
+      continue
+    }
+
+    if (isSearch) { out.webSearchResults++; continue }
+
+    out.webFetchResults++
+    // `content.content.source.type === 'base64'` ⇒ PDF. C'est le seul signal
+    // direct de l'exposition non bornable par `max_content_tokens`.
+    if (String(c?.content?.source?.type || '') === 'base64') out.webFetchBinaryResults++
+  }
+
   return out
 }
 
@@ -369,6 +467,7 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
   const est = estimateBreakdown({
     model, maxTokens, bodyBytes: bytes,
     webSearchMaxUses: shape.webSearchMaxUses,
+    webSearchDeclared: shape.webSearchDeclared,
     webFetchDeclared: shape.webFetchDeclared,
     webFetchMaxContentTokens: shape.webFetchMaxContentTokens,
     unknownServerToolTypes: shape.unknownServerToolTypes,
@@ -388,12 +487,19 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
     est_fetch_content_micros: est.fetchContentMicros,
     estimate_complete: est.complete,
     estimate_incomplete: est.incomplete,
+    estimate_unbounded: est.unbounded,
     max_tokens: maxTokens, body_bytes: bytes,
     web_search_max_uses: shape.webSearchMaxUses,
     web_fetch_max_uses: shape.webFetchMaxUses,
     web_fetch_max_content_tokens: shape.webFetchMaxContentTokens ?? null,
     input_tokens: null, cache_read_input_tokens: null, output_tokens: null,
     web_searches: null, settled_micros: null,
+    server_tools_declared: shape.serverToolTypes,
+    web_search_requests: null, web_fetch_requests: null,
+    web_search_results_observed: null, web_fetch_results_observed: null,
+    web_search_errors_observed: null, web_fetch_errors_observed: null,
+    server_tool_error_codes: [], server_tool_invocations: null,
+    web_fetch_binary_results: null,
     observe_limit_micros: limit.ok ? limit.micros : null,
     engaged_micros_at_reserve: null,
     would_have_blocked: null,
@@ -547,6 +653,19 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
     return { ok: false, status: r.status, data: null, text: '' }
   }
 
+  // Observabilité des outils serveur : lue même quand `usage` manque, pour que
+  // les blocs restent exploitables dans ce cas de diagnostic.
+  const stu = readServerToolUsage(data)
+  t.web_search_requests = stu.webSearchRequests
+  t.web_fetch_requests = stu.webFetchRequests
+  t.web_search_results_observed = stu.webSearchResults
+  t.web_fetch_results_observed = stu.webFetchResults
+  t.web_search_errors_observed = stu.webSearchErrors
+  t.web_fetch_errors_observed = stu.webFetchErrors
+  t.server_tool_error_codes = stu.errorCodes
+  t.server_tool_invocations = stu.invocations
+  t.web_fetch_binary_results = stu.webFetchBinaryResults
+
   const u = data?.usage
   if (!u) {
     await closeUnresolved(id, 'usage_missing')
@@ -554,7 +673,17 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
     return { ok: true, status: r.status, data, text: '' }
   }
 
-  const searches = Number(u?.server_tool_use?.web_search_requests || 0)
+  // Le compteur FOURNISSEUR reste la source du règlement. `null` (champ absent)
+  // vaut 0 recherche facturée — c'est le seul repli disponible, et il est
+  // cohérent avec le comportement d'avant ce lot.
+  //
+  // ⚠️ ÉCART DE MESURE CONNU, non corrigé ici : la documentation dit qu'une
+  // recherche en ERREUR n'est pas facturée, mais ne dit pas si le compteur
+  // l'inclut. Si c'est le cas, on sur-règle. Le sens est conservateur
+  // (sur-blocage, jamais sous-comptage), et la télémétrie porte désormais de
+  // quoi trancher : comparer `web_search_requests` à
+  // `web_search_results_observed + web_search_errors_observed`.
+  const searches = stu.webSearchRequests ?? 0
   const settledMicros = settleMicros({
     model,
     inputTokens: Number(u.input_tokens || 0),
@@ -571,8 +700,10 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
   // ── Le règlement échoue : la réponse est rendue QUAND MÊME ─────────────────
   // On ne détruit jamais un résultat déjà payé parce qu'un compteur n'a pas pu
   // s'écrire. Un seul repli est tenté ; s'il échoue aussi, la réservation reste
-  // OPEN et sera balayée en UNRESOLVED. Le budget reste engagé dans l'intervalle
-  // — l'estimation majore le coût réel, donc l'engagement est conservateur.
+  // OPEN et sera balayée en UNRESOLVED. Le budget reste engagé dans l'intervalle,
+  // à hauteur de l'ESTIMATION — qui n'est pas un majorant (voir money.ts). Le
+  // sens de l'écart n'est donc pas garanti : sur un appel à outils, l'engagement
+  // laissé en place peut être inférieur au coût réel.
   const s = await settle(id, settledMicros, `http_${r.status}`)
   if (s.ok) {
     done('SETTLED', `http_${r.status}`)

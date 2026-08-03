@@ -198,6 +198,64 @@ describe('contenu de la ligne', () => {
     expect(last().fingerprint).toMatch(/^[0-9a-f]{64}$/)
   })
 
+  // ── Lot C2a-2c : DÉCLARÉ / RAPPORTÉ / RÉUSSI / EN ERREUR ────────────────────
+  it('distingue les quatre faits sur les outils serveur', async () => {
+    ;(globalThis as any).fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200, text: async () => '',
+      json: async () => ({
+        usage: {
+          input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 200,
+          server_tool_use: { web_search_requests: 2, web_fetch_requests: 1 },
+        },
+        content: [
+          { type: 'server_tool_use', id: 's1', name: 'web_search' },
+          { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: 'x' }] },
+          { type: 'web_search_tool_result', content: { error_code: 'too_many_requests' } },
+          { type: 'web_fetch_tool_result', content: { type: 'web_fetch_result',
+            content: { source: { type: 'base64', media_type: 'application/pdf' } } } },
+        ],
+      }),
+    })
+    const m = await load()
+    await m.anthropicPost('k', {
+      ...BODY(),
+      tools: [
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
+        { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 1 },
+      ],
+    })
+    const t = last()
+
+    expect(t.server_tools_declared).toEqual(['web_search_20250305', 'web_fetch_20260209'])
+    expect(t.web_search_requests).toBe(2)          // fournisseur
+    expect(t.web_fetch_requests).toBe(1)           // fournisseur
+    expect(t.web_search_results_observed).toBe(1)  // succès
+    expect(t.web_search_errors_observed).toBe(1)   // erreur
+    expect(t.server_tool_error_codes).toEqual(['too_many_requests'])
+    expect(t.web_fetch_results_observed).toBe(1)
+    expect(t.web_fetch_binary_results).toBe(1)     // exposition PDF
+    expect(t.server_tool_invocations).toBe(1)
+  })
+
+  it('compteur fournisseur absent → null, jamais 0', async () => {
+    const m = await load()
+    await m.anthropicPost('k', BODY())
+    const t = last()
+    expect(t.web_search_requests).toBeNull()
+    expect(t.web_fetch_requests).toBeNull()
+  })
+
+  it('porte les deux listes, et l\'écart entre elles', async () => {
+    const m = await load()
+    await m.anthropicPost('k', {
+      ...BODY(), tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+    })
+    const t = last()
+    expect(t.estimate_unbounded).toEqual(['web_search_result_tokens'])
+    expect(t.estimate_incomplete).toEqual([])
+    expect(t.estimate_complete).toBe(true)   // porte ENFORCE inchangée
+  })
+
   it('refus avant émission → state NOT_RESERVED, montants réels à null', async () => {
     process.env.AI_BUDGET_RESERVATION = 'ENFORCE'
     reserve.mockResolvedValue({ ok: false, reason: 'no_client' })

@@ -144,18 +144,36 @@ export function cachedTokenCostMicros(tokens: bigint, perMillion: bigint): bigin
   return ceilDiv(tokens * perMillion, 10_000_000n)
 }
 
-// ── ESTIMATION (avant l'appel) — majorant volontaire ─────────────────────────
+// ── ESTIMATION (avant l'appel) ────────────────────────────────────────────────
 //
-// Sortie : `max_tokens` est un plafond DUR côté Anthropic, donc un majorant exact.
-// Entrée : estimée sur le corps réellement sérialisé. Le ratio retenu est
-//   1 token ≈ 3 octets, plus prudent que le ~4 usuel — sur-estimer l'entrée est
-//   sans danger, la sous-estimer ouvre une brèche.
-// Outils : `max_uses` × tarif par usage.
+// ⚠️ CE N'EST PAS UN MAJORANT. Le lot C2a-2c a retiré cette affirmation, qui
+// était fausse et mesurée comme telle sur staging.
 //
-// ⚠️ LIMITE STRUCTURELLE, à ne pas masquer : les outils serveur injectent des
-// tokens d'ENTRÉE que nous n'avons pas émis (contenu des résultats de recherche).
-// Ce volume est inconnaissable à l'avance. L'estimation reste donc un majorant
-// pour un appel sans outil, et seulement une approximation prudente avec outils.
+// Sortie : `max_tokens` est un plafond DUR côté Anthropic — cette composante-là
+//   est bien bornée.
+//
+// Entrée : `bodyBytes / 3` est une HEURISTIQUE LOCALE INDICATIVE, rien de plus.
+//   Mesure staging (Sonnet, sans outil) : corps de 2 400 octets → 800 tokens
+//   estimés contre **945 réels**. Sous-estimation de 18 %. Le ratio 3 octets par
+//   token est une moyenne de prose anglaise ; notre corps est du JSON structuré
+//   contenant du français accentué, qui tokenise plus dense.
+//   Le précomptage fournisseur (`lib/prospector/tokenCount.ts`,
+//   `POST /v1/messages/count_tokens`) est l'instrument correct — lui-même donné
+//   pour une ESTIMATION par Anthropic, pas pour une borne.
+//   Aucun coefficient n'est réajusté ici : corriger « /3 » en « /2 » sur cinq
+//   observations remplacerait une erreur mesurée par une autre, non mesurée.
+//
+// Outils serveur : voir les constantes INCOMPLETE_* ci-dessus. Le frais de
+//   recherche web est borné par `max_uses` ; les TOKENS que les outils injectent
+//   ne le sont pas, et aucun paramètre de l'API ne les borne.
+//
+// ── Deux listes, volontairement distinctes ───────────────────────────────────
+//   `unbounded`  — la vérité complète : toute composante que rien ne borne.
+//   `incomplete` — le sous-ensemble sur lequel la porte ENFORCE refuse
+//                  AUJOURD'HUI (contrat C2a-2b, inchangé par ce lot).
+// L'écart entre les deux est exactement la décision différée : ENFORCE doit-il
+// devenir un plafond dur strict, un garde opérationnel tolérant, ou deux
+// niveaux distincts ? C2a-2c fournit l'instrument de mesure, pas l'arbitrage.
 export interface EstimateInput {
   model: string
   maxTokens: number
@@ -168,6 +186,12 @@ export interface EstimateInput {
   serverToolMaxUses?: number
   /** Somme des `max_uses` des outils facturés à l'usage (recherche web). */
   webSearchMaxUses?: number
+  /**
+   * `web_search` figure-t-il dans la requête ? Décide de la présence de la
+   * composante NON BORNABLE `web_search_result_tokens`. Par défaut : déduit de
+   * `webSearchMaxUses > 0`.
+   */
+  webSearchDeclared?: boolean
   /** `web_fetch` figure-t-il dans la requête ? Décide de l'estimabilité. */
   webFetchDeclared?: boolean
   /**
@@ -184,9 +208,25 @@ export interface EstimateInput {
   webSearchMicrosPerUse?: bigint
 }
 
-/** Identifiants de composantes non estimables — stables, exploités en télémétrie. */
+/** Identifiants de composantes non bornables — stables, exploités en télémétrie. */
 export const INCOMPLETE_WEB_FETCH_CONTENT = 'web_fetch_content'
 export const INCOMPLETE_UNKNOWN_SERVER_TOOL = 'unknown_server_tool'
+/**
+ * `max_content_tokens` borne le contenu TEXTE de `web_fetch`, pas le binaire :
+ * « The limit applies to text content, not to binary content such as PDFs »
+ * (documentation web fetch). Un PDF fetché échappe donc à la borne — la même
+ * documentation chiffre l'ordre de grandeur à ~125 000 tokens pour 500 kB.
+ * Aucun paramètre de l'API ne permet d'interdire le binaire.
+ */
+export const INCOMPLETE_WEB_FETCH_BINARY_CONTENT = 'web_fetch_binary_content'
+/**
+ * `max_uses` borne le NOMBRE de recherches et donc le frais, jamais le volume
+ * de tokens que leurs résultats injectent en entrée. Il n'existe aucun
+ * équivalent de `max_content_tokens` pour la recherche web, et la documentation
+ * précise que ces résultats sont comptés en entrée « in search iterations
+ * executed during a single turn and in subsequent conversation turns ».
+ */
+export const INCOMPLETE_WEB_SEARCH_RESULT_TOKENS = 'web_search_result_tokens'
 
 /**
  * Types d'outils serveur dont le modèle de coût est EXPLICITEMENT supporté.
@@ -199,15 +239,35 @@ export const INCOMPLETE_UNKNOWN_SERVER_TOOL = 'unknown_server_tool'
 export const SUPPORTED_SERVER_TOOL_PREFIXES = ['web_search', 'web_fetch']
 
 export interface EstimateBreakdown {
-  inputMicros: bigint         // corps réellement sérialisé
-  outputMicros: bigint        // max_tokens — plafond dur, donc majorant exact
-  toolMicros: bigint          // outils facturés à l'usage
-  fetchContentMicros: bigint  // contenu web_fetch, SI borné
+  /** ⚠️ INDICATIF — `bodyBytes / 3`, ni borne ni majorant. Voir l'en-tête. */
+  inputMicros: bigint
+  /** BORNÉ — `max_tokens` est un plafond dur côté Anthropic. */
+  outputMicros: bigint
+  /** BORNÉ pour `web_search` (`max_uses` × tarif) ; indicatif pour un type inconnu. */
+  toolMicros: bigint
+  /** BORNÉ si `max_content_tokens` est posé — pour le TEXTE seulement. */
+  fetchContentMicros: bigint
+  /** Somme des quatre. Ce n'est pas un majorant du coût réel. */
   totalMicros: bigint
-  /** Faux ⇔ au moins une composante du coût maximal n'est pas bornable. */
-  complete: boolean
-  /** Composantes non estimables, nommées. Vide ⇔ `complete`. */
+
+  /**
+   * VÉRITÉ COMPLÈTE : toute composante que rien ne borne, nommée.
+   * Purement descriptif — n'entre dans AUCUNE décision dans ce lot.
+   */
+  unbounded: string[]
+
+  /**
+   * Sous-ensemble de `unbounded` sur lequel la porte ENFORCE refuse AUJOURD'HUI.
+   * Contrat C2a-2b conservé à l'identique : `web_fetch` sans
+   * `max_content_tokens`, et outil serveur non modélisé.
+   * ⚠️ `incomplete ⊆ unbounded`, et l'inclusion est STRICTE en présence de
+   * `web_search` ou d'un `web_fetch` borné en texte. Cet écart est la décision
+   * différée, pas une incohérence.
+   */
   incomplete: string[]
+
+  /** `incomplete` est vide. NE signifie PAS « tout est borné » — voir ci-dessus. */
+  complete: boolean
 }
 
 export function estimateBreakdown(o: EstimateInput): EstimateBreakdown {
@@ -224,19 +284,33 @@ export function estimateBreakdown(o: EstimateInput): EstimateBreakdown {
   const perUse = o.webSearchMicrosPerUse ?? DEFAULT_WEB_SEARCH_MICROS_PER_USE
 
   const incomplete: string[] = []
+  const unbounded: string[] = []
+
+  // `web_search` : le FRAIS est borné par `max_uses`, les TOKENS de résultats
+  // ne le sont pas. Non bloquant — le contrat ENFORCE actuel n'en tient pas
+  // compte, et ce lot ne le change pas.
+  const searchDeclared = o.webSearchDeclared ?? searchUses > 0n
+  if (searchDeclared) unbounded.push(INCOMPLETE_WEB_SEARCH_RESULT_TOKENS)
+
   let fetchContentMicros = 0n
   if (o.webFetchDeclared) {
     if (o.webFetchMaxContentTokens === undefined) {
-      // NON ESTIMABLE. On ne fabrique pas de borne : inventer un
+      // NON BORNABLE. On ne fabrique pas de borne : inventer un
       // `max_content_tokens` produirait un chiffre faux présenté comme exact.
+      unbounded.push(INCOMPLETE_WEB_FETCH_CONTENT)
       incomplete.push(INCOMPLETE_WEB_FETCH_CONTENT)
     } else {
+      // Le TEXTE est borné. Le BINAIRE ne l'est pas : `max_content_tokens` ne
+      // s'y applique pas. Non bloquant — poser la borne texte est déjà ce que
+      // le contrat C2a-2b considère comme suffisant, et ce lot le conserve.
       fetchContentMicros = tokenCostMicros(n(o.webFetchMaxContentTokens), p.inPerM)
+      unbounded.push(INCOMPLETE_WEB_FETCH_BINARY_CONTENT)
     }
   }
   // Outil serveur non modélisé : la part calculée reste dans `toolMicros` à
   // titre indicatif, mais elle ne prétend plus majorer quoi que ce soit.
   if (o.unknownServerToolTypes && o.unknownServerToolTypes.length) {
+    unbounded.push(INCOMPLETE_UNKNOWN_SERVER_TOOL)
     incomplete.push(INCOMPLETE_UNKNOWN_SERVER_TOOL)
   }
 
@@ -247,15 +321,17 @@ export function estimateBreakdown(o: EstimateInput): EstimateBreakdown {
   return {
     inputMicros, outputMicros, toolMicros, fetchContentMicros,
     totalMicros: inputMicros + outputMicros + toolMicros + fetchContentMicros,
-    complete: incomplete.length === 0,
+    unbounded,
     incomplete,
+    complete: incomplete.length === 0,
   }
 }
 
 /**
- * Total seul. ⚠️ Ne dit RIEN de l'estimabilité : un appel `web_fetch` sans
- * `max_content_tokens` rend ici un total qui n'est pas un majorant. Toute
- * décision d'arbitrage doit passer par `estimateBreakdown()` et lire `complete`.
+ * Total seul. ⚠️ Ce n'est PAS un majorant, dans aucun cas de figure — même sans
+ * outil, la part d'entrée est une heuristique indicative mesurée à −18 % sur
+ * staging. Toute décision d'arbitrage doit passer par `estimateBreakdown()` et
+ * lire `incomplete` / `unbounded`.
  */
 export function estimateMicros(o: EstimateInput): bigint {
   return estimateBreakdown(o).totalMicros

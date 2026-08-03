@@ -40,10 +40,19 @@ export interface GatewayTelemetry {
   est_output_micros: bigint
   est_tool_micros: bigint
   est_fetch_content_micros: bigint
-  /** Faux ⇔ une composante du coût maximal n'est pas bornable. */
+  /**
+   * `estimate_incomplete` est vide. ⚠️ NE signifie PAS « tout est borné » :
+   * c'est le prédicat de la porte ENFORCE actuelle, plus étroit que
+   * `estimate_unbounded`. L'écart entre les deux est la décision différée.
+   */
   estimate_complete: boolean
-  /** Composantes non estimables, nommées. */
+  /** Composantes sur lesquelles la porte ENFORCE refuse aujourd'hui. */
   estimate_incomplete: string[]
+  /**
+   * VÉRITÉ COMPLÈTE : toute composante que rien ne borne, nommée. Descriptif,
+   * n'entre dans aucune décision. Sur-ensemble de `estimate_incomplete`.
+   */
+  estimate_unbounded: string[]
 
   // Entrées de l'estimation, telles que lues dans le corps envoyé
   max_tokens: number
@@ -57,8 +66,31 @@ export interface GatewayTelemetry {
   input_tokens: number | null
   cache_read_input_tokens: number | null
   output_tokens: number | null
+  /** @deprecated C2a-2c — conservé pour continuité ; lire `web_search_requests`. */
   web_searches: number | null
   settled_micros: bigint | null
+
+  // ── Outils serveur : DÉCLARÉ ≠ RAPPORTÉ ≠ RÉUSSI ≠ EN ERREUR ───────────────
+  // Distinction établie par une mesure staging : `web_fetch` déclaré, coût réel
+  // 12× l'estimation, et pourtant aucune page récupérée. Confondre les quatre
+  // conduirait à attribuer un coût de déclaration à une exécution.
+  /** DÉCLARÉ — types d'outils serveur présents dans la requête. */
+  server_tools_declared: string[]
+  /** RAPPORTÉ PAR LE FOURNISSEUR — `null` si le champ est absent, jamais 0. */
+  web_search_requests: number | null
+  web_fetch_requests: number | null
+  /** OBSERVÉ dans la réponse — blocs de résultat réussis. */
+  web_search_results_observed: number | null
+  web_fetch_results_observed: number | null
+  /** OBSERVÉ dans la réponse — blocs de résultat en erreur. */
+  web_search_errors_observed: number | null
+  web_fetch_errors_observed: number | null
+  /** Codes d'erreur fournisseur, dédupliqués. Aucune URL, aucun contenu. */
+  server_tool_error_codes: string[]
+  /** Blocs `server_tool_use` observés. */
+  server_tool_invocations: number | null
+  /** Résultats `web_fetch` binaires (PDF) — l'exposition non bornée. */
+  web_fetch_binary_results: number | null
 
   // Décision hypothétique (OBSERVE) ou réelle (ENFORCE)
   observe_limit_micros: bigint | null

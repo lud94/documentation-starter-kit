@@ -153,6 +153,26 @@ describe('OFF et ENFORCE conservent C1 — aucune régression du garde-fou', () 
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  // ── C2a-2c : OBSERVE strictement inchangé ─────────────────────────────────
+  it('OBSERVE avec outils serveur → aucun précomptage, aucune variable requise', async () => {
+    process.env.AI_BUDGET_RESERVATION = 'OBSERVE'
+    process.env.ANTHROPIC_BUDGET = '0.01'
+    const m = await load()
+    const r = await m.callClaude({
+      ...OPTS,
+      tools: [
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 10 },
+        { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6 },
+      ],
+    })
+    expect(r.blocked).toBeFalsy()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Une seule requête, vers Messages : le précomptage n'est jamais appelé.
+    for (const [url] of fetchMock.mock.calls) {
+      expect(String(url)).not.toContain('count_tokens')
+    }
+  })
+
   it('OFF : budget sain → appel normal, aucune RPC de réservation', async () => {
     readUsageDurable.mockResolvedValue({ ok: true, value: 0 })
     process.env.ANTHROPIC_BUDGET = '10'
