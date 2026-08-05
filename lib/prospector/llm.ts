@@ -13,8 +13,9 @@ import {
   readBudgetConfig, microsToUsdString, MICROS_PER_CENT,
   estimateBreakdown, settleMicros, DEFAULT_MAX_USES_WHEN_UNSET,
 } from './money'
-import { listItems, upsertItem } from '../supabase/store'
-import { randomUUID } from 'node:crypto'
+import { getItem, upsertItem } from '../supabase/store'
+import { randomUUID, createHash } from 'node:crypto'
+import type { TenantContext } from './tenant'
 import { requestFingerprint } from './fingerprint'
 import { budgetMode, enforceBudget, observeLimit, warnIfObserveBiased } from './budgetMode'
 import { reserve, settle, resolveReservation } from '../supabase/aiBudget'
@@ -145,32 +146,89 @@ export async function budgetLeft(): Promise<BudgetGuard> {
   return { state: 'available', budget, spent, blocked: false }
 }
 
-// ── Cache de résultats (évite de repayer la même question) ──
+// ── Cache de résultats — CLOISONNÉ PAR TENANT (lot MT-0b) ────────────────────
+//
+// ⚠️ DÉFAUT CORRIGÉ. Le cache vivait dans un pseudo-espace UNIQUE `'_cache'`,
+// avec une clé calculée sur le seul contenu. Les clés étant construites sur des
+// données utilisateur — `['person-news', name, company]`, `['enrich', siren,
+// city]`, `['signal-web', thesis, …]` — deux espaces clients distincts
+// partageaient la même entrée.
+//
+// Deux conséquences, la seconde étant la plus grave :
+//   1. le client B recevait la réponse payée par le client A sur une personne
+//      nommée ;
+//   2. sous budget par tenant, un succès de cache coûte ZÉRO et est OBSERVABLE.
+//      Le client B peut donc tester si un concurrent a déjà enrichi tel
+//      prospect, en constatant qu'aucun budget n'a bougé. C'est un canal
+//      auxiliaire inter-clients que la fonctionnalité budget crée elle-même —
+//      raison pour laquelle ce correctif précède MT-1.
+//
+// NOUVEAU CONTRAT, sur deux plans à la fois :
+//   • STOCKAGE réellement partitionné : l'espace de stockage devient
+//     `_cache:<tenant>`. Ce n'est pas un préfixe de clé, c'est une autre
+//     partition de `prospector_store`, dont la clé primaire est
+//     (kind, id, workspace_id).
+//   • IDENTITÉ de la clé : SHA-256 sur le tuple {version, tenant, provider,
+//     model, clé fonctionnelle}. Un changement de tenant, de fournisseur ou de
+//     modèle produit une entrée différente.
+//
+// Les anciennes entrées de `'_cache'` ne sont PLUS JAMAIS LUES : plus aucun
+// chemin ne vise cet espace. Elles ne sont pas supprimées ici — les ignorer
+// suffit, et une suppression de masse serait un risque gratuit.
 const CACHE_KIND = 'aicache'
-const CACHE_WS = '_cache'
+const CACHE_NS_PREFIX = '_cache:'
+const CACHE_CONTRACT_VERSION = 'v2'
 const TTL_MS = 7 * 24 * 3600 * 1000 // 7 jours
 
-async function cacheGet(key: string): Promise<string | null> {
+/** Partition de stockage d'un tenant. Jamais l'ancien `'_cache'` global. */
+function cacheNamespace(tenantId: string): string {
+  return `${CACHE_NS_PREFIX}${tenantId}`
+}
+
+/**
+ * Empreinte de cache. SHA-256 plutôt que l'ancien hachage maison 32 bits, qui
+ * n'était pas une identité : ~4 milliards de valeurs possibles, donc des
+ * collisions atteignables — et une collision de cache, ici, sert la réponse
+ * d'une AUTRE question. Aucun contenu brut n'est conservé : seul le condensé.
+ */
+function cacheDigest(tenantId: string, provider: string, model: string, functionalKey: string): string {
+  return createHash('sha256')
+    .update(JSON.stringify([CACHE_CONTRACT_VERSION, tenantId, provider, model, functionalKey]))
+    .digest('hex')
+    .slice(0, 40)
+}
+
+async function cacheGet(tenantId: string, id: string): Promise<string | null> {
   try {
-    const items = await listItems<{ id: string; text: string; at: number }>(CACHE_KIND, CACHE_WS)
-    const hit = items.find((x) => x.id === key)
+    // Lecture CIBLÉE sur la clé primaire (kind, id, workspace_id). L'ancienne
+    // version chargeait toute la collection puis filtrait en mémoire.
+    const hit = await getItem<{ id: string; text: string; at: number }>(CACHE_KIND, id, cacheNamespace(tenantId))
     if (!hit) return null
     if (Date.now() - (hit.at || 0) > TTL_MS) return null
     return hit.text
   } catch { return null }
 }
-async function cacheSet(key: string, text: string): Promise<void> {
-  try { await upsertItem(CACHE_KIND, key, { id: key, text, at: Date.now() }, CACHE_WS) } catch { /* best-effort */ }
+
+async function cacheSet(tenantId: string, id: string, text: string): Promise<void> {
+  try {
+    await upsertItem(CACHE_KIND, id, { id, text, at: Date.now() }, cacheNamespace(tenantId))
+  } catch { /* best-effort */ }
 }
-// Clé de cache courte et stable (hash simple, pas de dépendance).
+
+/**
+ * Clé FONCTIONNELLE d'un appel — ce que la question identifie, sans le tenant,
+ * le fournisseur ni le modèle, qui sont ajoutés par `cacheDigest`.
+ *
+ * Rend un condensé, pas les parties en clair : une clé de cache ne doit pas
+ * transporter le nom d'un prospect jusque dans un identifiant de ligne.
+ */
 export function cacheKey(parts: string[]): string {
-  const s = parts.join('|').toLowerCase()
-  let h = 0
-  for (let i = 0; i < s.length; i++) { h = ((h << 5) - h + s.charCodeAt(i)) | 0 }
-  return `c${Math.abs(h).toString(36)}`
+  return createHash('sha256').update(parts.join('|').toLowerCase()).digest('hex').slice(0, 32)
 }
 
 export interface CallOpts {
+  /** Espace client imputé. OBLIGATOIRE — voir lib/prospector/tenant.ts. */
+  tenant: TenantContext
   task: LlmTask
   agent: string                 // libellé pour le suivi de conso
   system: string
@@ -252,7 +310,12 @@ export const REQUEST_TIMEOUT_MS = 50_000
 // TTL trop courte ferait balayer en UNRESOLVED des réservations encore vivantes.
 const RESERVATION_TTL_SECONDS = 300
 
-export interface GatewayMeta { agent?: string; task?: string }
+/**
+ * Contexte d'un appel fournisseur. `tenant` est OBLIGATOIRE (lot MT-0) : le
+ * type force chaque site d'appel à le fournir, et `anthropicPost` le revérifie
+ * à l'exécution pour les appelants non typés.
+ */
+export interface GatewayMeta { tenant: TenantContext; agent?: string; task?: string }
 
 // ── Lecture des outils déclarés — `web_search` ≠ `web_fetch` ─────────────────
 // Voir la correction du modèle de coût dans money.ts. On ne somme PAS les
@@ -449,7 +512,20 @@ function transportOutcome(e: any): string {
   return 'network'
 }
 
-export async function anthropicPost(key: string, body: any, meta?: GatewayMeta): Promise<GatewayResult> {
+export async function anthropicPost(key: string, body: any, meta: GatewayMeta): Promise<GatewayResult> {
+  // ── DERNIÈRE BARRIÈRE (lot MT-0) ───────────────────────────────────────────
+  // Même si une route oublie de résoudre son espace client, l'appel fournisseur
+  // ne part pas. Le contrôle est AVANT le branchement de mode : il vaut donc
+  // aussi en OFF, parce qu'une dépense non imputable reste non imputable quel
+  // que soit l'état du garde budgétaire.
+  const tenantId = (meta?.tenant?.id || '').trim()
+  if (!tenantId) {
+    console.error('[mt0] appel Anthropic refusé : aucun espace client résolu.')
+    return { ok: false, status: 0, data: null, text: '', blocked: true,
+      blockedReason: 'usage_unavailable',
+      blockedDetail: 'Appel IA refusé : aucun espace client n\'a pu être déterminé pour cette requête.' }
+  }
+
   const mode = budgetMode()
   const { payload, bytes } = serialize(body)
 
@@ -480,6 +556,7 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
   // Squelette de télémétrie : complété au fil de l'eau, émis exactement une fois.
   const t: GatewayTelemetry = {
     reservation_id: '', fingerprint: '', mode, agent, model, task: meta?.task,
+    tenant_id: tenantId, tenant_kind: meta.tenant.kind,
     estimate_micros: est.totalMicros,
     est_input_micros: est.inputMicros,
     est_output_micros: est.outputMicros,
@@ -566,7 +643,7 @@ export async function anthropicPost(key: string, body: any, meta?: GatewayMeta):
 
   const res = await reserve({
     id, fingerprint, budgetMicros: budgetForRpc, estimateMicros: est.totalMicros,
-    agent, model, ttlSeconds: RESERVATION_TTL_SECONDS,
+    agent, model, ttlSeconds: RESERVATION_TTL_SECONDS, tenantId,
   })
 
   // ── Échec technique de la réservation → FAIL-SAFE, aucun appel ─────────────
@@ -734,7 +811,7 @@ interface SendResult {
   error?: string
 }
 
-async function send(key: string, body: any, meta?: GatewayMeta): Promise<SendResult> {
+async function send(key: string, body: any, meta: GatewayMeta): Promise<SendResult> {
   let attempt = await anthropicPost(key, body, meta)
   // Un refus budgétaire n'est PAS une requête invalide : le dégrader puis le
   // rejouer trois fois produirait trois refus et trois lignes de télémétrie.
@@ -792,8 +869,10 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
   const model = pickModel(o.task)
   // La clé de cache inclut le MODÈLE : changer de modèle doit invalider le cache,
   // sinon on ressert indéfiniment la réponse d'un modèle qu'on n'utilise plus.
-  const cacheId = o.cache ? `${o.cache}-${model.replace(/[^a-z0-9]/gi, '')}` : ''
-  if (cacheId) { const hit = await cacheGet(cacheId); if (hit) return { text: hit, cached: true } }
+  // Cache CLOISONNÉ : l'identité inclut tenant, fournisseur et modèle, et le
+  // stockage vit dans la partition du tenant. Voir le bloc MT-0b plus haut.
+  const cacheId = o.cache ? cacheDigest(o.tenant.id, 'anthropic', model, o.cache) : ''
+  if (cacheId) { const hit = await cacheGet(o.tenant.id, cacheId); if (hit) return { text: hit, cached: true } }
 
   // Le cache est consulté AVANT le garde-fou (plus haut) : un résultat déjà payé
   // ne coûte rien, le refuser n'économiserait rien et dégraderait le service.
@@ -843,7 +922,7 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
   // Sans ça, on récupérait une réponse tronquée — donc zéro entreprise, sans erreur.
   for (let turn = 0; turn < 4; turn++) {
     body.messages = messages
-    const sent = await send(key, body, { agent: o.agent, task: o.task })
+    const sent = await send(key, body, { tenant: o.tenant, agent: o.agent, task: o.task })
     // Refus budgétaire du garde C2 : converti dans le contrat `CallResult`
     // existant, donc l'interface et l'Admin n'ont rien à changer.
     if (sent.blocked) {
@@ -867,7 +946,7 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
 
   // Une réponse tronquée n'est PAS mise en cache : sinon on resservirait un
   // résultat inexploitable pendant 7 jours, sans moyen de l'invalider depuis l'UI.
-  if (cacheId && text && !truncated) await cacheSet(cacheId, text)
+  if (cacheId && text && !truncated) await cacheSet(o.tenant.id, cacheId, text)
   return { text, truncated }
 }
 

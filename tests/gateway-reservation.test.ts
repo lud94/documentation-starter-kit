@@ -23,6 +23,8 @@ vi.mock('../lib/supabase/aiBudget', () => ({
 }))
 vi.mock('../lib/env', () => ({ writeAllowed: () => true }))
 
+const T = { id: 'ws_test', kind: 'client' as const }
+
 let anthropicPost: typeof import('../lib/prospector/llm')['anthropicPost']
 let readToolShape: typeof import('../lib/prospector/llm')['readToolShape']
 let fetchMock: ReturnType<typeof vi.fn>
@@ -71,7 +73,7 @@ afterEach(() => {
 // ── Mode OFF : le chemin historique, à l'octet près côté comptabilité ─────────
 describe('mode OFF (défaut d\'exécution)', () => {
   it('drapeau absent → aucune RPC, la requête part quand même', async () => {
-    const r = await anthropicPost('k', BODY())
+    const r = await anthropicPost('k', BODY(), { tenant: T })
     expect(r.ok).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(reserve).not.toHaveBeenCalled()
@@ -81,7 +83,7 @@ describe('mode OFF (défaut d\'exécution)', () => {
   it('transport historique : aucun signal d\'annulation posé en OFF', async () => {
     // Le durcissement du transport ne fait pas partie de ce lot. OFF reste le
     // comportement historique, y compris son absence de délai maximal.
-    await anthropicPost('k', BODY())
+    await anthropicPost('k', BODY(), { tenant: T })
     expect(fetchMock.mock.calls[0][1].signal).toBeUndefined()
   })
 
@@ -92,7 +94,7 @@ describe('mode OFF (défaut d\'exécution)', () => {
       const g = globalThis as any; g.__prospectorKeys.clear()
       const m = await import('../lib/prospector/llm')
       fetchMock.mockClear()
-      await m.anthropicPost('k', BODY())
+      await m.anthropicPost('k', BODY(), { tenant: T })
       expect(fetchMock.mock.calls[0][1].signal).toBeDefined()
     }
     delete process.env.AI_BUDGET_RESERVATION
@@ -105,7 +107,7 @@ describe('mode OFF (défaut d\'exécution)', () => {
       const g = globalThis as any; g.__prospectorKeys.clear()
       const m = await import('../lib/prospector/llm')
       reserve.mockClear()
-      await m.anthropicPost('k', BODY())
+      await m.anthropicPost('k', BODY(), { tenant: T })
       // 'enforce ' et 'OBSERVER' ne doivent surtout pas armer quoi que ce soit.
       if (v === 'enforce ') expect(reserve).toHaveBeenCalled() // trim + upper : reconnu
       else expect(reserve).not.toHaveBeenCalled()
@@ -122,7 +124,7 @@ describe('mode OBSERVE — non bloquant par construction', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    await m.anthropicPost('k', BODY())
+    await m.anthropicPost('k', BODY(), { tenant: T })
     expect(reserve).toHaveBeenCalledTimes(1)
     expect(reserve.mock.calls[0][0].budgetMicros).toBe(0n)
   })
@@ -132,7 +134,7 @@ describe('mode OBSERVE — non bloquant par construction', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    const r = await m.anthropicPost('k', BODY())
+    const r = await m.anthropicPost('k', BODY(), { tenant: T })
     expect(r.ok).toBe(true)
     expect(r.blocked).toBeFalsy()
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -143,14 +145,14 @@ describe('mode OBSERVE — non bloquant par construction', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    const r = await m.anthropicPost('k', BODY())
+    const r = await m.anthropicPost('k', BODY(), { tenant: T })
     expect(r.ok).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('web_fetch sans max_content_tokens → l\'appel est AUTORISÉ en OBSERVE', async () => {
     const body: any = { ...BODY(), tools: [{ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6 }] }
-    const r = await anthropicPost('k', body)
+    const r = await anthropicPost('k', body, { tenant: T })
     expect(r.ok).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -162,7 +164,7 @@ describe('mode ENFORCE', () => {
 
   it('budget_exhausted → AUCUNE requête émise', async () => {
     reserve.mockResolvedValue({ ok: true, state: 'budget_exhausted', engagedMicros: 99n, budgetMicros: 1n })
-    const r = await anthropicPost('k', BODY())
+    const r = await anthropicPost('k', BODY(), { tenant: T })
     expect(fetchMock).not.toHaveBeenCalled()          // l'assertion centrale du lot
     expect(r.blocked).toBe(true)
     expect(r.blockedReason).toBe('budget_exhausted')
@@ -170,7 +172,7 @@ describe('mode ENFORCE', () => {
 
   it('échec technique de reserve() → fail-safe, aucune requête émise', async () => {
     reserve.mockResolvedValue({ ok: false, reason: 'PGRST202: fonction absente' })
-    const r = await anthropicPost('k', BODY())
+    const r = await anthropicPost('k', BODY(), { tenant: T })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(r.blocked).toBe(true)
     expect(r.blockedReason).toBe('usage_unavailable')  // pas « budget épuisé »
@@ -178,7 +180,7 @@ describe('mode ENFORCE', () => {
 
   it('état de réservation inattendu → refus, aucune requête émise', async () => {
     reserve.mockResolvedValue({ ok: true, state: 'integrity_error', engagedMicros: 0n, budgetMicros: 0n })
-    const r = await anthropicPost('k', BODY())
+    const r = await anthropicPost('k', BODY(), { tenant: T })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(r.blocked).toBe(true)
   })
@@ -188,7 +190,7 @@ describe('mode ENFORCE', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    const r = await m.anthropicPost('k', BODY())
+    const r = await m.anthropicPost('k', BODY(), { tenant: T })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(reserve).not.toHaveBeenCalled()
     expect(r.blocked).toBe(true)
@@ -203,7 +205,7 @@ describe('mode ENFORCE', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    const r = await m.anthropicPost('k', BODY())
+    const r = await m.anthropicPost('k', BODY(), { tenant: T })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(reserve).not.toHaveBeenCalled()      // le RPC ne doit PAS arbitrer ce cas
     expect(r.blocked).toBe(true)
@@ -216,14 +218,14 @@ describe('mode ENFORCE', () => {
       const g = globalThis as any; g.__prospectorKeys.clear()
       vi.resetModules()
       const m = await import('../lib/prospector/llm')
-      const r = await m.anthropicPost('k', BODY())
+      const r = await m.anthropicPost('k', BODY(), { tenant: T })
       expect(fetchMock).not.toHaveBeenCalled()
       expect(r.blockedReason).toBe('budget_exhausted')
     })
 
   it('ANTHROPIC_BUDGET ABSENT → aucun plafond demandé : l\'appel part', async () => {
     // Le contraste avec le cas ci-dessus est tout l'objet de la correction.
-    const r = await anthropicPost('k', BODY())
+    const r = await anthropicPost('k', BODY(), { tenant: T })
     expect(r.ok).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(reserve.mock.calls[0][0].budgetMicros).toBe(0n)
@@ -240,7 +242,7 @@ describe('mode ENFORCE', () => {
       model: 'claude-sonnet-5', max_tokens: 64,
       messages: [{ role: 'user', content: 'Réponds juste: OK' }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 1 }],
-    }, { agent: 'diagnose', task: 'research' })
+    }, { tenant: T, agent: 'diagnose', task: 'research' })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(r.blocked).toBe(true)
   })
@@ -250,7 +252,7 @@ describe('mode ENFORCE', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    await m.anthropicPost('k', BODY())
+    await m.anthropicPost('k', BODY(), { tenant: T })
     expect(reserve.mock.calls[0][0].budgetMicros).toBe(2_500_000n)
   })
 })
@@ -265,7 +267,7 @@ describe('estimation incomplète (web_fetch sans max_content_tokens)', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    const r = await m.anthropicPost('k', withFetch())
+    const r = await m.anthropicPost('k', withFetch(), { tenant: T })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(reserve).not.toHaveBeenCalled()
     expect(r.blocked).toBe(true)
@@ -277,7 +279,7 @@ describe('estimation incomplète (web_fetch sans max_content_tokens)', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    const r = await m.anthropicPost('k', withFetch())
+    const r = await m.anthropicPost('k', withFetch(), { tenant: T })
     expect(r.ok).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -287,7 +289,7 @@ describe('estimation incomplète (web_fetch sans max_content_tokens)', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    await m.anthropicPost('k', withFetch())
+    await m.anthropicPost('k', withFetch(), { tenant: T })
     expect(settle).toHaveBeenCalledTimes(1)
     expect(settle.mock.calls[0][1]).toBeGreaterThan(0n)
   })
@@ -298,7 +300,7 @@ describe('classification', () => {
   beforeEach(() => { process.env.AI_BUDGET_RESERVATION = 'OBSERVE' })
 
   it('2xx avec usage → SETTLED au montant calculé', async () => {
-    await anthropicPost('k', BODY())
+    await anthropicPost('k', BODY(), { tenant: T })
     expect(settle).toHaveBeenCalledTimes(1)
     expect(resolveReservation).not.toHaveBeenCalled()
     // sonnet-5 : 1000 in × 3 µUSD/1k + 500 out × 15 µUSD/1k = 3000 + 7500
@@ -307,27 +309,27 @@ describe('classification', () => {
 
   it('2xx au corps illisible → UNRESOLVED, jamais un faux zéro', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => { throw new Error('bad json') } })
-    await anthropicPost('k', BODY())
+    await anthropicPost('k', BODY(), { tenant: T })
     expect(settle).not.toHaveBeenCalled()
     expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', 'ok_unparseable')
   })
 
   it('2xx sans bloc usage → UNRESOLVED', async () => {
     fetchMock.mockResolvedValue(httpOk({ content: [] }))
-    await anthropicPost('k', BODY())
+    await anthropicPost('k', BODY(), { tenant: T })
     expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', 'usage_missing')
   })
 
   it.each([400, 401, 403, 404, 422, 429])('HTTP %i → RELEASED (preuve de rejet à l\'admission)', async (status) => {
     fetchMock.mockResolvedValue(httpErr(status))
-    const r = await anthropicPost('k', BODY())
+    const r = await anthropicPost('k', BODY(), { tenant: T })
     expect(r.ok).toBe(false)
     expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'RELEASED', `http_${status}`)
   })
 
   it.each([500, 502, 503, 529])('HTTP %i → UNRESOLVED (facturation indéterminée)', async (status) => {
     fetchMock.mockResolvedValue(httpErr(status))
-    await anthropicPost('k', BODY())
+    await anthropicPost('k', BODY(), { tenant: T })
     expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', `http_${status}`)
   })
 
@@ -336,7 +338,7 @@ describe('classification', () => {
   it.each([402, 405, 409, 418, 451, 499])(
     'HTTP %i non répertorié → UNRESOLVED, pas RELEASED', async (status) => {
       fetchMock.mockResolvedValue(httpErr(status))
-      await anthropicPost('k', BODY())
+      await anthropicPost('k', BODY(), { tenant: T })
       expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', `http_${status}`)
     })
 
@@ -344,7 +346,7 @@ describe('classification', () => {
     for (let s = 400; s < 500; s++) {
       resolveReservation.mockClear()
       fetchMock.mockResolvedValue(httpErr(s))
-      await anthropicPost('k', BODY())
+      await anthropicPost('k', BODY(), { tenant: T })
       const [, state] = resolveReservation.mock.calls[0]
       if ([400, 401, 403, 404, 413, 422, 429].includes(s)) expect(state).toBe('RELEASED')
       else expect(state).toBe('UNRESOLVED')
@@ -354,14 +356,14 @@ describe('classification', () => {
   it('timeout → UNRESOLVED', async () => {
     const e: any = new Error('timed out'); e.name = 'TimeoutError'
     fetchMock.mockRejectedValue(e)
-    await expect(anthropicPost('k', BODY())).rejects.toThrow()
+    await expect(anthropicPost('k', BODY(), { tenant: T })).rejects.toThrow()
     expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', 'timeout')
   })
 
   it('abort → UNRESOLVED', async () => {
     const e: any = new Error('aborted'); e.name = 'AbortError'
     fetchMock.mockRejectedValue(e)
-    await expect(anthropicPost('k', BODY())).rejects.toThrow()
+    await expect(anthropicPost('k', BODY(), { tenant: T })).rejects.toThrow()
     expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', 'aborted')
   })
 
@@ -369,7 +371,7 @@ describe('classification', () => {
     // Correction explicite du plan initial : un TypeError ne prouve pas que la
     // requête n'est jamais arrivée. Le lui accorder serait un faux zéro.
     fetchMock.mockRejectedValue(new TypeError('fetch failed'))
-    await expect(anthropicPost('k', BODY())).rejects.toThrow()
+    await expect(anthropicPost('k', BODY(), { tenant: T })).rejects.toThrow()
     expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', 'network')
   })
 
@@ -378,7 +380,7 @@ describe('classification', () => {
       resolveReservation.mockClear()
       const e: any = new Error('x'); e.name = name
       fetchMock.mockRejectedValue(e)
-      await expect(anthropicPost('k', BODY())).rejects.toThrow()
+      await expect(anthropicPost('k', BODY(), { tenant: T })).rejects.toThrow()
       expect(resolveReservation.mock.calls[0][1]).toBe('UNRESOLVED')
     }
   })
@@ -390,7 +392,7 @@ describe('échec de règlement', () => {
 
   it('settle() échoue → réponse rendue + repli UNRESOLVED', async () => {
     settle.mockResolvedValue({ ok: false, reason: 'db down' })
-    const r = await anthropicPost('k', BODY())
+    const r = await anthropicPost('k', BODY(), { tenant: T })
     expect(r.ok).toBe(true)                 // jamais détruire un résultat payé
     expect(r.data.content[0].text).toBe('ok')
     expect(resolveReservation).toHaveBeenCalledWith(expect.any(String), 'UNRESOLVED', 'settle_failed')
@@ -399,7 +401,7 @@ describe('échec de règlement', () => {
   it('settle() ET son repli échouent → réponse rendue, aucune exception', async () => {
     settle.mockResolvedValue({ ok: false, reason: 'db down' })
     resolveReservation.mockResolvedValue({ ok: false, reason: 'db down' })
-    const r = await anthropicPost('k', BODY())
+    const r = await anthropicPost('k', BODY(), { tenant: T })
     expect(r.ok).toBe(true)
   })
 })
@@ -477,7 +479,7 @@ describe('non-régression de la porte ENFORCE (C2a-2c)', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    return m.anthropicPost('k', tools ? { ...BODY(), tools } : BODY())
+    return m.anthropicPost('k', tools ? { ...BODY(), tools } : BODY(), { tenant: T })
   }
 
   it('web_search seul → TOUJOURS autorisé sous plafond positif', async () => {
@@ -523,7 +525,7 @@ describe('outil serveur non modélisé', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    const r = await m.anthropicPost('k', withUnknown())
+    const r = await m.anthropicPost('k', withUnknown(), { tenant: T })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(r.blockedDetail).toContain('unknown_server_tool')
   })
@@ -533,7 +535,7 @@ describe('outil serveur non modélisé', () => {
     const g = globalThis as any; g.__prospectorKeys.clear()
     vi.resetModules()
     const m = await import('../lib/prospector/llm')
-    const r = await m.anthropicPost('k', withUnknown())
+    const r = await m.anthropicPost('k', withUnknown(), { tenant: T })
     expect(r.ok).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })

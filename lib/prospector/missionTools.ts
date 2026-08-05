@@ -5,6 +5,7 @@
 import type { Mission, MissionStep, Lead, SourcedCompany, Sequence } from '../../types/prospector'
 import { fetchCompanies, fetchCompanyDetail } from './datagouv'
 import { enrichCompanyWeb } from './identify'
+import type { TenantContext } from './tenant'
 import { upsertLeadChecked, type UpsertResult } from '../supabase/leads'
 import { listItems, upsertItem } from '../supabase/store'
 
@@ -45,7 +46,7 @@ async function writeLead(lead: Parameters<typeof upsertLeadChecked>[0], ws: stri
   if (!r.ok) throw new MissionWriteError(r, what)
 }
 
-export async function runStep(step: MissionStep, mission: Mission, ws: string): Promise<{ result: string; context: Record<string, any> }> {
+export async function runStep(tenant: TenantContext, step: MissionStep, mission: Mission, ws: string): Promise<{ result: string; context: Record<string, any> }> {
   const ctx = { ...mission.context }
   const p = step.params || {}
 
@@ -111,7 +112,7 @@ export async function runStep(step: MissionStep, mission: Mission, ws: string): 
       const n = Math.min(Number(p.limit) || 5, MAX_ENRICH, companies.length)
       let ok = 0
       for (const c of companies.slice(0, n)) {
-        const r = await enrichCompanyWeb(c.name, c.city, /^\d{9}$/.test(c.id) ? c.id : undefined)
+        const r = await enrichCompanyWeb(tenant, c.name, c.city, /^\d{9}$/.test(c.id) ? c.id : undefined)
         if (r.website || r.summary) {
           const id = ctx.accounts?.[c.id] || ctx.accounts?.[c.name]
           if (id) {

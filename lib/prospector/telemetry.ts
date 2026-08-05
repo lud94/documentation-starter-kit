@@ -33,6 +33,13 @@ export interface GatewayTelemetry {
   agent: string
   model: string
   task?: string
+  /**
+   * Espace client imputé (lot MT-0). Identifiant TECHNIQUE d'espace —
+   * `ws_*`, `'admin'`, `'_system'`. Ce n'est ni un nom de client, ni un email,
+   * ni une donnée prospect : l'interdiction générale du module reste entière.
+   */
+  tenant_id: string
+  tenant_kind: 'client' | 'admin' | 'system'
 
   // Estimation et ses composantes
   estimate_micros: bigint

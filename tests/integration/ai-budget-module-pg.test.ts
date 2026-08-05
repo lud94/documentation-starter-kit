@@ -65,7 +65,7 @@ describe('sérialisation bigint aux frontières PostgREST', () => {
     const estimate = 123_456_789n
     const r = await mod.reserve({
       id, fingerprint: fp(), budgetMicros: 0n, estimateMicros: estimate,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300,
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it',
     })
     expect(r.ok).toBe(true)
     expect(r.state).toBe('reserved')
@@ -94,7 +94,7 @@ describe('cycle de vie complet, via le module livré', () => {
   it('reserve → settle : le compteur avance du montant RÉGLÉ, pas de l\'estimation', async () => {
     const id = randomUUID()
     await mod.reserve({ id, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 500_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     const s = await mod.settle(id, 10_500n, 'http_200')
     expect(s.ok).toBe(true)
     expect(await ledger()).toBe(10_500n)
@@ -107,7 +107,7 @@ describe('cycle de vie complet, via le module livré', () => {
   it('reserve → RELEASED : compteur INCHANGÉ, engagement retombé', async () => {
     const id = randomUUID()
     await mod.reserve({ id, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 500_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     expect(await mod.resolveReservation(id, 'RELEASED', 'http_429')).toEqual({ ok: true })
     expect(await ledger()).toBe(0n)
     expect(await stateOf(id)).toBe('RELEASED')
@@ -119,7 +119,7 @@ describe('cycle de vie complet, via le module livré', () => {
   it('reserve → UNRESOLVED : compteur inchangé mais engagement MAINTENU', async () => {
     const id = randomUUID()
     await mod.reserve({ id, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 500_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     await mod.resolveReservation(id, 'UNRESOLVED', 'timeout')
     expect(await ledger()).toBe(0n)
     const e = await mod.engaged()
@@ -134,16 +134,16 @@ describe('arbitrage budgétaire', () => {
     // à plafond 0 : elle doit passer. C'est ce qui rend OBSERVE non bloquant.
     const gros = randomUUID()
     await mod.reserve({ id: gros, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 999_000_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     const r = await mod.reserve({ id: randomUUID(), fingerprint: fp(), budgetMicros: 0n, estimateMicros: 500_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     expect(r.state).toBe('reserved')
   })
 
   it('plafond positif dépassé → budget_exhausted, aucune ligne créée', async () => {
     const id = randomUUID()
     const r = await mod.reserve({ id, fingerprint: fp(), budgetMicros: 1_000n, estimateMicros: 500_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     expect(r.ok).toBe(true)
     expect(r.state).toBe('budget_exhausted')
     expect(await stateOf(id)).toBeNull()
@@ -152,21 +152,21 @@ describe('arbitrage budgétaire', () => {
   it('le passif UNRESOLVED seul suffit à provoquer budget_exhausted', async () => {
     const passif = randomUUID()
     await mod.reserve({ id: passif, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 900_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     await mod.resolveReservation(passif, 'UNRESOLVED', 'timeout')
     expect(await ledger()).toBe(0n)   // rien de consommé…
 
     const r = await mod.reserve({ id: randomUUID(), fingerprint: fp(), budgetMicros: 1_000_000n,
-      estimateMicros: 200_000n, agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      estimateMicros: 200_000n, agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     expect(r.state).toBe('budget_exhausted')   // …et pourtant le plafond est atteint
   })
 
   it('idempotence : même id + même empreinte → une seule ligne', async () => {
     const id = randomUUID(); const f = fp()
     const a = await mod.reserve({ id, fingerprint: f, budgetMicros: 0n, estimateMicros: 500_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     const b = await mod.reserve({ id, fingerprint: f, budgetMicros: 0n, estimateMicros: 500_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     expect(a.state).toBe('reserved')
     expect(b.state).toBe('reserved')
     const e = await mod.engaged()
@@ -176,11 +176,63 @@ describe('arbitrage budgétaire', () => {
   it('même id, empreinte divergente → integrity_error', async () => {
     const id = randomUUID()
     await mod.reserve({ id, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 500_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     const b = await mod.reserve({ id, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 500_000n,
-      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300 })
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_it' })
     expect(b.ok).toBe(true)
     expect(b.state).toBe('integrity_error')
+  })
+})
+
+// ── Lot MT-0 — imputation de la réservation à un espace client ───────────────
+describe('imputation tenant (MT-0)', () => {
+  async function tenantOf(id: string): Promise<string | null> {
+    const { data } = await raw.from('prospector_ai_reservations').select('tenant_id').eq('id', id).maybeSingle()
+    return (data as any)?.tenant_id ?? null
+  }
+
+  it('la réservation porte l\'espace client', async () => {
+    const id = randomUUID()
+    const r = await mod.reserve({ id, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 1_000n,
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_fabel' })
+    expect(r.state).toBe('reserved')
+    expect(await tenantOf(id)).toBe('ws_fabel')
+  })
+
+  it('deux espaces produisent deux imputations distinctes', async () => {
+    const a = randomUUID(); const b = randomUUID()
+    await mod.reserve({ id: a, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 1_000n,
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_fabel' })
+    await mod.reserve({ id: b, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 1_000n,
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_client_b' })
+    expect(await tenantOf(a)).toBe('ws_fabel')
+    expect(await tenantOf(b)).toBe('ws_client_b')
+  })
+
+  it('un tenant vide est refusé AVANT la base', async () => {
+    const r = await mod.reserve({ id: randomUUID(), fingerprint: fp(), budgetMicros: 0n, estimateMicros: 1_000n,
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: '   ' })
+    expect(r.ok).toBe(false)
+    expect(r.reason).toBe('no_tenant')
+  })
+
+  it('un rejeu idempotent ne DÉPLACE pas la dépense vers un autre espace', async () => {
+    const id = randomUUID(); const f = fp()
+    await mod.reserve({ id, fingerprint: f, budgetMicros: 0n, estimateMicros: 1_000n,
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_fabel' })
+    const again = await mod.reserve({ id, fingerprint: f, budgetMicros: 0n, estimateMicros: 1_000n,
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_client_b' })
+    expect(again.state).toBe('reserved')
+    expect(await tenantOf(id)).toBe('ws_fabel')   // premier inscrivant, pas le dernier
+  })
+
+  it('le règlement et l\'engagement global restent identiques à C2a-1', async () => {
+    const id = randomUUID()
+    await mod.reserve({ id, fingerprint: fp(), budgetMicros: 0n, estimateMicros: 500_000n,
+      agent: 'test', model: 'claude-sonnet-5', ttlSeconds: 300, tenantId: 'ws_fabel' })
+    expect((await mod.settle(id, 7_777n, 'http_200')).ok).toBe(true)
+    expect(await ledger()).toBe(7_777n)
+    expect((await mod.engaged()).consumedMicros).toBe(7_777n)
   })
 })
 

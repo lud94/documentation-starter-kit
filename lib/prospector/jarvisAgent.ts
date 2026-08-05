@@ -2,6 +2,7 @@
 // WhatsApp plus tard). Le canal ne fait que transporter du texte : toute la
 // compréhension et l'exécution vivent ici, côté serveur, dans l'espace du client.
 import { callClaude, parseJson, cacheKey } from './llm'
+import type { TenantContext } from './tenant'
 import { getKey } from './keystore'
 import { lookupByName, fetchCompanyDetail, fetchCompanies } from './datagouv'
 import { identifyLead, enrichCompanyWeb } from './identify'
@@ -46,11 +47,11 @@ Si rien de pertinent, action=null et réponds directement dans "reply".`
 export interface PlanResult { reply: string; action: any | null }
 
 // 1) COMPRENDRE — modèle économique (classification), aucun effet de bord.
-export async function planJarvis(message: string, ctx: { url?: string; title?: string; channel?: string } = {}): Promise<PlanResult> {
+export async function planJarvis(tenant: TenantContext, message: string, ctx: { url?: string; title?: string; channel?: string } = {}): Promise<PlanResult> {
   if (!getKey('ANTHROPIC_API_KEY')) return { reply: 'Clé Anthropic non configurée (Admin → Connexions).', action: null }
   const page = ctx.url || ctx.title ? `Page: ${(ctx.title || '').slice(0, 200)} (${(ctx.url || '').slice(0, 200)})\n` : ''
   const r = await callClaude({
-    task: 'classify', agent: `Jarvis ${ctx.channel || 'web'}`, system: SYSTEM,
+    tenant, task: 'classify', agent: `Jarvis ${ctx.channel || 'web'}`, system: SYSTEM,
     messages: [{ role: 'user', content: `${page}Directive: ${message}` }],
   })
   if (r.blocked) return { reply: r.error || 'Budget IA épuisé.', action: null }
@@ -71,8 +72,8 @@ async function accountLeadFrom(company: string): Promise<Lead> {
   }
 }
 
-async function personOrAccountLead(name: string, url: string): Promise<Lead> {
-  const id = await identifyLead({ name, url })
+async function personOrAccountLead(tenant: TenantContext, name: string, url: string): Promise<Lead> {
+  const id = await identifyLead(tenant, { name, url })
   const isPerson = id.kind === 'person'
   const [firstName, ...rest] = String(name || '').split(/\s+/)
   return {
@@ -109,7 +110,7 @@ function writeFailure(r: UpsertResult, what: string): string {
   }
 }
 
-export async function executeJarvis(action: any, ws: string, ctxUrl = ''): Promise<string> {
+export async function executeJarvis(tenant: TenantContext, action: any, ws: string, ctxUrl = ''): Promise<string> {
   if (!action?.type) return 'Rien à exécuter.'
 
   switch (action.type) {
@@ -155,7 +156,7 @@ export async function executeJarvis(action: any, ws: string, ctxUrl = ''): Promi
       const who = [action.name, action.company].filter(Boolean).join(' · ')
       if (!action.name) return 'Précise le nom de la personne.'
       const r = await callClaude({
-        task: 'extract', agent: 'Jarvis · actualité personne',
+        tenant, task: 'extract', agent: 'Jarvis · actualité personne',
         system: `Tu es analyste de veille commerciale B2B (France). Trouve ce que LinkedIn NE dit PAS :
 presse économique/sectorielle, communiqués, levées, nominations, interviews, podcasts, conférences, site officiel.
 N'utilise PAS LinkedIn ni les réseaux sociaux comme source.
@@ -180,7 +181,7 @@ Français, 4 phrases maximum, ton factuel.`,
       const question = String(action.question || '').trim()
       if (!question) return 'Précise ta question.'
       const r = await callClaude({
-        task: 'extract', agent: 'Jarvis · recherche web',
+        tenant, task: 'extract', agent: 'Jarvis · recherche web',
         system: `Tu es analyste de marché B2B pour une agence de prospection française.
 Tu réponds UNIQUEMENT à des questions utiles à la prospection : marchés, secteurs, concurrents,
 acteurs, tendances, appels d'offres, actualité économique, organisation d'une entreprise.
@@ -242,7 +243,7 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
     case 'explain_company': {
       const v = await lookupByName(action.company)
       if (!v.found) return `Je n'ai pas trouvé « ${action.company} » sur data.gouv.`
-      const web = await enrichCompanyWeb(v.name || action.company, v.city, v.siren)
+      const web = await enrichCompanyWeb(tenant, v.name || action.company, v.city, v.siren)
       return [
         `${v.name} — SIREN ${v.siren}${v.active === false ? ' (radiée)' : ' (active)'}`,
         [v.naf && `NAF ${v.naf}`, v.city, v.effectif && `${v.effectif} sal.`, v.dirigeant && `dir. ${v.dirigeant}`].filter(Boolean).join(' · '),
@@ -280,7 +281,7 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
     }
 
     case 'add_person': {
-      const lead = await personOrAccountLead(action.name, action.url || ctxUrl)
+      const lead = await personOrAccountLead(tenant, action.name, action.url || ctxUrl)
       const saved = await upsertLeadChecked(lead, ws)
       if (!saved.ok) return writeFailure(saved, `Ajout de « ${action.name} »`)
       return `✅ ${isAccount(lead) ? 'Compte' : 'Contact'} « ${action.name} » ajouté.`
@@ -291,7 +292,7 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
       const hits = await findExisting(ws, q)
       let target = hits[0]
       if (!target) {
-        target = action.company ? await accountLeadFrom(action.company) : await personOrAccountLead(action.name, ctxUrl)
+        target = action.company ? await accountLeadFrom(action.company) : await personOrAccountLead(tenant, action.name, ctxUrl)
         const created = await upsertLeadChecked(target, ws)
         if (!created.ok) return writeFailure(created, `Création de « ${q} »`)
       }

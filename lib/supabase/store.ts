@@ -24,6 +24,24 @@ export async function listItems<T = any>(kind: string, ws: string): Promise<T[]>
   } catch { return [] }
 }
 
+// Lecture CIBLÉE d'un élément par sa clé primaire (kind, id, workspace_id).
+//
+// POURQUOI (lot MT-0b). `listItems()` charge toute la collection puis
+// l'appelant filtre en mémoire — acceptable pour quelques dizaines de lignes,
+// pas pour un cache de résultats IA à mesure que les clients se multiplient.
+// La clé primaire de `prospector_store` est exactement (kind, id,
+// workspace_id) : cette lecture est un accès par index, pas un balayage.
+export async function getItem<T = any>(kind: string, id: string, ws: string): Promise<T | null> {
+  const sb = supabase()
+  if (!sb) return (mem.get(key(kind, ws, id)) as T) ?? null
+  try {
+    const { data, error } = await sb.from(TABLE).select('data')
+      .eq('kind', kind).eq('id', id).eq('workspace_id', ws).maybeSingle()
+    if (error || !data) return null
+    return (data as any).data as T
+  } catch { return null }
+}
+
 export async function upsertItem(kind: string, id: string, data: any, ws: string): Promise<boolean> {
   if (!writeAllowed('prospector_store')) return false
   const sb = supabase()

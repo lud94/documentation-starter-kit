@@ -1,0 +1,195 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+
+// Lot MT-0 — le contexte tenant est la racine de confiance des appels LLM.
+//
+// Ce que ces cas verrouillent, dans l'ordre d'importance :
+//   1. aucune session valide ⇒ AUCUN tenant — jamais « admin par défaut » ;
+//   2. un client ne peut pas se faire passer pour un autre espace ;
+//   3. un espace inexistant ou suspendu n'est pas un tenant ;
+//   4. le contexte système ne s'obtient jamais par accident.
+
+const getWorkspaceById = vi.fn()
+vi.mock('../lib/supabase/workspaces', () => ({
+  getWorkspaceById: (...a: any[]) => getWorkspaceById(...a),
+}))
+
+import {
+  resolveTenantFromRequest, systemTenant, tenantFromVerifiedWorkspace,
+  SYSTEM_TENANT_ID, ADMIN_TENANT_ID, ACTIVE_WS_COOKIE, isBillableTenant,
+} from '../lib/prospector/tenant'
+import { createSessionToken, SESSION_COOKIE } from '../lib/auth/session'
+
+const req = (cookies: Record<string, string> = {}, body?: any, query?: any) =>
+  ({ cookies, body, query } as any)
+
+async function clientSession(ws: string) {
+  return createSessionToken('client@x.fr', 3600, { role: 'client', ws })
+}
+async function adminSession() {
+  return createSessionToken('admin@x.fr', 3600, { role: 'admin' })
+}
+
+beforeEach(() => {
+  getWorkspaceById.mockReset().mockResolvedValue({ id: 'ws_fabel', name: 'Fabel', status: 'active' })
+})
+
+describe('A/B — session client : le tenant est IMPOSÉ', () => {
+  it('session ws_fabel → tenant ws_fabel', async () => {
+    const t = await resolveTenantFromRequest(req({ [SESSION_COOKIE]: await clientSession('ws_fabel') }))
+    expect(t).toEqual({ id: 'ws_fabel', kind: 'client' })
+  })
+
+  it('le body et la query ne peuvent PAS substituer un autre espace', async () => {
+    const token = await clientSession('ws_fabel')
+    const t = await resolveTenantFromRequest(req(
+      { [SESSION_COOKIE]: token },
+      { tenant: 'ws_client_b', workspace: 'ws_client_b', ws: 'ws_client_b' },
+      { tenant: 'ws_client_b' },
+    ))
+    expect(t!.id).toBe('ws_fabel')
+  })
+
+  it('le cookie d\'espace actif est IGNORÉ pour un client', async () => {
+    const t = await resolveTenantFromRequest(req({
+      [SESSION_COOKIE]: await clientSession('ws_fabel'),
+      [ACTIVE_WS_COOKIE]: 'ws_client_b',
+    }))
+    expect(t!.id).toBe('ws_fabel')
+  })
+
+  it('session client sans espace → refus, jamais un repli sur « admin »', async () => {
+    // `activeWs()` retombait ici sur l'espace de l'ADMIN — donc un client mal
+    // provisionné lisait et dépensait dans l'espace administrateur.
+    const t = await resolveTenantFromRequest(req({ [SESSION_COOKIE]: await clientSession('') }))
+    expect(t).toBeNull()
+  })
+
+  it('un client ne peut pas revendiquer le tenant système', async () => {
+    const t = await resolveTenantFromRequest(req({ [SESSION_COOKIE]: await clientSession(SYSTEM_TENANT_ID) }))
+    expect(t).toBeNull()
+  })
+})
+
+describe('C — absence de session : JAMAIS admin', () => {
+  it('aucun cookie → null', async () => {
+    expect(await resolveTenantFromRequest(req({}))).toBeNull()
+  })
+
+  it('jeton invalide → null', async () => {
+    expect(await resolveTenantFromRequest(req({ [SESSION_COOKIE]: 'nimportequoi.signature' }))).toBeNull()
+  })
+
+  it('jeton expiré → null', async () => {
+    const expired = await createSessionToken('a@b.c', -10, { role: 'admin' })
+    expect(await resolveTenantFromRequest(req({ [SESSION_COOKIE]: expired }))).toBeNull()
+  })
+
+  it('DÉFAUT CORRIGÉ : sans session, un cookie d\'espace actif ne suffit pas', async () => {
+    // `activeWs()` traitait `!claims` comme un admin et rendait le cookie tel
+    // quel — une route publique oubliée devenait un administrateur anonyme.
+    const t = await resolveTenantFromRequest(req({ [ACTIVE_WS_COOKIE]: 'ws_fabel' }))
+    expect(t).toBeNull()
+    expect(getWorkspaceById).not.toHaveBeenCalled()
+  })
+})
+
+describe('D/E — admin : l\'espace actif doit EXISTER', () => {
+  it('espace valide → accepté', async () => {
+    const t = await resolveTenantFromRequest(req({
+      [SESSION_COOKIE]: await adminSession(), [ACTIVE_WS_COOKIE]: 'ws_fabel',
+    }))
+    expect(t).toEqual({ id: 'ws_fabel', kind: 'admin' })
+  })
+
+  it('espace INEXISTANT → refus', async () => {
+    getWorkspaceById.mockResolvedValue(null)
+    const t = await resolveTenantFromRequest(req({
+      [SESSION_COOKIE]: await adminSession(), [ACTIVE_WS_COOKIE]: 'ws_inexistant',
+    }))
+    expect(t).toBeNull()
+  })
+
+  it('espace SUSPENDU → refus', async () => {
+    getWorkspaceById.mockResolvedValue({ id: 'ws_fabel', status: 'suspended' })
+    const t = await resolveTenantFromRequest(req({
+      [SESSION_COOKIE]: await adminSession(), [ACTIVE_WS_COOKIE]: 'ws_fabel',
+    }))
+    expect(t).toBeNull()
+  })
+
+  it('base indisponible → refus (fail closed), pas un tenant deviné', async () => {
+    getWorkspaceById.mockRejectedValue(new Error('db down'))
+    const t = await resolveTenantFromRequest(req({
+      [SESSION_COOKIE]: await adminSession(), [ACTIVE_WS_COOKIE]: 'ws_fabel',
+    }))
+    expect(t).toBeNull()
+  })
+
+  it('sans cookie → espace propre de l\'admin, sans requête base', async () => {
+    const t = await resolveTenantFromRequest(req({ [SESSION_COOKIE]: await adminSession() }))
+    expect(t).toEqual({ id: ADMIN_TENANT_ID, kind: 'admin' })
+    expect(getWorkspaceById).not.toHaveBeenCalled()
+  })
+
+  it('un admin ne peut pas revendiquer le tenant système', async () => {
+    const t = await resolveTenantFromRequest(req({
+      [SESSION_COOKIE]: await adminSession(), [ACTIVE_WS_COOKIE]: SYSTEM_TENANT_ID,
+    }))
+    expect(t).toBeNull()
+  })
+
+  it('session héritée sans rôle → admin, mais SEULEMENT signature vérifiée', async () => {
+    const legacy = await createSessionToken('admin@x.fr', 3600)
+    const t = await resolveTenantFromRequest(req({ [SESSION_COOKIE]: legacy }))
+    expect(t).toEqual({ id: ADMIN_TENANT_ID, kind: 'admin' })
+  })
+})
+
+describe('G/H — contexte système explicite', () => {
+  it('étiquette listée → contexte système', () => {
+    expect(systemTenant('diagnose')).toEqual({ id: SYSTEM_TENANT_ID, kind: 'system', systemTag: 'diagnose' })
+  })
+
+  it('étiquette non listée → refus, jamais un contexte système accidentel', () => {
+    expect(() => systemTenant('jarvis' as any)).toThrow()
+    expect(() => systemTenant('' as any)).toThrow()
+  })
+
+  it('le tenant système est DISTINCT de l\'espace admin', () => {
+    expect(SYSTEM_TENANT_ID).not.toBe(ADMIN_TENANT_ID)
+  })
+
+  it('un endpoint public mal authentifié n\'obtient AUCUN contexte système', () => {
+    // Les routes publiques dérivent leur espace de leur propre garde ; un jeton
+    // absent ou invalide rend `null` en amont, et `null` n'est pas un tenant.
+    expect(tenantFromVerifiedWorkspace(null)).toBeNull()
+    expect(tenantFromVerifiedWorkspace('')).toBeNull()
+    expect(tenantFromVerifiedWorkspace('   ')).toBeNull()
+  })
+
+  it('le tenant système n\'est pas usurpable depuis un jeton externe', () => {
+    expect(tenantFromVerifiedWorkspace(SYSTEM_TENANT_ID)).toBeNull()
+  })
+})
+
+describe('espaces résolus hors session (jeton d\'ingestion, appairage)', () => {
+  it('espace client vérifié → tenant client', () => {
+    expect(tenantFromVerifiedWorkspace('ws_fabel')).toEqual({ id: 'ws_fabel', kind: 'client' })
+  })
+
+  it('jeton global → espace admin', () => {
+    expect(tenantFromVerifiedWorkspace(ADMIN_TENANT_ID)).toEqual({ id: 'admin', kind: 'admin' })
+  })
+})
+
+describe('imputabilité', () => {
+  it('null n\'est jamais imputable', () => {
+    expect(isBillableTenant(null)).toBe(false)
+    expect(isBillableTenant({ id: '', kind: 'client' })).toBe(false)
+  })
+  it('les trois natures le sont', () => {
+    for (const kind of ['client', 'admin', 'system'] as const) {
+      expect(isBillableTenant({ id: 'x', kind })).toBe(true)
+    }
+  })
+})

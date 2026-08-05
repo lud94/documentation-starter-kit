@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { planJarvis, executeJarvis, isWrite } from '../../../lib/prospector/jarvisAgent'
 import { redeemPairingCode, resolveChannelWs, unlinkChannel } from '../../../lib/prospector/pairing'
+import { tenantFromVerifiedWorkspace } from '../../../lib/prospector/tenant'
 import { listItems, upsertItem, deleteItem } from '../../../lib/supabase/store'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
@@ -46,7 +47,9 @@ async function handleUpdate(u: any, token: string): Promise<void> {
     const p = pendings.find((x) => x.id === chatKey)
     await deleteItem(PENDING_KIND, chatKey, PENDING_NS)
     if (cq.data === 'ok' && p?.action) {
-      const out = await executeJarvis(p.action, ws, p.url || '')
+      const tenant = tenantFromVerifiedWorkspace(ws)
+      if (!tenant) return
+      const out = await executeJarvis(tenant, p.action, ws, p.url || '')
       await send(token, chatId, out)
     } else {
       await send(token, chatId, 'Annulé.')
@@ -87,8 +90,12 @@ async function handleUpdate(u: any, token: string): Promise<void> {
   const ws = await resolveChannelWs(chatKey)
   if (!ws) { await send(token, chatId, "Ce chat n'est pas encore connecté. Génère un code dans <b>Admin → Canaux mobiles</b> et envoie-le ici."); return }
 
+  // MT-0 — l'espace vient de l'appairage du canal, déjà vérifié ci-dessus.
+  const tenant = tenantFromVerifiedWorkspace(ws)
+  if (!tenant) { await send(token, chatId, 'Espace client indéterminé : demande refusée.'); return }
+
   // ── Cerveau Jarvis ──
-  const plan = await planJarvis(text, { channel: 'telegram' })
+  const plan = await planJarvis(tenant, text, { channel: 'telegram' })
   if (plan.action && isWrite(plan.action)) {
     // Écriture → confirmation par bouton (comme dans l'app).
     await upsertItem(PENDING_KIND, chatKey, { id: chatKey, action: plan.action, at: Date.now() }, PENDING_NS)
@@ -96,7 +103,7 @@ async function handleUpdate(u: any, token: string): Promise<void> {
     return
   }
   if (plan.action) {
-    const out = await executeJarvis(plan.action, ws)
+    const out = await executeJarvis(tenant, plan.action, ws)
     await send(token, chatId, plan.reply ? `${plan.reply}\n\n${out}` : out)
     return
   }

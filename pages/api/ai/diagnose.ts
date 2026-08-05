@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { pickModel, anthropicPost } from '../../../lib/prospector/llm'
 import { buildTag } from '../../../lib/version'
+import { systemTenant } from '../../../lib/prospector/tenant'
 
 export const config = { maxDuration: 60 }
 
@@ -22,7 +23,7 @@ async function probe(key: string, model: string, extra: any): Promise<{ ok: bool
   try {
     const r = await anthropicPost(key, {
       model, max_tokens: 64, messages: [{ role: 'user', content: 'Réponds juste: OK' }], ...extra,
-    }, { agent: 'diagnose', task: 'research' })
+    }, { tenant: systemTenant('diagnose'), agent: 'diagnose', task: 'research' })
     if (r.blocked) return { ok: false, blocked: true, detail: (r.blockedDetail || 'Appel refusé par le garde budgétaire.').slice(0, 220) }
     if (r.ok) return { ok: true }
     return { ok: false, detail: r.text.slice(0, 220) }

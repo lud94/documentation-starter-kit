@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { listItems, upsertItem } from '../../../lib/supabase/store'
 import { activeWs } from '../../../lib/auth/ws'
+import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { runStep } from '../../../lib/prospector/missionTools'
 import { MISSION_TOOL_META } from '../../../types/prospector'
@@ -16,6 +17,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
   await hydrateKeystore()
   const ws = await activeWs(req)
+  // MT-0 — espace client obligatoire avant tout appel LLM. Fail closed.
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
+
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const id = String(body?.id || '')
   const approve = !!body?.approve   // l'utilisateur a validé l'étape en attente
@@ -43,7 +48,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   mission.status = 'running'
   step.status = 'running'
   try {
-    const { result, context } = await runStep(step, mission, ws)
+    const { result, context } = await runStep(tenant, step, mission, ws)
     step.status = 'done'; step.result = result; step.endedAt = Date.now()
     mission.context = context
     mission.log.push({ at: Date.now(), text: `${MISSION_TOOL_META[step.tool].label} → ${result}` })

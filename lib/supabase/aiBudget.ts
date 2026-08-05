@@ -82,6 +82,12 @@ export interface ReserveInput {
   agent: string
   model: string
   ttlSeconds: number
+  /**
+   * Espace client imputé (lot MT-0). OBLIGATOIRE : une réservation anonyme
+   * serait une dépense que personne ne peut rattacher à un client. La fonction
+   * PostgreSQL le refuse aussi, à sa première instruction.
+   */
+  tenantId: string
 }
 
 export async function reserve(o: ReserveInput): Promise<ReserveResult> {
@@ -91,10 +97,17 @@ export async function reserve(o: ReserveInput): Promise<ReserveResult> {
   if (!writeAllowed(RESERVATIONS)) {
     return { ok: false, reason: 'writes_suspended' }
   }
+  // Une réservation sans espace imputable est refusée AVANT la base : l'appel
+  // fournisseur ne doit pas partir si personne ne peut en porter le coût.
+  const tenantId = (o.tenantId || '').trim()
+  if (!tenantId) return { ok: false, reason: 'no_tenant' }
+
   const sb = supabase()
   if (!sb) return { ok: false, reason: 'no_client' }
   try {
-    const { data, error } = await sb.rpc('prospector_ai_reserve', {
+    // `prospector_ai_reserve_t` (lot MT-0) enveloppe la RPC GELÉE de C2a-1 :
+    // même arbitrage budgétaire, imputation en plus, une seule transaction.
+    const { data, error } = await sb.rpc('prospector_ai_reserve_t', {
       p_id: o.id,
       p_fingerprint: o.fingerprint,
       p_budget_micros: microsToWire(o.budgetMicros),
@@ -102,6 +115,7 @@ export async function reserve(o: ReserveInput): Promise<ReserveResult> {
       p_agent: o.agent,
       p_model: o.model,
       p_ttl_seconds: Math.max(1, Math.trunc(o.ttlSeconds)),
+      p_tenant_id: tenantId,
     })
     if (error) return { ok: false, reason: error.code ? `${error.code}: ${error.message}` : error.message }
     const row = firstRow(data)

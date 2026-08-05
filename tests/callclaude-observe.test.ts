@@ -43,7 +43,10 @@ const OK = {
   stop_reason: 'end_turn',
 }
 
+const T = { id: 'ws_test', kind: 'client' as const }
+
 const OPTS = {
+  tenant: T,
   task: 'chat' as const, agent: 'Jarvis', system: 'sys',
   messages: [{ role: 'user', content: 'salut' }],
 }

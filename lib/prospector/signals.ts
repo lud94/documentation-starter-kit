@@ -10,6 +10,7 @@ import { searchExa, exaConfigured, type ExaDoc } from './exa'
 import { getKey } from './keystore'
 import { withBuild } from '../version'
 import { callClaude as llmCall, cacheKey, pickModel } from './llm'
+import type { TenantContext } from './tenant'
 
 const SIGNAL_AGENT = 'Recherche signal'
 
@@ -156,7 +157,7 @@ function dedupe(hits: SignalHit[]): SignalHit[] {
   return out
 }
 
-async function callClaude(thesis: string, max: number, q?: SignalQuery): Promise<SignalHit[]> {
+async function callClaude(tenant: TenantContext, thesis: string, max: number, q?: SignalQuery): Promise<SignalHit[]> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return []
   // Sources ciblées selon le type de signal (presse pour les levées, jobboards
@@ -183,7 +184,7 @@ async function callClaude(thesis: string, max: number, q?: SignalQuery): Promise
   const prefer = q ? domainsFor(q) : []
   const hint = prefer.length ? `\n\nSources à privilégier quand elles couvrent le sujet (non exclusif — le site officiel ou la page carrière de l'entreprise est une source valable) : ${prefer.join(', ')}.` : ''
   const r = await llmCall({
-    task: 'research', agent: SIGNAL_AGENT, system: SYSTEM, tools,
+    tenant, task: 'research', agent: SIGNAL_AGENT, system: SYSTEM, tools,
     messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}${hint}\n\n${RECALL}\n\n${jsonInstruction(max)}` }],
     cache: cacheKey(['signal-web', thesis, String(max), 'v3']),
   })
@@ -198,7 +199,7 @@ async function callClaude(thesis: string, max: number, q?: SignalQuery): Promise
 
 // Claude EXTRACTEUR : à partir des documents Exa, sort les entreprises + signaux
 // + icebreakers. Pas de web tool ici (Exa a déjà cherché) → plus rapide/moins cher.
-async function extractWithClaude(thesis: string, docs: ExaDoc[], max: number, q?: SignalQuery): Promise<SignalHit[]> {
+async function extractWithClaude(tenant: TenantContext, thesis: string, docs: ExaDoc[], max: number, q?: SignalQuery): Promise<SignalHit[]> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key || docs.length === 0) return []
   // Économie : on borne le corpus (8 docs, 900 car.) — l'entrée est facturée.
@@ -207,7 +208,7 @@ async function extractWithClaude(thesis: string, docs: ExaDoc[], max: number, q?
     .join('\n\n')
 
   const r = await llmCall({
-    task: 'research', agent: SIGNAL_AGENT,
+    tenant, task: 'research', agent: SIGNAL_AGENT,
     system: `${SYSTEM}\nOn te fournit des extraits web déjà collectés. N'invente RIEN au-delà de ces extraits. Attribue à chaque entreprise l'URL source d'où vient le signal.`,
     messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}\n\nExtraits web:\n${corpus}\n\n${jsonInstruction(max)}` }],
   })
@@ -254,7 +255,7 @@ function monthSlices(months: number): string[] {
 }
 
 // `q` (critères structurés) est optionnel : sans lui, on garde la thèse libre.
-export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): Promise<{ mode: string; hits: SignalHit[]; thesis: string; passes?: number; error?: string }> {
+export async function searchSignals(tenant: TenantContext, thesis: string, max = 8, q?: SignalQuery): Promise<{ mode: string; hits: SignalHit[]; thesis: string; passes?: number; error?: string }> {
   const mode = signalsMode()
   if (mode === 'mock') {
     return { mode, hits: [], thesis, error: 'Aucune clé IA configurée : ajoute ANTHROPIC_API_KEY dans Admin → Connexions pour activer la veille par signal.' }
@@ -269,10 +270,10 @@ export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): P
       // liste blanche de domaines — un signal se trouve aussi sur le site de
       // l'entreprise. Le tri de pertinence se fait par keepOnFocus() en sortie.
       const docs = await searchExa(thesis, 12, { months: q?.months })
-      hits = docs.length ? await extractWithClaude(thesis, docs, max, q) : await callClaude(thesis, max, q)
+      hits = docs.length ? await extractWithClaude(tenant, thesis, docs, max, q) : await callClaude(tenant, thesis, max, q)
       // Exa a bien répondu mais rien d'exploitable n'en sort (documents hors sujet) :
       // on repasse par la recherche web plutôt que de rendre une page vide.
-      if (!hits.length) hits = await callClaude(thesis, max, q)
+      if (!hits.length) hits = await callClaude(tenant, thesis, max, q)
     } else {
       // Balayage par MOIS plutôt qu'une requête unique sur toute la période.
       // Une seule requête « 3 derniers mois » rend 1 ou 2 entreprises ; trois
@@ -281,14 +282,14 @@ export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): P
       const slices = monthSlices(q?.months || 6)
       const per = Math.max(8, Math.ceil(max / slices.length))
       const batches = await Promise.all(slices.map((label) =>
-        callClaude(`${thesis}\n\nPÉRIODE À COUVRIR POUR CETTE RECHERCHE : ${label}. Ne renvoie que des signaux datés de ce mois-là.`, per, q)
+        callClaude(tenant, `${thesis}\n\nPÉRIODE À COUVRIR POUR CETTE RECHERCHE : ${label}. Ne renvoie que des signaux datés de ce mois-là.`, per, q)
           .catch(() => [] as SignalHit[]),
       ))
       hits = batches.flat()
       passes = slices.length
       // Si toutes les passes échouent, on relance une fois en global pour avoir
       // une vraie erreur plutôt qu'un silence.
-      if (!hits.length) hits = await callClaude(thesis, max, q)
+      if (!hits.length) hits = await callClaude(tenant, thesis, max, q)
     }
   } catch (e: any) {
     // On remonte l'erreur RÉELLE (modèle indisponible, outil web non activé, quota…)

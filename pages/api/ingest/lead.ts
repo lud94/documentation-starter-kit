@@ -4,6 +4,7 @@ import { upsertLeadChecked } from '../../../lib/supabase/leads'
 import { lookupByName } from '../../../lib/prospector/datagouv'
 import { identifyLead } from '../../../lib/prospector/identify'
 import { resolveWorkspaceByToken } from '../../../lib/prospector/wstoken'
+import { tenantFromVerifiedWorkspace } from '../../../lib/prospector/tenant'
 import type { Lead } from '../../../types/prospector'
 
 // Point d'entrée pour l'extension navigateur (Jarvis web).
@@ -25,6 +26,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // Multi-tenant : le jeton détermine l'espace de destination (admin ou client).
   const ws = await resolveWorkspaceByToken(token)
   if (!ws) return res.status(401).json({ error: 'Jeton invalide (ni admin, ni client connu).' })
+  // MT-0 — l'espace vient du jeton d'ingestion, déjà vérifié ci-dessus.
+  const tenant = tenantFromVerifiedWorkspace(ws)
+  if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const name = String(body?.name || '').trim()
@@ -33,7 +37,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   // Classification personne (contact) vs entreprise (compte) : URL → agent web
   // (Exa→Claude si clés) → heuristique + data.gouv. Aucune donnée devinée.
-  const id = await identifyLead({ name, title: String(body?.title || ''), company: String(body?.company || ''), url })
+  const id = await identifyLead(tenant, { name, title: String(body?.title || ''), company: String(body?.company || ''), url })
   const isPerson = id.kind === 'person'
 
   const lead: Lead = {

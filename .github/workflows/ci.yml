@@ -43,6 +43,9 @@ jobs:
       - name: Garde-fou de la passerelle Anthropic
         run: npm run check:gateway
 
+      - name: Contexte tenant (MT-0)
+        run: npm run check:tenant
+
       - name: Tests unitaires
         run: npm test
 

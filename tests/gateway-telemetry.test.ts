@@ -20,6 +20,8 @@ vi.mock('../lib/supabase/aiBudget', () => ({
 }))
 vi.mock('../lib/env', () => ({ writeAllowed: () => true }))
 
+const T = { id: 'ws_test', kind: 'client' as const }
+
 let lines: any[] = []
 let logSpy: any
 
@@ -71,14 +73,14 @@ afterEach(() => {
 describe('émission', () => {
   it('mode OFF → aucune ligne', async () => {
     const m = await load()
-    await m.anthropicPost('k', BODY())
+    await m.anthropicPost('k', BODY(), { tenant: T })
     expect(lines.filter((s) => s.startsWith(TELEMETRY_MARKER))).toHaveLength(0)
   })
 
   it('une seule ligne par requête HTTP', async () => {
     process.env.AI_BUDGET_RESERVATION = 'OBSERVE'
     const m = await load()
-    await m.anthropicPost('k', BODY())
+    await m.anthropicPost('k', BODY(), { tenant: T })
     expect(lines.filter((s) => s.startsWith(TELEMETRY_MARKER))).toHaveLength(1)
   })
 })
@@ -89,7 +91,7 @@ describe('would_have_blocked — tri-état', () => {
   it('seuil dépassé → true, SANS empêcher l\'appel', async () => {
     process.env.AI_BUDGET_OBSERVE_LIMIT = '0.000001'
     const m = await load()
-    const r = await m.anthropicPost('k', BODY())
+    const r = await m.anthropicPost('k', BODY(), { tenant: T })
     expect(last().would_have_blocked).toBe(true)
     expect(r.ok).toBe(true)                                  // mesuré, pas empêché
     expect((globalThis as any).fetch).toHaveBeenCalledTimes(1)
@@ -98,7 +100,7 @@ describe('would_have_blocked — tri-état', () => {
   it('seuil confortable → false', async () => {
     process.env.AI_BUDGET_OBSERVE_LIMIT = '100'
     const m = await load()
-    await m.anthropicPost('k', BODY())
+    await m.anthropicPost('k', BODY(), { tenant: T })
     expect(last().would_have_blocked).toBe(false)
   })
 
@@ -107,7 +109,7 @@ describe('would_have_blocked — tri-état', () => {
     const m = await load()
     await m.anthropicPost('k', {
       ...BODY(), tools: [{ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6 }],
-    })
+    }, { tenant: T })
     const t = last()
     expect(t.would_have_blocked).toBeNull()
     expect(t.estimate_complete).toBe(false)
@@ -117,14 +119,14 @@ describe('would_have_blocked — tri-état', () => {
 
   it('aucun seuil candidat → null', async () => {
     const m = await load()
-    await m.anthropicPost('k', BODY())
+    await m.anthropicPost('k', BODY(), { tenant: T })
     expect(last().would_have_blocked).toBeNull()
   })
 
   it('seuil candidat illisible → null', async () => {
     process.env.AI_BUDGET_OBSERVE_LIMIT = 'douze'
     const m = await load()
-    await m.anthropicPost('k', BODY())
+    await m.anthropicPost('k', BODY(), { tenant: T })
     expect(last().would_have_blocked).toBeNull()
   })
 })
@@ -141,7 +143,7 @@ describe('contenu de la ligne', () => {
         { type: 'web_search_20250305', name: 'web_search', max_uses: 10 },
         { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6, max_content_tokens: 5000 },
       ],
-    }, { agent: 'Veille · signaux', task: 'research' })
+    }, { tenant: T, agent: 'Veille · signaux', task: 'research' })
     const t = last()
 
     expect(t.reservation_id).toBe(reserve.mock.calls[0][0].id)   // clé de jointure
@@ -188,7 +190,7 @@ describe('contenu de la ligne', () => {
       ...BODY(),
       system: [{ type: 'text', text: 'INSTRUCTION CONFIDENTIELLE' }],
       messages: [{ role: 'user', content: 'NOM-DU-PROSPECT' }],
-    })
+    }, { tenant: T })
     const raw = lines.find((s) => s.startsWith(TELEMETRY_MARKER))
     expect(raw).not.toContain('SECRET-API-KEY')
     expect(raw).not.toContain('INSTRUCTION CONFIDENTIELLE')
@@ -223,7 +225,7 @@ describe('contenu de la ligne', () => {
         { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
         { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 1 },
       ],
-    })
+    }, { tenant: T })
     const t = last()
 
     expect(t.server_tools_declared).toEqual(['web_search_20250305', 'web_fetch_20260209'])
@@ -239,7 +241,7 @@ describe('contenu de la ligne', () => {
 
   it('compteur fournisseur absent → null, jamais 0', async () => {
     const m = await load()
-    await m.anthropicPost('k', BODY())
+    await m.anthropicPost('k', BODY(), { tenant: T })
     const t = last()
     expect(t.web_search_requests).toBeNull()
     expect(t.web_fetch_requests).toBeNull()
@@ -249,7 +251,7 @@ describe('contenu de la ligne', () => {
     const m = await load()
     await m.anthropicPost('k', {
       ...BODY(), tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
-    })
+    }, { tenant: T })
     const t = last()
     expect(t.estimate_unbounded).toEqual(['web_search_result_tokens'])
     expect(t.estimate_incomplete).toEqual([])
@@ -260,7 +262,7 @@ describe('contenu de la ligne', () => {
     process.env.AI_BUDGET_RESERVATION = 'ENFORCE'
     reserve.mockResolvedValue({ ok: false, reason: 'no_client' })
     const m = await load()
-    await m.anthropicPost('k', BODY())
+    await m.anthropicPost('k', BODY(), { tenant: T })
     const t = last()
     expect(t.state).toBe('NOT_RESERVED')
     expect(t.outcome_code).toBe('reserve_failed:no_client')
