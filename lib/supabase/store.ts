@@ -87,6 +87,56 @@ export async function claimItem<T = any>(kind: string, id: string, ws: string): 
 }
 
 /**
+ * RÉCLAMATION CONDITIONNELLE — supprime la ligne SEULEMENT si l'un de ses
+ * champs porte encore la valeur attendue, et rend la donnée supprimée.
+ *
+ * ── LE DÉFAUT QUE CECI FERME (lot SEC-0f.1) ──────────────────────────────────
+ * `claimItem` supprime inconditionnellement. Un appelant qui veut « consommer
+ * la ligne SI elle vaut encore X » doit donc lire d'abord — et c'est un
+ * check-then-act, avec toute sa fenêtre :
+ *
+ *     R1  claimItem(paircode, OLD)            → obtient le pointeur
+ *     R1  getItem(pairactive, ws)             → lit { code: OLD }   ✔ concorde
+ *     R2  rotation : supprime OLD, pose NEW
+ *     R1  claimItem(pairactive, ws)           → supprime NEW !
+ *
+ * Deux dégâts, pas un seul : le code OLD, pourtant RÉVOQUÉ, aboutit à un
+ * appairage ; et le titulaire NEW est détruit, donc le code fraîchement émis
+ * devient irrachetable pour son destinataire légitime.
+ *
+ * Ici, la comparaison ET la suppression sont la MÊME instruction :
+ * `DELETE … WHERE … AND data->>champ = attendu RETURNING data`. Si le titulaire
+ * a changé entre-temps, zéro ligne revient — et surtout, rien n'est supprimé.
+ *
+ * `field` est validé : il est interpolé dans le chemin de filtre PostgREST, et
+ * un identifiant libre y serait une surface d'injection. Les appelants ne
+ * passent que des constantes de module, mais on ne s'en remet pas à cela.
+ */
+export async function claimItemIfField<T = any>(
+  kind: string, id: string, ws: string, field: string, expected: string,
+): Promise<T | null> {
+  if (!writeAllowed('prospector_store')) return null
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(field)) return null
+  const sb = supabase()
+  if (!sb) {
+    const k = key(kind, ws, id)
+    const v = mem.get(k)
+    // Comparaison et suppression sans await entre les deux : JavaScript
+    // n'interrompt pas ici, la garantie est la même.
+    if (!v || (v as any)?.[field] !== expected) return null
+    return mem.delete(k) ? ((v as T) ?? null) : null
+  }
+  try {
+    const { data, error } = await sb.from(TABLE).delete()
+      .eq('kind', kind).eq('id', id).eq('workspace_id', ws)
+      .eq(`data->>${field}`, expected)
+      .select('data')
+    if (error || !data || data.length === 0) return null
+    return (data[0] as any).data as T
+  } catch { return null }
+}
+
+/**
  * INSERTION EXCLUSIVE — rend `true` à UN SEUL appelant pour une clé donnée.
  *
  * ── POURQUOI (lot SEC-0e) ────────────────────────────────────────────────────

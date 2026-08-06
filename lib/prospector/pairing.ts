@@ -3,7 +3,8 @@
 // générer un code à usage unique dans l'app, puis l'envoyer au bot. Sans ce lien,
 // le bot refuse toute demande.
 import {
-  listItems, getItem, upsertItem, deleteItem, claimItem, insertItemIfAbsent, deleteExpired,
+  listItems, getItem, upsertItem, deleteItem, claimItem, claimItemIfField,
+  insertItemIfAbsent, deleteExpired,
 } from '../supabase/store'
 import { tenantFromVerifiedWorkspace } from './tenant'
 
@@ -256,9 +257,17 @@ export async function redeemPairingCode(code: string, chatKey: string, label?: s
   // un code rachetable par espace » — un pointeur orphelin, laissé par une
   // création concurrente perdante, est inerte. Le titre est consommé avec le
   // code : l'espace n'a plus de code actif tant qu'il n'en génère pas un autre.
-  const active = await getItem<{ id: string; code: string }>(KIND_ACTIVE, hit.ws, NS)
-  if (!active || active.code !== c) return null
-  await claimItem(KIND_ACTIVE, hit.ws, NS)
+  //
+  // ⚠️ COMPARAISON ET SUPPRESSION EN UNE SEULE INSTRUCTION (lot SEC-0f.1).
+  // La version précédente lisait le titulaire (`getItem`) puis le supprimait
+  // (`claimItem`) — un check-then-act. Une rotation glissée entre les deux
+  // faisait deux dégâts : le code OLD, pourtant RÉVOQUÉ, aboutissait à un
+  // appairage, et le titulaire NEW était détruit, rendant le code fraîchement
+  // émis irrachetable pour son destinataire. Il n'y a plus de lecture : si le
+  // titulaire ne porte plus `c`, zéro ligne revient et RIEN n'est supprimé.
+  const active = await claimItemIfField<{ id: string; code: string }>(
+    KIND_ACTIVE, hit.ws, NS, 'code', c)
+  if (!active) return null
 
   // L'espace doit être ENCORE utilisable — même exigence que les trois racines
   // de confiance depuis SEC-0c. Appairer un chat à un espace suspendu ou

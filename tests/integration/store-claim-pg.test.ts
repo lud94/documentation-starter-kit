@@ -219,3 +219,93 @@ describe('deleteExpired — purge bornée, sans changement de schéma', () => {
     expect(await store.deleteExpired(KIND, WS_A, new Date(0).toISOString())).toBe(true)
   })
 })
+
+// ── claimItemIfField : compare-and-delete en UNE instruction (lot SEC-0f.1) ─
+//
+// La consommation du titulaire d'appairage doit être conditionnelle au code
+// présenté. Un `getItem` puis `claimItem` laissait une fenêtre où une rotation
+// concurrente faisait DEUX dégâts : le code révoqué aboutissait à un appairage,
+// et le titulaire fraîchement posé était détruit.
+//
+// On vérifie ici que PostgREST traduit bien `.eq('data->>code', …)` en un
+// prédicat SQL, et que le DELETE ne touche RIEN quand il ne concorde pas.
+describe('claimItemIfField — comparaison et suppression indissociables', () => {
+  it('valeur ATTENDUE périmée → null, et la ligne est INTACTE', async () => {
+    const id = randomUUID()
+    await seed(id, WS_A, { id, code: 'NEW' })
+
+    expect(await store.claimItemIfField(KIND, id, WS_A, 'code', 'OLD')).toBeNull()
+    expect(await countRows(id, WS_A)).toBe(1)   // rien n'a été supprimé
+
+    const { data } = await raw.from('prospector_store').select('data')
+      .eq('kind', KIND).eq('id', id).eq('workspace_id', WS_A).single()
+    expect(data.data.code).toBe('NEW')
+  })
+
+  it('valeur ATTENDUE correcte → rend la donnée et supprime', async () => {
+    const id = randomUUID()
+    await seed(id, WS_A, { id, code: 'NEW' })
+    expect(await store.claimItemIfField(KIND, id, WS_A, 'code', 'NEW')).toEqual({ id, code: 'NEW' })
+    expect(await countRows(id, WS_A)).toBe(0)
+  })
+
+  it('ligne absente → null, sans erreur', async () => {
+    expect(await store.claimItemIfField(KIND, randomUUID(), WS_A, 'code', 'X')).toBeNull()
+  })
+
+  it('champ absent de la donnée → null, rien n\'est supprimé', async () => {
+    const id = randomUUID()
+    await seed(id, WS_A, { id, autre: 'valeur' })
+    expect(await store.claimItemIfField(KIND, id, WS_A, 'code', 'X')).toBeNull()
+    expect(await countRows(id, WS_A)).toBe(1)
+  })
+
+  it('CROSS-WORKSPACE : même id, même code, deux espaces → A ne touche pas B', async () => {
+    const id = randomUUID()
+    await seed(id, WS_A, { id, code: 'MEME' })
+    await seed(id, WS_B, { id, code: 'MEME' })
+    expect(await store.claimItemIfField(KIND, id, WS_A, 'code', 'MEME')).toBeTruthy()
+    expect(await countRows(id, WS_A)).toBe(0)
+    expect(await countRows(id, WS_B)).toBe(1)
+  })
+
+  it('CONCURRENCE : 25 réclamations conditionnelles → EXACTEMENT une gagne', async () => {
+    const id = randomUUID()
+    await seed(id, WS_A, { id, code: 'UNIQUE' })
+    const r = await Promise.all(
+      Array.from({ length: 25 }, () => store.claimItemIfField(KIND, id, WS_A, 'code', 'UNIQUE')))
+    expect(r.filter((x) => x !== null)).toHaveLength(1)
+    expect(await countRows(id, WS_A)).toBe(0)
+  })
+
+  it('COURSE RÉELLE : rotation et rachat en parallèle, jamais OLD qui détruit NEW', async () => {
+    // Vingt itérations : une rotation (remplacement du titulaire) et une
+    // tentative de consommation avec l'ANCIEN code, lancées ensemble.
+    for (let i = 0; i < 20; i++) {
+      const id = randomUUID()
+      await seed(id, WS_A, { id, code: 'OLD' })
+
+      const rotation = (async () => {
+        await store.claimItemIfField(KIND, id, WS_A, 'code', 'OLD')
+        await store.insertItemIfAbsent(KIND, id, { id, code: 'NEW' }, WS_A)
+      })()
+      const rachatPerime = store.claimItemIfField(KIND, id, WS_A, 'code', 'OLD')
+
+      const [, consomme] = await Promise.all([rotation, rachatPerime])
+
+      const { data } = await raw.from('prospector_store').select('data')
+        .eq('kind', KIND).eq('id', id).eq('workspace_id', WS_A).maybeSingle()
+
+      // INVARIANT : si un titulaire NEW existe, il n'a PAS été détruit par une
+      // consommation portant OLD. Les deux issues acceptables sont :
+      //   • la rotation a gagné → NEW présent, et le rachat périmé a rendu null
+      //     (ou a consommé OLD avant la rotation, auquel cas NEW est présent) ;
+      //   • le rachat a consommé OLD avant → NEW présent également.
+      // Dans tous les cas, jamais une ligne NEW absente à cause du rachat OLD.
+      if (data?.data?.code === 'NEW' || data === null) {
+        expect(consomme === null || (consomme as any).code === 'OLD').toBe(true)
+      }
+      await raw.from('prospector_store').delete().eq('kind', KIND).eq('id', id)
+    }
+  })
+})

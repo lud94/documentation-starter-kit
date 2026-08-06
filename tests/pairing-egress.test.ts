@@ -44,11 +44,28 @@ const deleteExpired = vi.fn(async (kind: string, ws: string, olderThanIso: strin
   rows = rows.filter((r) => !(r.kind === kind && r.ws === ws && (r.data?.at ?? 0) < cutoff))
   return true
 })
+// Point d'injection des courses : exécuté au DÉBUT de toute opération qui
+// consomme le titulaire, quelle que soit l'implémentation. Il modélise « la
+// rotation a été validée entre la lecture de R1 et sa suppression ».
+let beforeHolderConsume: (() => void) | null = null
+const runHook = () => { const h = beforeHolderConsume; beforeHolderConsume = null; h?.() }
+
+// COMPARE-AND-DELETE : la comparaison et la suppression sont indissociables,
+// comme le `DELETE … WHERE data->>champ = attendu RETURNING` de PostgreSQL.
+const claimItemIfField = vi.fn(async (kind: string, id: string, ws: string, field: string, expected: string) => {
+  await Promise.resolve()
+  if (kind === 'pairactive') runHook()
+  const i = rows.findIndex((r) => r.kind === kind && r.id === id && r.ws === ws
+    && String(r.data?.[field]) === expected)
+  if (i < 0) return null
+  return rows.splice(i, 1)[0].data
+})
 const claimItem = vi.fn(async (kind: string, id: string, ws: string) => {
   // Une seule opération indivisible, comme le DELETE de PostgreSQL. On cède
   // volontairement la main AVANT, pour que l'ordonnanceur puisse entrelacer
   // les appelants — c'est justement ce qui cassait la version check-then-act.
   await Promise.resolve()
+  if (kind === 'pairactive') runHook()
   const i = rows.findIndex((r) => r.kind === kind && r.id === id && r.ws === ws)
   if (i < 0) return null
   return rows.splice(i, 1)[0].data
@@ -63,6 +80,7 @@ const getWorkspaceById = vi.fn(async (id: string) => WORKSPACES[id] ?? null)
 vi.mock('../lib/supabase/store', () => ({
   listItems: (...a: any[]) => (listItems as any)(...a),
   getItem: (...a: any[]) => (getItem as any)(...a),
+  claimItemIfField: (...a: any[]) => (claimItemIfField as any)(...a),
   upsertItem: (...a: any[]) => (upsertItem as any)(...a),
   deleteItem: (...a: any[]) => (deleteItem as any)(...a),
   claimItem: (...a: any[]) => (claimItem as any)(...a),
@@ -86,6 +104,7 @@ const seed = (code: string, ws: string, at = Date.now()) =>
 
 beforeEach(() => {
   rows = []
+  beforeHolderConsume = null
   vi.clearAllMocks()
   getWorkspaceById.mockImplementation(async (id: string) => WORKSPACES[id] ?? null)
 })
@@ -537,5 +556,119 @@ describe('SEC-0f — C : les jetons de fenêtres DISCONTINUES sont balayés', ()
       expect(codes).toHaveLength(1)               // seul le code frais subsiste
       expect(codes[0].data.ws).toBe('ws_suspendu')
     } finally { Date.now = real }
+  })
+})
+
+// ── SEC-0f.1 — LA CONSOMMATION DU TITULAIRE EST UN COMPARE-AND-DELETE ──────
+//
+// LA COURSE MESURÉE. `redeemPairingCode` lisait le titulaire puis le supprimait
+// inconditionnellement :
+//
+//     R1  claimItem(paircode, OLD)     → obtient le pointeur
+//     R1  getItem(pairactive, ws)      → lit { code: OLD }   ✔ concorde
+//     R2  rotation : supprime OLD, pose NEW
+//     R1  claimItem(pairactive, ws)    → supprime NEW !
+//
+// DEUX dégâts, pas un : le code OLD, pourtant RÉVOQUÉ, aboutit à un appairage ;
+// et le titulaire NEW est détruit, donc le code fraîchement émis devient
+// irrachetable pour son destinataire légitime.
+//
+// `beforeHolderConsume` injecte la rotation au DÉBUT de l'opération qui
+// consomme le titulaire — c'est-à-dire exactement entre la lecture de R1 et sa
+// suppression. Le crochet est neutre vis-à-vis de l'implémentation : il se
+// déclenche aussi bien sur l'ancien `claimItem` que sur le nouveau
+// compare-and-delete.
+describe('SEC-0f.1 — rotation concurrente pendant un rachat', () => {
+  const holders = () => rows.filter((r) => r.kind === 'pairactive')
+  const holderCode = () => holders()[0]?.data?.code ?? null
+
+  it('A — rachat sans rotation : le code courant gagne normalement', async () => {
+    const { code } = (await createPairingCode('ws_fabel'))!
+    expect(await redeemPairingCode(code, 'tg:1')).toBe('ws_fabel')
+    expect(holders()).toHaveLength(0)   // le titre est consommé avec le code
+  })
+
+  it('B — rotation TERMINÉE avant le rachat : OLD refusé, NEW intact', async () => {
+    const old = (await createPairingCode('ws_fabel'))!
+    const neuf = (await createPairingCode('ws_fabel'))!
+    expect(await redeemPairingCode(old.code, 'tg:1')).toBeNull()
+    expect(holderCode()).toBe(neuf.code)
+    expect(rows.filter((r) => r.kind === 'pairlink')).toHaveLength(0)
+  })
+
+  it('C — DÉFAUT : rotation glissée ENTRE la lecture et la suppression', async () => {
+    const old = (await createPairingCode('ws_fabel'))!
+    let neuf: { code: string } | null = null
+
+    // La rotation est validée juste avant que R1 ne consomme le titulaire.
+    beforeHolderConsume = () => {
+      const i = rows.findIndex((r) => r.kind === 'pairactive' && r.id === 'ws_fabel')
+      if (i >= 0) rows.splice(i, 1)
+      const c = '99887766'
+      rows.push({ kind: 'paircode', id: c, ws: NS, data: { id: c, ws: 'ws_fabel', at: Date.now() } })
+      rows.push({ kind: 'pairactive', id: 'ws_fabel', ws: NS, data: { id: 'ws_fabel', code: c, at: Date.now() } })
+      neuf = { code: c }
+    }
+
+    // 1. Le code RÉVOQUÉ ne doit PAS appairer.
+    expect(await redeemPairingCode(old.code, 'tg:pirate')).toBeNull()
+    expect(rows.filter((r) => r.kind === 'pairlink')).toHaveLength(0)
+    // 2. Et surtout : le titulaire NEUF doit être INTACT.
+    expect(holders()).toHaveLength(1)
+    expect(holderCode()).toBe(neuf!.code)
+    // 3. Donc le destinataire légitime peut encore s'en servir.
+    expect(await redeemPairingCode(neuf!.code, 'tg:legitime')).toBe('ws_fabel')
+  })
+
+  it('D — OLD et NEW présentés concurremment après rotation : seul NEW gagne', async () => {
+    const old = (await createPairingCode('ws_fabel'))!
+    const neuf = (await createPairingCode('ws_fabel'))!
+    const [a, b] = await Promise.all([
+      redeemPairingCode(old.code, 'tg:a'), redeemPairingCode(neuf.code, 'tg:b'),
+    ])
+    expect(a).toBeNull()
+    expect(b).toBe('ws_fabel')
+    expect(rows.filter((r) => r.kind === 'pairlink')).toHaveLength(1)
+  })
+
+  it('E — deux rachats du MÊME code : un seul gagne', async () => {
+    const { code } = (await createPairingCode('ws_fabel'))!
+    const r = await Promise.all([
+      redeemPairingCode(code, 'tg:a'), redeemPairingCode(code, 'tg:b'),
+    ])
+    expect(r.filter((x) => x === 'ws_fabel')).toHaveLength(1)
+  })
+
+  it('F — après un refus OLD, le titulaire NEUF est toujours là', async () => {
+    const old = (await createPairingCode('ws_fabel'))!
+    const neuf = (await createPairingCode('ws_fabel'))!
+    for (let i = 0; i < 3; i++) await redeemPairingCode(old.code, `tg:${i}`)
+    expect(holderCode()).toBe(neuf.code)
+  })
+
+  it('G — aucune interaction entre espaces : le titulaire de B est intact', async () => {
+    const a = (await createPairingCode('ws_fabel'))!
+    const b = (await createPairingCode('ws_suspendu'))!
+    await createPairingCode('ws_fabel')                 // rotation chez Fabel
+    expect(await redeemPairingCode(a.code, 'tg:1')).toBeNull()
+    const bHolder = rows.find((r) => r.kind === 'pairactive' && r.id === 'ws_suspendu')
+    expect(bHolder?.data.code).toBe(b.code)
+  })
+
+  it('H — base en panne pendant la consommation du titulaire → fail closed', async () => {
+    const { code } = (await createPairingCode('ws_fabel'))!
+    claimItemIfField.mockResolvedValueOnce(null as any)
+    expect(await redeemPairingCode(code, 'tg:1')).toBeNull()
+    expect(rows.filter((r) => r.kind === 'pairlink')).toHaveLength(0)
+  })
+
+  it('AUCUNE LECTURE PRÉALABLE — le titulaire n\'est jamais lu avant d\'être supprimé', async () => {
+    const { code } = (await createPairingCode('ws_fabel'))!
+    getItem.mockClear()
+    await redeemPairingCode(code, 'tg:1')
+    // C'est la propriété structurelle : plus de `getItem` sur le titulaire,
+    // donc plus de fenêtre entre la comparaison et la suppression.
+    for (const call of getItem.mock.calls) expect(call[0]).not.toBe('pairactive')
+    expect(claimItemIfField).toHaveBeenCalledWith('pairactive', 'ws_fabel', NS, 'code', code)
   })
 })
