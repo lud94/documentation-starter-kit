@@ -25,7 +25,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
   if (req.method === 'POST') {
     if (!getKey('TELEGRAM_BOT_TOKEN')) return res.status(200).json({ error: 'Bot Telegram non configuré (Admin → Connexions → TELEGRAM_BOT_TOKEN).' })
-    return res.status(200).json(await createPairingCode(ws))
+    // `createPairingCode` rend `null` quand le titre d'espace est disputé par
+    // une génération concurrente, ou après cinq collisions de code. Un refus,
+    // jamais un code silencieusement écrasé.
+    const created = await createPairingCode(ws)
+    if (!created) return res.status(200).json({ error: 'Génération impossible pour le moment. Réessaie.' })
+    return res.status(200).json(created)
   }
   if (req.method === 'DELETE') {
     const id = String(body?.id || '')

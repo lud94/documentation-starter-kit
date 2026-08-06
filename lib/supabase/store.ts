@@ -125,6 +125,49 @@ export async function insertItemIfAbsent(kind: string, id: string, data: any, ws
   } catch { return false }
 }
 
+/**
+ * PURGE PAR ÂGE — supprime les lignes d'un `kind` plus vieilles qu'un instant.
+ *
+ * ── POURQUOI (lot SEC-0f) ────────────────────────────────────────────────────
+ * Les jetons de tentative d'appairage sont nommés par leur fenêtre. Le balayage
+ * précédent ne nettoyait que la fenêtre `w-1` : un chat actif aux fenêtres 100,
+ * 102, 104 laissait derrière lui celles de 100 et 102, définitivement. Le
+ * contrat « au plus MAX_FAILURES lignes au repos par chat » était donc FAUX.
+ *
+ * Un balayage borné par identifiant est impossible ici : les fenêtres sautées
+ * sont en nombre non borné, et l'identifiant ne permet pas de les énumérer.
+ * D'où une purge par ÂGE, sur la colonne `updated_at` qui existe déjà. Aucun
+ * changement de schéma : c'est une clause `WHERE`, pas une migration.
+ *
+ * ⚠️ COÛT ASSUMÉ. Sans index sur `updated_at`, PostgreSQL parcourt la table.
+ * C'est acceptable parce que l'appel est RARE — déclenché par la création d'un
+ * code d'appairage, une action d'administration — et jamais sur un chemin de
+ * lecture. Le jour où `prospector_store` grossira, un index partiel sur
+ * `(kind, workspace_id, updated_at)` sera le correctif, et il demandera une
+ * migration.
+ *
+ * `ws` est TOUJOURS exigé : une purge qui traverserait les espaces serait une
+ * suppression inter-tenants, c'est-à-dire exactement ce que ce lot combat.
+ */
+export async function deleteExpired(kind: string, ws: string, olderThanIso: string): Promise<boolean> {
+  if (!writeAllowed('prospector_store')) return false
+  const sb = supabase()
+  if (!sb) {
+    const cutoff = Date.parse(olderThanIso)
+    for (const [k, v] of Array.from(mem.entries())) {
+      if (!k.startsWith(`${kind}|${ws}|`)) continue
+      const at = (v as any)?.at
+      if (typeof at === 'number' && at < cutoff) mem.delete(k)
+    }
+    return true
+  }
+  try {
+    const { error } = await sb.from(TABLE).delete()
+      .eq('kind', kind).eq('workspace_id', ws).lt('updated_at', olderThanIso)
+    return !error
+  } catch { return false }
+}
+
 export async function deleteItem(kind: string, id: string, ws: string): Promise<boolean> {
   if (!writeAllowed('prospector_store')) return false
   const sb = supabase()

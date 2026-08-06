@@ -2,13 +2,16 @@
 // Un identifiant de chat ne prouve RIEN par lui-même : l'utilisateur doit d'abord
 // générer un code à usage unique dans l'app, puis l'envoyer au bot. Sans ce lien,
 // le bot refuse toute demande.
-import { listItems, upsertItem, deleteItem, claimItem, insertItemIfAbsent } from '../supabase/store'
+import {
+  listItems, getItem, upsertItem, deleteItem, claimItem, insertItemIfAbsent, deleteExpired,
+} from '../supabase/store'
 import { tenantFromVerifiedWorkspace } from './tenant'
 
 const NS = '_channels'          // espace technique (hors données client)
 const KIND_CODE = 'paircode'    // codes en attente
 const KIND_LINK = 'pairlink'    // liens établis : chatKey → workspace
 const KIND_SLOT = 'pairslot'    // jetons de tentative par chat et par fenêtre
+const KIND_ACTIVE = 'pairactive' // titulaire : UN code actif par espace, cle = l'espace
 const TTL_MS = 15 * 60 * 1000   // code valable 15 minutes
 
 /** Échecs tolérés par chat, puis refus uniforme jusqu'à la fin de la fenêtre. */
@@ -49,10 +52,95 @@ export function pairingCode(): string {
   return String(floor + (v % span))
 }
 
-export async function createPairingCode(ws: string): Promise<{ code: string; expiresInMin: number }> {
-  const code = pairingCode()
-  await upsertItem(KIND_CODE, code, { id: code, ws, at: Date.now() }, NS)
+/**
+ * Génère un code d'appairage et en fait le SEUL code actif de l'espace.
+ *
+ * ── DÉFAUT A CORRIGÉ : plus jamais d'UPSERT (lot SEC-0f) ────────────────────
+ * La version précédente posait le code par `upsertItem`. Sur une collision —
+ * improbable à 10⁸, mais pas impossible — elle ÉCRASAIT silencieusement le code
+ * d'un autre espace : la victime perdait son appairage en cours, et le nouvel
+ * occupant héritait de la clé. Un secret à usage unique ne se pose jamais par
+ * écrasement. `insertItemIfAbsent` échoue sur collision, et on retire.
+ *
+ * ── DÉFAUT B CORRIGÉ : un seul code actif par espace ────────────────────────
+ * Rien ne bornait le nombre de codes valides simultanément : 100 000 appels
+ * créaient 100 000 lignes vivantes dans un namespace PARTAGÉ par tous les
+ * clients, et autant de cibles pour une attaque par épuisement.
+ *
+ * Le TITULAIRE (`pairactive`) est une ligne dont l'identifiant EST l'espace.
+ * La clé primaire `(kind, id, workspace_id)` interdit donc, par construction,
+ * qu'un espace en possède deux. Le code lui-même n'est qu'un POINTEUR vers
+ * l'espace, et le rachat exige que le pointeur corresponde au titulaire.
+ *
+ * ── CE QUI EST GARANTI, ET CE QUI NE L'EST PAS ──────────────────────────────
+ * GARANTI, par la clé primaire : à tout instant, AU PLUS UN code est
+ * RACHETABLE pour un espace donné. Deux créations concurrentes ne peuvent pas
+ * produire deux codes utilisables — le perdant du titre voit son pointeur
+ * devenir inerte, et il le retire lui-même.
+ *
+ * NON GARANTI : l'unicité de la LIGNE `paircode` à chaque instant. Un pointeur
+ * orphelin peut exister brièvement, et un créateur concurrent peut échouer
+ * (`null`) plutôt que d'obtenir un code. C'est un refus, pas une faille.
+ *
+ * Fenêtre transitoire assumée : entre la reprise du titre et sa réémission, un
+ * rachat légitime est refusé. Faux négatif de quelques millisecondes, fermé
+ * dans le bon sens.
+ */
+export async function createPairingCode(ws: string): Promise<{ code: string; expiresInMin: number } | null> {
+  const owner = (ws || '').trim()
+  if (!owner) return null
+
+  // 1. POINTEUR EXCLUSIF. Sur collision, on retire — jamais d'écrasement.
+  let code = ''
+  for (let attempt = 0; attempt < 5 && !code; attempt++) {
+    const candidate = pairingCode()
+    if (await insertItemIfAbsent(KIND_CODE, candidate, { id: candidate, ws: owner, at: Date.now() }, NS)) {
+      code = candidate
+    }
+  }
+  if (!code) return null   // cinq collisions d'affilée : on refuse plutôt que d'écraser
+
+  // 2. TITRE. `claimItem` rend l'ancien titulaire à UN SEUL appelant : celui-là
+  //    est responsable d'invalider le code qu'il portait.
+  const prev = await claimItem<{ id: string; code: string }>(KIND_ACTIVE, owner, NS)
+  if (prev?.code) await claimItem(KIND_CODE, prev.code, NS)
+
+  const held = await insertItemIfAbsent(
+    KIND_ACTIVE, owner, { id: owner, code, at: Date.now() }, NS)
+  if (!held) {
+    // Un créateur concurrent tient le titre. Mon code n'est de toute façon plus
+    // rachetable — le rachat compare au titulaire — mais je retire ma ligne
+    // plutôt que de laisser un orphelin derrière moi.
+    await claimItem(KIND_CODE, code, NS)
+    return null
+  }
+
+  await sweepStale(owner)
   return { code, expiresInMin: 15 }
+}
+
+/**
+ * ── DÉFAUT C CORRIGÉ : croissance du namespace partagé ──────────────────────
+ *
+ * Le balayage précédent ne nettoyait que la fenêtre `w-1`. Un chat actif aux
+ * fenêtres 100, 102, 104 laissait derrière lui celles de 100 et 102 — pour
+ * toujours. L'affirmation « au plus MAX_FAILURES lignes au repos par chat »
+ * était donc FAUSSE, et je l'avais écrite.
+ *
+ * Les fenêtres sautées sont en nombre non borné et l'identifiant ne permet pas
+ * de les énumérer : aucun balayage par clé ne peut être à la fois borné et
+ * complet. La purge se fait donc par ÂGE, sur `updated_at`, qui existe déjà.
+ *
+ * Déclenchée à la création d'un code — une action d'administration, rare — et
+ * jamais sur un chemin de lecture ni sur le chemin d'une tentative.
+ */
+async function sweepStale(triggeredBy: string): Promise<void> {
+  const now = Date.now()
+  // Deux fenêtres de marge : jamais un jeton encore utile.
+  await deleteExpired(KIND_SLOT, NS, new Date(now - 2 * FAILURE_WINDOW_MS).toISOString())
+  // Les pointeurs expirés ne sont plus rachetables ; ils n'ont plus à exister.
+  await deleteExpired(KIND_CODE, NS, new Date(now - TTL_MS).toISOString())
+  void triggeredBy
 }
 
 /**
@@ -162,6 +250,15 @@ export async function redeemPairingCode(code: string, chatKey: string, label?: s
   const hit = await claimItem<{ id: string; ws: string; at: number }>(KIND_CODE, c, NS)
   if (!hit) return null
   if (Date.now() - (hit.at || 0) > TTL_MS) return null
+
+  // Le pointeur ne suffit pas : il doit être CELUI que l'espace tient
+  // actuellement. C'est cette comparaison qui rend stricte la garantie « au plus
+  // un code rachetable par espace » — un pointeur orphelin, laissé par une
+  // création concurrente perdante, est inerte. Le titre est consommé avec le
+  // code : l'espace n'a plus de code actif tant qu'il n'en génère pas un autre.
+  const active = await getItem<{ id: string; code: string }>(KIND_ACTIVE, hit.ws, NS)
+  if (!active || active.code !== c) return null
+  await claimItem(KIND_ACTIVE, hit.ws, NS)
 
   // L'espace doit être ENCORE utilisable — même exigence que les trois racines
   // de confiance depuis SEC-0c. Appairer un chat à un espace suspendu ou

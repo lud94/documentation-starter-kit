@@ -167,3 +167,55 @@ describe('insertItemIfAbsent — un seul insérant par clé', () => {
     expect(results.filter((r) => r === false)).toHaveLength(95)
   })
 })
+
+// ── deleteExpired : purge par ÂGE sur une colonne existante (lot SEC-0f) ────
+describe('deleteExpired — purge bornée, sans changement de schéma', () => {
+  it('ne supprime QUE les lignes plus vieilles que la borne', async () => {
+    const vieux = randomUUID(); const frais = randomUUID()
+    await raw.from('prospector_store').insert([
+      { kind: KIND, id: vieux, workspace_id: WS_A, data: { v: 'vieux' },
+        updated_at: new Date(Date.now() - 3600_000).toISOString() },
+      { kind: KIND, id: frais, workspace_id: WS_A, data: { v: 'frais' },
+        updated_at: new Date().toISOString() },
+    ])
+
+    await store.deleteExpired(KIND, WS_A, new Date(Date.now() - 600_000).toISOString())
+
+    expect(await countRows(vieux, WS_A)).toBe(0)
+    expect(await countRows(frais, WS_A)).toBe(1)
+  })
+
+  it('la purge est BORNÉE À L\'ESPACE — jamais une suppression inter-tenants', async () => {
+    const id = randomUUID()
+    const vieux = new Date(Date.now() - 3600_000).toISOString()
+    await raw.from('prospector_store').insert([
+      { kind: KIND, id, workspace_id: WS_A, data: { o: 'A' }, updated_at: vieux },
+      { kind: KIND, id, workspace_id: WS_B, data: { o: 'B' }, updated_at: vieux },
+    ])
+
+    await store.deleteExpired(KIND, WS_A, new Date().toISOString())
+
+    expect(await countRows(id, WS_A)).toBe(0)
+    expect(await countRows(id, WS_B)).toBe(1)   // même âge, autre espace : intact
+  })
+
+  it('la purge est bornée au KIND — les autres données ne bougent pas', async () => {
+    const id = randomUUID()
+    const vieux = new Date(Date.now() - 3600_000).toISOString()
+    await raw.from('prospector_store').insert([
+      { kind: KIND, id, workspace_id: WS_A, data: {}, updated_at: vieux },
+      { kind: `${KIND}_autre`, id, workspace_id: WS_A, data: {}, updated_at: vieux },
+    ])
+    await store.deleteExpired(KIND, WS_A, new Date().toISOString())
+
+    expect(await countRows(id, WS_A)).toBe(0)
+    const { data } = await raw.from('prospector_store').select('id')
+      .eq('kind', `${KIND}_autre`).eq('id', id).eq('workspace_id', WS_A)
+    expect((data || []).length).toBe(1)
+    await raw.from('prospector_store').delete().eq('kind', `${KIND}_autre`)
+  })
+
+  it('aucune ligne à purger → succès, pas erreur', async () => {
+    expect(await store.deleteExpired(KIND, WS_A, new Date(0).toISOString())).toBe(true)
+  })
+})

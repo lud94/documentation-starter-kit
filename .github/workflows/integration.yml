@@ -25,6 +25,17 @@ on:
 permissions:
   contents: read
 
+# ⚠️ SÉRIALISATION PAR RÉFÉRENCE (lot SEC-0f). Le run de SEC-0d a échoué sur
+# « failed to bind host port for 0.0.0.0:54322 : address already in use » : deux
+# workflows de la même branche tournaient en parallèle et se disputaient le port
+# de la base Supabase locale. Ce n'était pas une régression applicative, mais
+# c'est reproductible à chaque double poussée. Un groupe de concurrence par
+# référence supprime la classe entière ; annuler le run en cours est sans risque
+# ici, puisqu'il n'écrit que dans une instance jetable.
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   integration:
     runs-on: ubuntu-latest
