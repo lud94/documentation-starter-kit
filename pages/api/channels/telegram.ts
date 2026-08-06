@@ -75,7 +75,16 @@ async function handleUpdate(u: any, token: string): Promise<void> {
     return
   }
   if (/^\/aide|^\/help/.test(text)) { await send(token, chatId, HELP); return }
-  if (/^\/delier/.test(text)) { await unlinkChannel(chatKey); await send(token, chatId, 'Ce chat est délié de Prospector. Envoie un nouveau code pour reconnecter.'); return }
+  // Déliaison par le chat LUI-MÊME : `chatKey` vient de la charge utile
+  // Telegram, authentifiée par le secret du webhook, jamais d'un paramètre
+  // fourni par un utilisateur. L'espace propriétaire est donc résolu depuis le
+  // lien existant — c'est ce que `unlinkChannel` exige depuis SEC-0b, et cela
+  // ne change rien au comportement : un chat ne peut délier que lui-même.
+  if (/^\/delier/.test(text)) {
+    const owner = await resolveChannelWs(chatKey)
+    if (owner) await unlinkChannel(chatKey, owner)
+    await send(token, chatId, 'Ce chat est délié de Prospector. Envoie un nouveau code pour reconnecter.'); return
+  }
 
   // ── Appairage : un code à 6 chiffres ──
   if (/^\d{6}$/.test(text)) {

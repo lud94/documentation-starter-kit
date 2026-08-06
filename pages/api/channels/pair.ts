@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { activeWs } from '../../../lib/auth/ws'
+import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { createPairingCode, listChannelsFor, unlinkChannel } from '../../../lib/prospector/pairing'
 
@@ -7,9 +7,13 @@ import { createPairingCode, listChannelsFor, unlinkChannel } from '../../../lib/
 // GET    → canaux déjà liés + état de configuration du bot.
 // POST   → génère un code à usage unique (15 min).
 // DELETE → délie un canal.
+//
+// SEC-0b — l'espace vient du résolveur MT-0, jamais d'un repli sur « admin ».
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return res.status(403).json({ error: 'forbidden' })
+  const ws = tenant.id
   await hydrateKeystore()
-  const ws = await activeWs(req)
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
 
   if (req.method === 'GET') {
@@ -26,8 +30,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method === 'DELETE') {
     const id = String(body?.id || '')
     if (!id) return res.status(400).json({ error: 'id requis' })
-    await unlinkChannel(id)
-    return res.status(200).json({ ok: true })
+    // La propriété est vérifiée DANS `unlinkChannel` : les liens vivent dans un
+    // espace technique partagé, où le cloisonnement du magasin ne s'applique pas.
+    return res.status(200).json({ ok: await unlinkChannel(id, ws) })
   }
   res.status(405).json({ error: 'GET/POST/DELETE only' })
 }

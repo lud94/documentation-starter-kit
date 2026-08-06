@@ -1,20 +1,15 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { listLeads, upsertLeadChecked, deleteLead, type UpsertFailure } from '../../../lib/supabase/leads'
-import { readSession, SESSION_COOKIE } from '../../../lib/auth/session'
+import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 
-const ACTIVE_WS_COOKIE = 'ps_active_ws'
-
-// Espace courant : admin → espace actif choisi (cookie), défaut 'admin' (son propre espace).
-// Client → toujours SON workspace (le cookie est ignoré → pas de triche possible).
-async function activeWorkspace(req: NextApiRequest): Promise<string> {
-  const claims = await readSession(req.cookies?.[SESSION_COOKIE])
-  const isAdmin = !claims || claims.role === 'admin' || !claims.role
-  if (!isAdmin) return claims?.ws || 'admin'
-  return req.cookies?.[ACTIVE_WS_COOKIE] || 'admin'
-}
-
+// SEC-0b — le résolveur local est supprimé au profit de la doctrine MT-0. Il
+// traitait `!claims` comme un administrateur et repliait un client sans espace
+// sur « admin » : un client mal provisionné lisait et écrivait les leads de
+// l'espace administrateur.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const ws = await activeWorkspace(req)
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return res.status(403).json({ error: 'forbidden' })
+  const ws = tenant.id
 
   if (req.method === 'GET') {
     return res.status(200).json({ leads: await listLeads(ws), workspace: ws })

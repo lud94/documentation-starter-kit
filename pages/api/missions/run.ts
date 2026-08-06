@@ -1,6 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { listItems, upsertItem } from '../../../lib/supabase/store'
-import { activeWs } from '../../../lib/auth/ws'
 import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { runStep } from '../../../lib/prospector/missionTools'
@@ -15,11 +14,14 @@ export const config = { maxDuration: 60 }
 // interruption gratuite, et pause avant toute étape sensible/coûteuse.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
-  await hydrateKeystore()
-  const ws = await activeWs(req)
   // MT-0 — espace client obligatoire avant tout appel LLM. Fail closed.
+  // SEC-0b — l'espace de PERSISTANCE est désormais le même : il venait
+  // d'`activeWs()`, qui repliait sur « admin ». Deux résolveurs pour une même
+  // requête, c'est deux vérités qui peuvent diverger ; il n'y en a plus qu'une.
   const tenant = await resolveTenantFromRequest(req)
   if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
+  const ws = tenant.id
+  await hydrateKeystore()
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const id = String(body?.id || '')

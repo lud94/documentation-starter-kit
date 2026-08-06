@@ -16,12 +16,36 @@
 //
 // Usage : node scripts/check-workspace-projection.mjs   (sortie 1 si violation)
 
+// ── SEC-0b : plus aucun repli sur « admin » sur un chemin métier ─────────────
+// Second volet. Trois formes ont été supprimées des routes métier :
+//   claims?.ws || 'admin'          un client sans espace lisait celui de l'admin
+//   !claims || role === 'admin'    une requête SANS session valait admin
+//   cookie ps_active_ws non vérifié  un espace inexistant ou suspendu passait
+// Elles sont interdites partout sous pages/api, hors liste blanche.
+
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 
 const ROOT = process.cwd()
 const DIR = join(ROOT, 'pages', 'api', 'workspaces')
+const API = join(ROOT, 'pages', 'api')
 const EXT = /\.(ts|tsx)$/
+
+// Formes de repli « admin ». Volontairement textuelles et étroites : le but est
+// de rendre une réapparition VISIBLE en revue, pas d'analyser des flux.
+const FALLBACK = [
+  { re: /\bclaims\s*\??\.\s*ws\s*\|\|\s*['"]admin['"]/, what: "repli `claims.ws || 'admin'`" },
+  { re: /!\s*claims\s*\|\|[^\n]*['"]admin['"]/, what: '`!claims` traité comme admin' },
+  { re: /ACTIVE_WS_COOKIE\s*\]\s*\|\|\s*['"]admin['"]/, what: "cookie d'espace actif non vérifié" },
+  { re: /\bcookies\s*\??\.\s*\[\s*['"]ps_active_ws['"]\s*\]\s*\|\|\s*['"]admin['"]/, what: "cookie d'espace actif non vérifié" },
+]
+
+// Seuls fichiers autorisés à décider d'un espace « admin » sans le résolveur.
+// `active.ts` EST le sélecteur : il lit le cookie par définition, et sa branche
+// admin le republie sans l'imposer à une lecture de données.
+const FALLBACK_ALLOWED = new Set([
+  'pages/api/workspaces/active.ts',
+])
 
 // Sérialisation en bloc : la ligne, ou l'objet serveur, part tel quel. C'est le
 // pattern qui publierait `credential_ref` (SEC-1) ou `budget_micros` (MT-1) le
@@ -64,8 +88,25 @@ for (const full of files) {
   })
 }
 
+// ── Volet SEC-0b : aucun repli « admin » sous pages/api ─────────────────────
+const apiFiles = walk(API)
+for (const full of apiFiles) {
+  const rel = relative(ROOT, full).split(sep).join('/')
+  if (FALLBACK_ALLOWED.has(rel)) continue
+  readFileSync(full, 'utf8').split('\n').forEach((line, i) => {
+    const t = line.trim()
+    if (t.startsWith('//') || t.startsWith('*')) return
+    for (const f of FALLBACK) {
+      if (f.re.test(line)) violations.push({ file: rel, line: i + 1, what: f.what })
+    }
+  })
+}
+
 if (violations.length === 0) {
-  console.log(`OK — les ${files.length} routes d'espace contrôlent le rôle et projettent explicitement.`)
+  console.log(
+    `OK — ${files.length} routes d'espace projettent explicitement ; `
+    + `aucun repli « admin » dans les ${apiFiles.length} routes d'API.`,
+  )
   process.exit(0)
 }
 
@@ -75,6 +116,9 @@ console.error(`
 ${violations.length} occurrence(s). Rappel du contrat SEC-0 :
   • une route d'espace décide du rôle AVANT de brancher sur la méthode ;
   • un objet d'espace ne part jamais tel quel vers le navigateur — il passe par
-    une vue de lib/prospector/workspaceView.ts, dont les champs sont énumérés.
+    une vue de lib/prospector/workspaceView.ts, dont les champs sont énumérés ;
+  • une route métier authentifiée résout son espace avec
+    resolveTenantFromRequest (lib/prospector/tenant.ts) et REFUSE sur null.
+    « admin » est un espace métier réel, jamais une valeur de secours.
 `)
 process.exit(1)

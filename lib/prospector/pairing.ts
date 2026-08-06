@@ -37,8 +37,29 @@ export async function resolveChannelWs(chatKey: string): Promise<string | null> 
   return links.find((x) => x.id === chatKey)?.ws || null
 }
 
-export async function unlinkChannel(chatKey: string): Promise<void> {
+/**
+ * Délie un canal — UNIQUEMENT si l'espace appelant en est propriétaire.
+ *
+ * ⚠️ DÉFAUT CORRIGÉ (lot SEC-0b). La signature précédente ne prenait que
+ * `chatKey` et supprimait sans rien vérifier. Les liens vivent dans un espace
+ * TECHNIQUE PARTAGÉ (`_channels`) : le cloisonnement par `workspace_id` du
+ * magasin ne s'applique donc pas ici, et c'est le champ `ws` de la ligne qui
+ * porte seul la propriété. Un client authentifié qui devinait un `chatKey` —
+ * un identifiant de conversation Telegram est numérique, donc énumérable —
+ * pouvait délier le canal mobile d'un AUTRE espace. Destructif et silencieux.
+ *
+ * Rend `false` quand le lien n'existe pas ET quand il appartient à autrui : les
+ * deux cas sont volontairement indiscernables, sinon la réponse dirait à
+ * l'appelant qu'un canal existe ailleurs.
+ */
+export async function unlinkChannel(chatKey: string, ws: string): Promise<boolean> {
+  const owner = (ws || '').trim()
+  if (!owner || !chatKey) return false
+  const links = await listItems<PairLink>(KIND_LINK, NS)
+  const link = links.find((x) => x.id === chatKey)
+  if (!link || link.ws !== owner) return false
   await deleteItem(KIND_LINK, chatKey, NS)
+  return true
 }
 
 // Liste des canaux appairés à un espace (pour l'Admin).
