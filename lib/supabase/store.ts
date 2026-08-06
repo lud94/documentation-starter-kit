@@ -52,6 +52,40 @@ export async function upsertItem(kind: string, id: string, data: any, ws: string
   } catch { return false }
 }
 
+/**
+ * RÉCLAMATION ATOMIQUE — supprime et REND la ligne supprimée, ou `null`.
+ *
+ * ── POURQUOI (lot SEC-0d) ────────────────────────────────────────────────────
+ * `listItems` → `find` → `deleteItem` est un check-then-act : deux requêtes
+ * concurrentes lisent la même ligne avant que l'une ne la supprime, et toutes
+ * deux croient l'avoir obtenue. Sur du serverless multi-instance, ce n'est pas
+ * une hypothèse d'école : les instances sont réellement parallèles.
+ *
+ * Ici, un SEUL `DELETE … RETURNING` : PostgreSQL verrouille la ligne pour la
+ * durée de l'instruction, la première transaction l'emporte, et la seconde ne
+ * trouve plus rien à supprimer. Le gagnant est celui qui reçoit une ligne —
+ * pas celui qui l'a lue. C'est la primitive « au plus un » qu'exige un secret à
+ * usage unique, et elle ne demande AUCUNE migration : la table et sa clé
+ * primaire `(kind, id, workspace_id)` existent déjà.
+ */
+export async function claimItem<T = any>(kind: string, id: string, ws: string): Promise<T | null> {
+  if (!writeAllowed('prospector_store')) return null
+  const sb = supabase()
+  if (!sb) {
+    // Repli mémoire : `Map.delete` rend `true` une seule fois, et JavaScript
+    // n'interrompt pas entre la lecture et la suppression. Même garantie.
+    const k = key(kind, ws, id)
+    const v = mem.get(k)
+    return mem.delete(k) ? ((v as T) ?? null) : null
+  }
+  try {
+    const { data, error } = await sb.from(TABLE).delete()
+      .eq('kind', kind).eq('id', id).eq('workspace_id', ws).select('data')
+    if (error || !data || data.length === 0) return null
+    return (data[0] as any).data as T
+  } catch { return null }
+}
+
 export async function deleteItem(kind: string, id: string, ws: string): Promise<boolean> {
   if (!writeAllowed('prospector_store')) return false
   const sb = supabase()

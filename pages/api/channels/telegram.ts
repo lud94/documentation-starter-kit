@@ -71,7 +71,7 @@ async function handleUpdate(u: any, token: string): Promise<void> {
     const ws = await resolveChannelWs(chatKey)
     await send(token, chatId, ws
       ? `Déjà connecté à ton espace Prospector ✅\n\n${HELP}`
-      : `Bienvenue 👋\nPour connecter ce chat à ton espace Prospector, ouvre <b>Admin → Canaux mobiles</b>, génère un code à 6 chiffres et envoie-le-moi ici.`)
+      : `Bienvenue 👋\nPour connecter ce chat à ton espace Prospector, ouvre <b>Admin → Canaux mobiles</b>, génère un code d'appairage et envoie-le-moi ici.`)
     return
   }
   if (/^\/aide|^\/help/.test(text)) { await send(token, chatId, HELP); return }
@@ -86,8 +86,16 @@ async function handleUpdate(u: any, token: string): Promise<void> {
     await send(token, chatId, 'Ce chat est délié de Prospector. Envoie un nouveau code pour reconnecter.'); return
   }
 
-  // ── Appairage : un code à 6 chiffres ──
-  if (/^\d{6}$/.test(text)) {
+  // ── Appairage : une suite de chiffres est TOUJOURS traitée comme une
+  // tentative de code, quelle que soit sa longueur. La longueur exacte est
+  // décidée par `redeemPairingCode` — un seul endroit — et une tentative au
+  // mauvais format compte comme un échec, sans quoi le quota se contournerait
+  // en variant la longueur.
+  //
+  // ⚠️ MESSAGE UNIQUE, DÉLIBÉRÉ. Code inconnu, expiré, déjà consommé, espace
+  // suspendu ou quota épuisé rendent tous la MÊME réponse : rien ne doit
+  // apprendre à un attaquant qu'un code existe, ni qu'il a été bloqué.
+  if (/^\d{4,12}$/.test(text)) {
     const ws = await redeemPairingCode(text, chatKey, who)
     await send(token, chatId, ws
       ? `✅ Connecté à ton espace Prospector.\n\n${HELP}`

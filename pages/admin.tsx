@@ -635,7 +635,7 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
               <code className="text-sm font-mono font-semibold text-gray-800 tracking-wider break-all">{mfaSecret}</code>
               <p className="text-[10px] text-gray-400 mt-2 break-all">{mfaUri}</p>
             </div>
-            <p className="text-xs text-gray-600 mb-2">2. Entrez le code à 6 chiffres généré :</p>
+            <p className="text-xs text-gray-600 mb-2">2. Entrez le code d'appairage généré :</p>
             <div className="flex items-center gap-2">
               <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" className={`${fieldCls} w-32 text-center tracking-[0.3em] font-semibold`} />
               <button onClick={confirmMfa} disabled={mfaCode.length !== 6} className="gradient-brand text-white text-xs font-semibold px-3 py-2 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">Confirmer</button>
