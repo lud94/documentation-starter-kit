@@ -20,7 +20,8 @@
     "db:test:up": "supabase start && supabase db reset --local",
     "db:test:down": "supabase stop --no-backup",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "check:tenant": "node scripts/check-tenant-context.mjs"
+    "check:tenant": "node scripts/check-tenant-context.mjs",
+    "check:workspace": "node scripts/check-workspace-projection.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

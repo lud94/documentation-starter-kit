@@ -46,6 +46,9 @@ jobs:
       - name: Contexte tenant (MT-0)
         run: npm run check:tenant
 
+      - name: Isolation des espaces clients (SEC-0)
+        run: npm run check:workspace
+
       - name: Tests unitaires
         run: npm test
 
