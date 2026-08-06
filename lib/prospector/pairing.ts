@@ -2,13 +2,13 @@
 // Un identifiant de chat ne prouve RIEN par lui-même : l'utilisateur doit d'abord
 // générer un code à usage unique dans l'app, puis l'envoyer au bot. Sans ce lien,
 // le bot refuse toute demande.
-import { listItems, getItem, upsertItem, deleteItem, claimItem } from '../supabase/store'
+import { listItems, upsertItem, deleteItem, claimItem, insertItemIfAbsent } from '../supabase/store'
 import { tenantFromVerifiedWorkspace } from './tenant'
 
 const NS = '_channels'          // espace technique (hors données client)
 const KIND_CODE = 'paircode'    // codes en attente
 const KIND_LINK = 'pairlink'    // liens établis : chatKey → workspace
-const KIND_FAIL = 'pairfail'    // compteur d'échecs par chat (anti-épuisement)
+const KIND_SLOT = 'pairslot'    // jetons de tentative par chat et par fenêtre
 const TTL_MS = 15 * 60 * 1000   // code valable 15 minutes
 
 /** Échecs tolérés par chat, puis refus uniforme jusqu'à la fin de la fenêtre. */
@@ -55,21 +55,75 @@ export async function createPairingCode(ws: string): Promise<{ code: string; exp
   return { code, expiresInMin: 15 }
 }
 
-interface FailCounter { id: string; n: number; since: number }
-
-/** Le chat a-t-il épuisé ses essais dans la fenêtre courante ? */
-async function rateLimited(chatKey: string): Promise<boolean> {
-  const c = await getItem<FailCounter>(KIND_FAIL, chatKey, NS)
-  if (!c) return false
-  if (Date.now() - (c.since || 0) > FAILURE_WINDOW_MS) return false  // fenêtre écoulée
-  return (c.n || 0) >= MAX_FAILURES
+/**
+ * ── QUOTA DE TENTATIVES — RÉSERVATION DE JETON (lot SEC-0e) ─────────────────
+ *
+ * DÉFAUT CORRIGÉ. La version SEC-0d comptait par lecture-modification-écriture :
+ *
+ *     rateLimited(chat)  → getItem(compteur)
+ *     noteFailure(chat)  → getItem(compteur) → n + 1 → upsertItem
+ *
+ * Deux requêtes concurrentes lisaient `n = 4`, écrivaient toutes deux `5`, et
+ * une tentative disparaissait. Le contrat « 5 par fenêtre » n'était donc pas
+ * garanti : il se contournait par le parallélisme, exactement l'attaque contre
+ * laquelle il existe. Un verrou en mémoire n'y aurait rien changé — les
+ * instances serverless sont réellement distinctes.
+ *
+ * MÉCANISME. La fenêtre est un seau déterministe, `floor(now / WINDOW)`, et
+ * chaque couple (chat, fenêtre) possède exactement MAX_FAILURES jetons nommés.
+ * Une tentative doit RÉSERVER un jeton libre par `insertItemIfAbsent` : c'est
+ * la clé primaire `(kind, id, workspace_id)` de `prospector_store` qui tranche,
+ * dans PostgreSQL, sans lecture préalable. Deux requêtes visant le même jeton
+ * ne peuvent pas gagner toutes les deux — la seconde reçoit `23505`.
+ *
+ * L'invariant qui en découle est exact et partagé :
+ *
+ *   pour un chat donné et une fenêtre donnée, AU PLUS MAX_FAILURES tentatives
+ *   franchissent le quota, quel que soit le nombre d'instances applicatives.
+ *
+ * ── CE QUE LE CONTRAT NE DIT PAS ────────────────────────────────────────────
+ * La fenêtre est FIXE, pas glissante. À cheval sur une frontière de seau, un
+ * attaquant obtient donc 2 × MAX_FAILURES tentatives en peu de temps. C'est la
+ * rafale de bordure classique des fenêtres fixes ; elle est bornée, connue, et
+ * ne remet pas en cause l'invariant « par fenêtre ». Une fenêtre glissante
+ * exigerait un compteur horodaté, donc une agrégation — et une agrégation
+ * ramènerait la lecture-modification-écriture qu'on vient de supprimer.
+ *
+ * Un jeton est consommé par TENTATIVE, succès compris. Un appairage réussi
+ * termine de toute façon la séquence : le chat est lié.
+ */
+function windowIndex(now: number): number {
+  return Math.floor(now / FAILURE_WINDOW_MS)
 }
 
-async function noteFailure(chatKey: string): Promise<void> {
-  const c = await getItem<FailCounter>(KIND_FAIL, chatKey, NS)
-  const fresh = !c || Date.now() - (c.since || 0) > FAILURE_WINDOW_MS
-  await upsertItem(KIND_FAIL, chatKey,
-    { id: chatKey, n: fresh ? 1 : (c!.n || 0) + 1, since: fresh ? Date.now() : c!.since }, NS)
+/**
+ * Réserve un jeton de tentative. `false` ⇒ quota épuisé pour cette fenêtre.
+ *
+ * Les jetons sont essayés dans l'ordre : sous contention, les perdants
+ * progressent vers le suivant, et au plus MAX_FAILURES appelants en obtiennent
+ * un. Le coût maximal est de MAX_FAILURES insertions — borné, et sur un chemin
+ * qui n'est emprunté que par des tentatives d'appairage.
+ */
+async function claimAttemptSlot(chatKey: string): Promise<boolean> {
+  const w = windowIndex(Date.now())
+  for (let i = 0; i < MAX_FAILURES; i++) {
+    const got = await insertItemIfAbsent(
+      KIND_SLOT, `${chatKey}:${w}:${i}`, { id: `${chatKey}:${w}:${i}`, at: Date.now() }, NS)
+    if (got) {
+      // Le premier arrivant de la fenêtre balaie celle d'avant : nettoyage
+      // paresseux, borné à MAX_FAILURES suppressions, sans tâche planifiée.
+      // Sans lui, chaque chat laisserait une traînée de lignes à chaque fenêtre.
+      if (i === 0) await sweepWindow(chatKey, w - 1)
+      return true
+    }
+  }
+  return false
+}
+
+async function sweepWindow(chatKey: string, w: number): Promise<void> {
+  for (let i = 0; i < MAX_FAILURES; i++) {
+    await deleteItem(KIND_SLOT, `${chatKey}:${w}:${i}`, NS)
+  }
 }
 
 /**
@@ -97,16 +151,17 @@ export async function redeemPairingCode(code: string, chatKey: string, label?: s
   const key = (chatKey || '').trim()
   if (!key) return null
 
-  // Le quota est vérifié AVANT toute lecture de code : un chat saturé n'apprend
-  // plus rien du tout, pas même par le temps de réponse.
-  if (await rateLimited(key)) return null
+  // Le jeton de tentative est réservé AVANT toute lecture de code. Un chat
+  // saturé n'apprend donc plus rien du tout — le code n'est même pas touché,
+  // et le vrai code d'un tiers reste intact et utilisable par son destinataire.
+  if (!(await claimAttemptSlot(key))) return null
 
-  if (!new RegExp(`^\\d{${CODE_DIGITS}}$`).test(c)) { await noteFailure(key); return null }
+  if (!new RegExp(`^\\d{${CODE_DIGITS}}$`).test(c)) return null
 
   // Réclamation atomique : au plus UNE requête obtient ce code.
   const hit = await claimItem<{ id: string; ws: string; at: number }>(KIND_CODE, c, NS)
-  if (!hit) { await noteFailure(key); return null }
-  if (Date.now() - (hit.at || 0) > TTL_MS) { await noteFailure(key); return null }
+  if (!hit) return null
+  if (Date.now() - (hit.at || 0) > TTL_MS) return null
 
   // L'espace doit être ENCORE utilisable — même exigence que les trois racines
   // de confiance depuis SEC-0c. Appairer un chat à un espace suspendu ou

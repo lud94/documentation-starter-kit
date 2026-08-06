@@ -86,6 +86,45 @@ export async function claimItem<T = any>(kind: string, id: string, ws: string): 
   } catch { return null }
 }
 
+/**
+ * INSERTION EXCLUSIVE — rend `true` à UN SEUL appelant pour une clé donnée.
+ *
+ * ── POURQUOI (lot SEC-0e) ────────────────────────────────────────────────────
+ * `upsertItem` porte `onConflict` : par construction, il n'échoue JAMAIS sur
+ * une clé déjà prise, il écrase. C'est ce qu'on veut pour une donnée, et
+ * exactement ce qu'on ne veut pas pour une RÉSERVATION.
+ *
+ * Ici, un `INSERT` nu. La clé primaire `(kind, id, workspace_id)` — qui existe
+ * déjà — devient le mécanisme d'exclusion : PostgreSQL sérialise les insertions
+ * concurrentes sur la même clé, la première réussit, les autres reçoivent
+ * `23505 unique_violation`. Aucune fenêtre entre un test et une écriture,
+ * puisqu'il n'y a pas de test.
+ *
+ * C'est le pendant de `claimItem` : l'un réclame une ligne existante, l'autre
+ * réclame une clé libre. Ensemble ils couvrent « au plus un » dans les deux
+ * sens, sans migration.
+ *
+ * ⚠️ Toute erreur autre qu'un conflit rend AUSSI `false` : un appelant qui
+ * réserve un jeton d'autorisation doit échouer fermé quand la base ne répond
+ * pas. Ne jamais interpréter une panne comme une réservation obtenue.
+ */
+export async function insertItemIfAbsent(kind: string, id: string, data: any, ws: string): Promise<boolean> {
+  if (!writeAllowed('prospector_store')) return false
+  const sb = supabase()
+  if (!sb) {
+    // Repli mémoire : JavaScript n'interrompt pas entre le test et l'écriture.
+    const k = key(kind, ws, id)
+    if (mem.has(k)) return false
+    mem.set(k, data)
+    return true
+  }
+  try {
+    const { error } = await sb.from(TABLE)
+      .insert({ kind, id, workspace_id: ws, data, updated_at: new Date().toISOString() })
+    return !error
+  } catch { return false }
+}
+
 export async function deleteItem(kind: string, id: string, ws: string): Promise<boolean> {
   if (!writeAllowed('prospector_store')) return false
   const sb = supabase()

@@ -29,6 +29,15 @@ const deleteItem = vi.fn(async (kind: string, id: string, ws: string) => {
   if (i >= 0) rows.splice(i, 1)
   return true
 })
+const insertItemIfAbsent = vi.fn(async (kind: string, id: string, data: any, ws: string) => {
+  // Modélise un INSERT nu sous clé primaire : on cède la main AVANT de tester,
+  // pour que plusieurs appelants concurrents observent bien la même absence —
+  // c'est ce qui casserait une implémentation lecture-modification-écriture.
+  await Promise.resolve()
+  if (rows.some((r) => r.kind === kind && r.id === id && r.ws === ws)) return false
+  rows.push({ kind, id, ws, data })
+  return true
+})
 const claimItem = vi.fn(async (kind: string, id: string, ws: string) => {
   // Une seule opération indivisible, comme le DELETE de PostgreSQL. On cède
   // volontairement la main AVANT, pour que l'ordonnanceur puisse entrelacer
@@ -51,6 +60,7 @@ vi.mock('../lib/supabase/store', () => ({
   upsertItem: (...a: any[]) => (upsertItem as any)(...a),
   deleteItem: (...a: any[]) => (deleteItem as any)(...a),
   claimItem: (...a: any[]) => (claimItem as any)(...a),
+  insertItemIfAbsent: (...a: any[]) => (insertItemIfAbsent as any)(...a),
 }))
 vi.mock('../lib/supabase/workspaces', () => ({
   getWorkspaceById: (...a: any[]) => (getWorkspaceById as any)(...a),
@@ -59,7 +69,7 @@ vi.mock('../lib/supabase/workspaces', () => ({
 
 import {
   createPairingCode, redeemPairingCode, resolveChannelWs, pairingCode,
-  MAX_FAILURES, CODE_DIGITS,
+  MAX_FAILURES, CODE_DIGITS, FAILURE_WINDOW_MS,
 } from '../lib/prospector/pairing'
 import { decideExternalAiPolicy, loadExternalAiPolicy } from '../lib/prospector/externalAiPolicy'
 
@@ -174,13 +184,21 @@ describe('brute-force : quota par chat, refus uniforme', () => {
     expect(await redeemPairingCode(code, 'tg:pirate')).toBeNull()
   })
 
-  it('la fenêtre expire et rend ses essais', async () => {
+  it('F/G — une NOUVELLE fenêtre rend un quota neuf, et balaie l\'ancienne', async () => {
     for (let i = 0; i < MAX_FAILURES; i++) await redeemPairingCode('00000000', 'tg:pirate')
-    // Le compteur est vieilli au-delà de la fenêtre.
-    const c = rows.find((r) => r.kind === 'pairfail')!
-    c.data.since = Date.now() - 20 * 60 * 1000
-    const { code } = await createPairingCode('ws_fabel')
-    expect(await redeemPairingCode(code, 'tg:pirate')).toBe('ws_fabel')
+    expect(rows.filter((r) => r.kind === 'pairslot')).toHaveLength(MAX_FAILURES)
+
+    // On avance dans la fenêtre suivante — le seau est `floor(now / WINDOW)`.
+    const real = Date.now
+    Date.now = () => real() + FAILURE_WINDOW_MS + 1000
+    try {
+      const { code } = await createPairingCode('ws_fabel')
+      expect(await redeemPairingCode(code, 'tg:pirate')).toBe('ws_fabel')
+      // Nettoyage paresseux : les jetons de la fenêtre précédente sont partis,
+      // sinon chaque chat laisserait une traînée de lignes à chaque fenêtre.
+      const slots = rows.filter((r) => r.kind === 'pairslot')
+      expect(slots).toHaveLength(1)
+    } finally { Date.now = real }
   })
 
   it('10 000 tentatives depuis un seul chat n\'aboutissent jamais', async () => {
@@ -279,5 +297,91 @@ describe('B–F — toute incertitude sur la politique REFUSE l\'egress', () => 
       expect(decideExternalAiPolicy(true, { allowed: true, maskPii: v }))
         .toEqual({ state: 'granted', maskPii: true })
     }
+  })
+})
+
+// ── SEC-0e — LE QUOTA EST-IL VRAI SOUS CONCURRENCE ? ────────────────────────
+//
+// SEC-0d comptait par lecture-modification-écriture : deux requêtes lisaient
+// `n = 4`, écrivaient toutes deux `5`, et une tentative disparaissait. Le
+// contrat « 5 par fenêtre » se contournait donc par le parallélisme — soit
+// exactement l'attaque contre laquelle il existe.
+//
+// Ces cas mesurent le contrat, pas l'implémentation : ils comptent combien de
+// tentatives ATTEIGNENT la phase protégée, c'est-à-dire combien touchent le
+// code. `claimItem` n'est appelé qu'après réservation d'un jeton : son nombre
+// d'appels EST la mesure.
+describe('SEC-0e — quota atomique sous concurrence', () => {
+  const reached = () => claimItem.mock.calls.filter((c) => c[0] === 'paircode').length
+
+  it('A — 100 tentatives SIMULTANÉES sur un chat → exactement MAX_FAILURES passent', async () => {
+    await Promise.all(Array.from({ length: 100 }, () => redeemPairingCode('00000000', 'tg:pirate')))
+    expect(reached()).toBe(MAX_FAILURES)
+  })
+
+  it('B — 5 tentatives simultanées → au plus MAX_FAILURES', async () => {
+    await Promise.all(Array.from({ length: 5 }, () => redeemPairingCode('00000000', 'tg:pirate')))
+    expect(reached()).toBeLessThanOrEqual(MAX_FAILURES)
+    expect(reached()).toBe(5)
+  })
+
+  it('C — 6 tentatives simultanées → une est refusée par le quota', async () => {
+    await Promise.all(Array.from({ length: 6 }, () => redeemPairingCode('00000000', 'tg:pirate')))
+    expect(reached()).toBe(MAX_FAILURES)
+  })
+
+  it('D — 50 tentatives réparties sur plusieurs vagues → quota inchangé', async () => {
+    for (let wave = 0; wave < 5; wave++) {
+      await Promise.all(Array.from({ length: 10 }, () => redeemPairingCode('00000000', 'tg:pirate')))
+    }
+    expect(reached()).toBe(MAX_FAILURES)
+    // Et la comptabilité des jetons est exacte : ni plus, ni moins.
+    expect(rows.filter((r) => r.kind === 'pairslot')).toHaveLength(MAX_FAILURES)
+  })
+
+  it('E — un chat saturé ne consomme pas le quota d\'un autre', async () => {
+    await Promise.all(Array.from({ length: 100 }, () => redeemPairingCode('00000000', 'tg:pirate')))
+    const { code } = await createPairingCode('ws_fabel')
+    expect(await redeemPairingCode(code, 'tg:honnete')).toBe('ws_fabel')
+  })
+
+  it('I — le BON code présenté après épuisement : refusé ET NON consommé', async () => {
+    const { code } = await createPairingCode('ws_fabel')
+    await Promise.all(Array.from({ length: 100 }, () => redeemPairingCode('00000000', 'tg:pirate')))
+    claimItem.mockClear()
+    expect(await redeemPairingCode(code, 'tg:pirate')).toBeNull()
+    // Le code n'a même pas été touché : son destinataire légitime peut encore
+    // s'en servir. Un quota qui brûlerait le code ferait le travail de
+    // l'attaquant à sa place.
+    expect(claimItem).not.toHaveBeenCalled()
+    expect(rows.find((r) => r.kind === 'paircode' && r.id === code)).toBeTruthy()
+    expect(await redeemPairingCode(code, 'tg:legitime')).toBe('ws_fabel')
+  })
+
+  it('J — le BON code dans les MAX_FAILURES premières tentatives passe', async () => {
+    const { code } = await createPairingCode('ws_fabel')
+    for (let i = 0; i < MAX_FAILURES - 1; i++) await redeemPairingCode('00000000', 'tg:chat')
+    expect(await redeemPairingCode(code, 'tg:chat')).toBe('ws_fabel')
+  })
+
+  it('K — deux appels SIMULTANÉS avec le bon code → un seul lien final', async () => {
+    const { code } = await createPairingCode('ws_fabel')
+    const r = await Promise.all([
+      redeemPairingCode(code, 'tg:a'), redeemPairingCode(code, 'tg:b'),
+    ])
+    expect(r.filter((x) => x !== null)).toHaveLength(1)
+    expect(rows.filter((x) => x.kind === 'pairlink')).toHaveLength(1)
+  })
+
+  it('le jeton est réservé AVANT toute lecture de code — aucune fuite temporelle', async () => {
+    await Promise.all(Array.from({ length: 20 }, () => redeemPairingCode('00000000', 'tg:pirate')))
+    // 20 tentatives, 5 seulement ont atteint le code.
+    expect(insertItemIfAbsent.mock.calls.filter((c) => c[0] === 'pairslot').length).toBeGreaterThan(0)
+    expect(reached()).toBe(MAX_FAILURES)
+  })
+
+  it('CROISSANCE BORNÉE — un chat ne laisse jamais plus de MAX_FAILURES jetons', async () => {
+    for (let i = 0; i < 40; i++) await redeemPairingCode('00000000', 'tg:pirate')
+    expect(rows.filter((r) => r.kind === 'pairslot')).toHaveLength(MAX_FAILURES)
   })
 })
