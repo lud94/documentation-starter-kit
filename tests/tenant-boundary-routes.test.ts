@@ -19,11 +19,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // seule racine de confiance des routes métier, et supprime les copies locales.
 
 const listItems = vi.fn()
+const getItem = vi.fn()
 const upsertItem = vi.fn()
 const deleteItem = vi.fn()
 const listLeads = vi.fn()
 const upsertLeadChecked = vi.fn()
 const deleteLead = vi.fn()
+const claimItemIfField = vi.fn()
 const getWorkspaceById = vi.fn()
 const supabaseFrom = vi.fn()
 const supabaseConfigured = vi.fn()
@@ -32,7 +34,8 @@ vi.mock('../lib/supabase/store', () => ({
   listItems: (...a: any[]) => listItems(...a),
   upsertItem: (...a: any[]) => upsertItem(...a),
   deleteItem: (...a: any[]) => deleteItem(...a),
-  getItem: vi.fn(),
+  getItem: (...a: any[]) => getItem(...a),
+  claimItemIfField: (...a: any[]) => claimItemIfField(...a),
 }))
 vi.mock('../lib/supabase/leads', () => ({
   listLeads: (...a: any[]) => listLeads(...a),
@@ -110,6 +113,10 @@ beforeEach(() => {
   listLeads.mockReset().mockResolvedValue([])
   upsertLeadChecked.mockReset().mockResolvedValue({ ok: true })
   deleteLead.mockReset().mockResolvedValue(true)
+  // `resolveChannelWs` lit désormais la clé exacte, et `unlinkChannel` fait un
+  // compare-and-delete : les deux primitives doivent exister dans le double.
+  getItem.mockReset().mockResolvedValue(null)
+  claimItemIfField.mockReset().mockResolvedValue(null)
   getWorkspaceById.mockReset().mockImplementation(async (id: string) => ({ id, name: id, status: 'active' }))
   supabaseConfigured.mockReset().mockReturnValue(true)
   supabaseFrom.mockReset().mockReturnValue({
@@ -303,35 +310,45 @@ describe('routes LLM : l\'espace de PERSISTANCE est celui du tenant', () => {
 
 // ── Appairage : un espace technique PARTAGÉ, donc à vérifier explicitement ──
 describe('appairage — un client ne peut pas délier le canal d\'un autre espace', () => {
-  const LINKS = [
-    { id: 'telegram:111', ws: 'ws_fabel', at: 1 },
-    { id: 'telegram:222', ws: 'ws_client_b', at: 1 },
-  ]
+  let LINKS: any[]
+  beforeEach(() => {
+    LINKS = [
+      { id: 'telegram:111', ws: 'ws_fabel', at: 1 },
+      { id: 'telegram:222', ws: 'ws_client_b', at: 1 },
+    ]
+    listItems.mockResolvedValue(LINKS)
+    // Depuis SEC-TG, la propriété est vérifiée DANS la suppression : un seul
+    // `DELETE … WHERE data->>ws = attendu`. Le double le modélise fidèlement —
+    // le modéliser autrement ferait passer le test pour de mauvaises raisons.
+    claimItemIfField.mockImplementation(async (kind: string, id: string, ns: string, field: string, expected: string) => {
+      const i = LINKS.findIndex((l) => l.id === id && String((l as any)[field]) === expected)
+      if (kind !== 'pairlink' || ns !== '_channels' || i < 0) return null
+      return LINKS.splice(i, 1)[0]
+    })
+  })
 
   it('DÉFAUT CORRIGÉ — délier le canal de Client B depuis Fabel échoue', async () => {
-    // `unlinkChannel(chatKey)` supprimait sans vérifier la propriété. Les liens
-    // vivent dans l'espace technique `_channels`, où le cloisonnement du magasin
-    // ne s'applique pas : un identifiant de conversation Telegram est numérique,
-    // donc énumérable.
-    listItems.mockResolvedValue(LINKS)
+    // Les liens vivent dans l'espace technique `_channels`, où le cloisonnement
+    // du magasin ne s'applique pas : un identifiant de conversation Telegram
+    // est numérique, donc énumérable. La propriété doit être vérifiée à la main.
     const res = mockRes()
     await pairHandler(req('DELETE', { [SESSION_COOKIE]: await clientSession('ws_fabel') },
       { id: 'telegram:222' }), res)
     expect(res.body.ok).toBe(false)
-    expect(deleteItem).not.toHaveBeenCalled()
+    expect(LINKS.find((l) => l.id === 'telegram:222')).toBeTruthy()
+    // La suppression a bien été TENTÉE, mais avec l'espace de l'appelant.
+    for (const call of claimItemIfField.mock.calls) expect(call[4]).toBe('ws_fabel')
   })
 
   it('délier SON PROPRE canal fonctionne toujours', async () => {
-    listItems.mockResolvedValue(LINKS)
     const res = mockRes()
     await pairHandler(req('DELETE', { [SESSION_COOKIE]: await clientSession('ws_fabel') },
       { id: 'telegram:111' }), res)
     expect(res.body.ok).toBe(true)
-    expect(deleteItem).toHaveBeenCalledWith('pairlink', 'telegram:111', '_channels')
+    expect(LINKS.find((l) => l.id === 'telegram:111')).toBeUndefined()
   })
 
   it('un canal inexistant et un canal d\'autrui sont INDISCERNABLES', async () => {
-    listItems.mockResolvedValue(LINKS)
     const res1 = mockRes(); const res2 = mockRes()
     const c = { [SESSION_COOKIE]: await clientSession('ws_fabel') }
     await pairHandler(req('DELETE', c, { id: 'telegram:222' }), res1)
@@ -341,7 +358,6 @@ describe('appairage — un client ne peut pas délier le canal d\'un autre espac
   })
 
   it('la liste ne montre que les canaux de l\'espace', async () => {
-    listItems.mockResolvedValue(LINKS)
     const res = mockRes()
     await pairHandler(req('GET', { [SESSION_COOKIE]: await clientSession('ws_fabel') }), res)
     expect(res.body.channels.map((c: any) => c.id)).toEqual(['telegram:111'])

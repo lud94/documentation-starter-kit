@@ -65,11 +65,19 @@ const WORKSPACES: Record<string, any> = {
 }
 const getWorkspaceById = vi.fn(async (id: string) => WORKSPACES[id] ?? null)
 
+// Compare-and-delete : la propriété est vérifiée DANS la suppression, en une
+// seule instruction. `unlinkChannel` s'appuie dessus depuis SEC-TG.
+const claimItemIfField = vi.fn(async (kind: string, id: string, ws: string, field: string, expected: string) => {
+  const i = rows.findIndex((r) => r.kind === kind && r.id === id && r.ws === ws
+    && String(r.data?.[field]) === expected)
+  return i < 0 ? null : rows.splice(i, 1)[0].data
+})
 vi.mock('../lib/supabase/store', () => ({
   listItems: (...a: any[]) => (listItems as any)(...a),
   getItem: (...a: any[]) => (getItem as any)(...a),
   upsertItem: (...a: any[]) => (upsertItem as any)(...a),
   deleteItem: (...a: any[]) => (deleteItem as any)(...a),
+  claimItemIfField: (...a: any[]) => (claimItemIfField as any)(...a),
 }))
 vi.mock('../lib/supabase/leads', () => ({
   listLeads: (...a: any[]) => (listLeads as any)(...a),

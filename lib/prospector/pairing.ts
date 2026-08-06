@@ -280,8 +280,12 @@ export async function redeemPairingCode(code: string, chatKey: string, label?: s
 }
 
 export async function resolveChannelWs(chatKey: string): Promise<string | null> {
-  const links = await listItems<PairLink>(KIND_LINK, NS)
-  return links.find((x) => x.id === chatKey)?.ws || null
+  // Lecture CIBLÉE sur la clé primaire (lot SEC-TG). La version précédente
+  // chargeait TOUS les liens de tous les clients — `listItems` puis `find` —
+  // pour en retrouver un seul. Coût O(n) sur un namespace partagé, et surtout
+  // toute la table des canaux en mémoire d'une instance à chaque message reçu.
+  const link = await getItem<PairLink>(KIND_LINK, (chatKey || '').trim(), NS)
+  return link?.ws || null
 }
 
 /**
@@ -302,11 +306,10 @@ export async function resolveChannelWs(chatKey: string): Promise<string | null> 
 export async function unlinkChannel(chatKey: string, ws: string): Promise<boolean> {
   const owner = (ws || '').trim()
   if (!owner || !chatKey) return false
-  const links = await listItems<PairLink>(KIND_LINK, NS)
-  const link = links.find((x) => x.id === chatKey)
-  if (!link || link.ws !== owner) return false
-  await deleteItem(KIND_LINK, chatKey, NS)
-  return true
+  // La vérification de propriété et la suppression sont la MÊME instruction
+  // (lot SEC-TG). La version précédente lisait puis supprimait : entre les deux,
+  // un ré-appairage pouvait faire supprimer le lien d'un AUTRE espace.
+  return (await claimItemIfField(KIND_LINK, chatKey, NS, 'ws', owner)) !== null
 }
 
 // Liste des canaux appairés à un espace (pour l'Admin).
