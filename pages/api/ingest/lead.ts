@@ -3,32 +3,39 @@ import { getKey, hydrateKeystore } from '../../../lib/prospector/keystore'
 import { upsertLeadChecked } from '../../../lib/supabase/leads'
 import { lookupByName } from '../../../lib/prospector/datagouv'
 import { identifyLead } from '../../../lib/prospector/identify'
-import { resolveWorkspaceByToken } from '../../../lib/prospector/wstoken'
+import { resolveExtensionToken } from '../../../lib/prospector/wstoken'
 import { tenantFromVerifiedWorkspace } from '../../../lib/prospector/tenant'
+import { decideCors, applyCors, readCredential } from '../../../lib/prospector/extensionGate'
 import type { Lead } from '../../../types/prospector'
 
 // Point d'entrée pour l'extension navigateur (Jarvis web).
 // Protégé par un jeton (INGEST_TOKEN) — pas par la session, car appelé depuis
 // une autre origine. Crée un lead à partir d'une URL LinkedIn + infos de base.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // CORS : autorise l'extension à appeler.
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, x-ingest-token')
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+  // ── CORS : allowlist, jamais `*` (lot SEC-EXT-0) ────────────────────────
+  // CORS n'est pas l'autorité — le jeton et sa portée le sont — mais renvoyer
+  // `*` sur une route qui accepte un credential invite toute page à tenter sa
+  // chance, et rend l'exfiltration de la réponse triviale.
+  await hydrateKeystore()
+  const cors = decideCors(req.headers.origin as string | undefined)
+  applyCors(res, cors)
+  if (!cors.allowed) return res.status(403).json({ error: 'origin_not_allowed' })
   if (req.method === 'OPTIONS') return res.status(200).end()
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
 
-  await hydrateKeystore()
-  const ref = getKey('INGEST_TOKEN')
-  const token = String(req.headers['x-ingest-token'] || (typeof req.body === 'object' ? req.body?.token : '') || '')
-  if (!ref) return res.status(401).json({ error: 'Aucun jeton configuré côté Prospector (Admin → Connexions → INGEST_TOKEN, puis Enregistrer).' })
-  if (!token) return res.status(401).json({ error: 'Jeton absent dans l\'extension (champ Réglages vide).' })
-  // Multi-tenant : le jeton détermine l'espace de destination (admin ou client).
-  const ws = await resolveWorkspaceByToken(token)
-  if (!ws) return res.status(401).json({ error: 'Jeton invalide (ni admin, ni client connu).' })
-  // MT-0 — l'espace vient du jeton d'ingestion, déjà vérifié ci-dessus.
+  // ⚠️ CREDENTIAL DANS L'EN-TÊTE UNIQUEMENT. `body.token` n'est plus lu : deux
+  // chemins d'entrée pour un même secret, c'est un de trop à surveiller, et un
+  // corps JSON se retrouve bien plus facilement dans un journal.
+  const token = readCredential(req)
+  if (!token) return res.status(401).json({ error: 'unauthorized' })
+
+  // ⚠️ PORTÉE `capture` EXIGÉE, et AUCUN jeton global d'administration. Le
+  // jeton `INGEST_TOKEN` ouvrait l'espace `admin` depuis un navigateur client.
+  const ws = await resolveExtensionToken(token, 'capture')
+  if (!ws) return res.status(401).json({ error: 'unauthorized' })
+  // MT-0 — l'espace vient du jeton, déjà vérifié ; il doit ENCORE être utilisable.
   const tenant = await tenantFromVerifiedWorkspace(ws)
-  if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
+  if (!tenant) return res.status(403).json({ error: 'forbidden' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const name = String(body?.name || '').trim()

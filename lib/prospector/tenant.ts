@@ -83,7 +83,7 @@ export function systemTenant(tag: SystemTag): TenantContext {
 
 /**
  * Tenant d'un espace résolu hors session — jeton d'ingestion par espace
- * (`resolveWorkspaceByToken`) ou appairage de canal (`resolveChannelWs`).
+ * (`resolveExtensionToken`) ou appairage de canal (`resolveChannelWs`).
  *
  * Ces chemins sont publics au sens du middleware mais portent leur PROPRE
  * garde, qui rend déjà un identifiant d'espace vérifié. On les traite en

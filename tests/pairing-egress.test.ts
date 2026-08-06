@@ -124,9 +124,20 @@ describe('le code est cryptographique, uniforme et assez long', () => {
     expect((10_000 * MAX_FAILURES) / space).toBeLessThan(0.001)
   })
 
-  it('aucune répétition sur un large tirage', () => {
-    const seen = new Set(Array.from({ length: 3000 }, () => pairingCode()))
-    expect(seen.size).toBe(3000)
+  it('le tirage n\'est ni constant ni cyclique', () => {
+    // ⚠️ CE CAS ÉTAIT INSTABLE, et c'est ma faute : il exigeait 3000 tirages
+    // TOUS distincts dans un espace de 9·10⁷. Le paradoxe des anniversaires
+    // donne ~3000²/(2·9·10⁷) ≈ 0,05 collision attendue, soit environ 5 % de
+    // faux échecs. Un test de sécurité qui échoue une fois sur vingt sans
+    // défaut apprend à ignorer les échecs — c'est pire que pas de test.
+    //
+    // La propriété réellement voulue est que le générateur ne rende pas une
+    // constante ni une petite période. Le seuil ci-dessous est astronomiquement
+    // loin du comportement aléatoire, et impossible à atteindre pour un
+    // générateur dégénéré.
+    const n = 3000
+    const seen = new Set(Array.from({ length: n }, () => pairingCode()))
+    expect(seen.size).toBeGreaterThan(n - 10)
   })
 
   it('utilise le générateur cryptographique, pas Math.random', () => {
