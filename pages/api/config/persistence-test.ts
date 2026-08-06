@@ -1,14 +1,19 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { supabase, supabaseConfigured } from '../../../lib/supabase/client'
 import { canWrite, envSummary } from '../../../lib/env'
-import { readSession, SESSION_COOKIE } from '../../../lib/auth/session'
+import { isAdminRequest } from '../../../lib/auth/guard'
 
 // Diagnostic RÉEL : teste écriture + lecture Supabase et renvoie l'erreur exacte.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   // Diagnostic réservé aux administrateurs : il révèle les noms de variables
   // d'environnement détectés et les messages d'erreur bruts de la base.
-  const claims = await readSession(req.cookies?.[SESSION_COOKIE])
-  if (claims && claims.role && claims.role !== 'admin') return res.status(403).json({ error: 'Réservé aux administrateurs.' })
+  //
+  // ⚠️ FAIL-OPEN CORRIGÉ (lot SEC-0c). La forme précédente était
+  // `claims && claims.role && claims.role !== 'admin'` : une requête SANS
+  // session — `claims` nul — ne remplissait pas la condition et passait. Or
+  // cette route ÉCRIT RÉELLEMENT dans `prospector_settings`. Le refus précède
+  // désormais toute lecture d'environnement et toute écriture.
+  if (!(await isAdminRequest(req))) return res.status(403).json({ error: 'Réservé aux administrateurs.' })
 
   // Cette route écrit RÉELLEMENT dans prospector_settings : c'est le seul point
   // d'écriture du dépôt qui contourne les modules de persistance. Il doit donc

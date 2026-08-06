@@ -40,6 +40,15 @@ const FALLBACK = [
   { re: /\bcookies\s*\??\.\s*\[\s*['"]ps_active_ws['"]\s*\]\s*\|\|\s*['"]admin['"]/, what: "cookie d'espace actif non vérifié" },
 ]
 
+// ── SEC-0c : un garde de rôle ne doit pas laisser passer l'absence de session ─
+// La forme `claims && claims.role && claims.role !== 'admin'` refuse un client
+// et LAISSE PASSER une requête sans session : `claims` nul rend la condition
+// fausse. Elle vivait dans status.ts, persistence-test.ts et db-check.ts.
+// `isAdminRequest()` est la seule forme correcte, et elle existe déjà.
+const WEAK_ADMIN = [
+  { re: /claims\s*&&\s*claims\s*\??\.\s*role\s*&&/, what: 'garde admin fail-open (`claims && claims.role && …`)' },
+]
+
 // Seuls fichiers autorisés à décider d'un espace « admin » sans le résolveur.
 // `active.ts` EST le sélecteur : il lit le cookie par définition, et sa branche
 // admin le republie sans l'imposer à une lecture de données.
@@ -96,7 +105,7 @@ for (const full of apiFiles) {
   readFileSync(full, 'utf8').split('\n').forEach((line, i) => {
     const t = line.trim()
     if (t.startsWith('//') || t.startsWith('*')) return
-    for (const f of FALLBACK) {
+    for (const f of [...FALLBACK, ...WEAK_ADMIN]) {
       if (f.re.test(line)) violations.push({ file: rel, line: i + 1, what: f.what })
     }
   })
@@ -119,6 +128,8 @@ ${violations.length} occurrence(s). Rappel du contrat SEC-0 :
     une vue de lib/prospector/workspaceView.ts, dont les champs sont énumérés ;
   • une route métier authentifiée résout son espace avec
     resolveTenantFromRequest (lib/prospector/tenant.ts) et REFUSE sur null.
-    « admin » est un espace métier réel, jamais une valeur de secours.
+    « admin » est un espace métier réel, jamais une valeur de secours ;
+  • un garde admin s'écrit "if (!(await isAdminRequest(req))) return 403" —
+    jamais "claims && claims.role && ...", qui laisse passer l'absence de session.
 `)
 process.exit(1)

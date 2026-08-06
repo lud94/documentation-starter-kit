@@ -110,7 +110,7 @@ beforeEach(() => {
   listLeads.mockReset().mockResolvedValue([])
   upsertLeadChecked.mockReset().mockResolvedValue({ ok: true })
   deleteLead.mockReset().mockResolvedValue(true)
-  getWorkspaceById.mockReset().mockResolvedValue({ id: 'ws_client_b', name: 'Client B', status: 'active' })
+  getWorkspaceById.mockReset().mockImplementation(async (id: string) => ({ id, name: id, status: 'active' }))
   supabaseConfigured.mockReset().mockReturnValue(true)
   supabaseFrom.mockReset().mockReturnValue({
     select: () => ({ limit: async () => ({ error: null }) }),
@@ -179,8 +179,9 @@ describe('B/C/E — l\'espace du client vient de sa session signée, uniquement'
     const res2 = mockRes()
     await storeHandler(req('GET', cookies, undefined, { kind: 'sequence' }), res2)
     expect(listItems).toHaveBeenCalledWith('sequence', 'ws_fabel')
-    // La base n'est même pas interrogée : la branche client ne lit pas le cookie.
-    expect(getWorkspaceById).not.toHaveBeenCalled()
+    // Depuis SEC-0c la branche client vérifie AUSSI son espace en base — mais
+    // toujours le SIEN. Le cookie ne détermine jamais l'espace interrogé.
+    for (const call of getWorkspaceById.mock.calls) expect(call[0]).toBe('ws_fabel')
   })
 
   it('E — body/query workspace_id n\'ont aucune influence', async () => {

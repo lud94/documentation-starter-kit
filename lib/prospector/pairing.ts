@@ -11,9 +11,31 @@ const TTL_MS = 15 * 60 * 1000   // code valable 15 minutes
 
 export interface PairLink { id: string; ws: string; label?: string; at: number }
 
-// Code à 6 chiffres, lisible et court (usage unique + expiration).
+/**
+ * Code à 6 chiffres, lisible et court (usage unique + expiration).
+ *
+ * ⚠️ `Math.random()` REMPLACÉ (lot SEC-0c). Le générateur de V8 est un
+ * xorshift128+ : son état interne se reconstitue à partir de quelques sorties
+ * observées, et les suivantes deviennent PRÉDICTIBLES. Or n'importe quel client
+ * peut produire autant de sorties qu'il veut — il lui suffit de générer des
+ * codes dans SON PROPRE espace. Il pouvait donc prédire le code d'un autre
+ * espace, l'envoyer au bot, et appairer son propre chat Telegram à cet espace :
+ * une évasion de tenant complète, avec accès en écriture par Jarvis.
+ *
+ * Tirage uniforme par REJET, sans modulo : `% 900000` sur un entier 32 bits
+ * favoriserait légèrement les premiers codes. Le biais serait minuscule, mais
+ * il n'y a aucune raison de l'accepter dans un secret d'appairage.
+ */
+function sixDigitCode(): string {
+  const buf = new Uint32Array(1)
+  const LIMIT = Math.floor(0x1_0000_0000 / 900000) * 900000
+  let v: number
+  do { crypto.getRandomValues(buf); v = buf[0] } while (v >= LIMIT)
+  return String(100000 + (v % 900000))
+}
+
 export async function createPairingCode(ws: string): Promise<{ code: string; expiresInMin: number }> {
-  const code = String(Math.floor(100000 + Math.random() * 900000))
+  const code = sixDigitCode()
   await upsertItem(KIND_CODE, code, { id: code, ws, at: Date.now() }, NS)
   return { code, expiresInMin: 15 }
 }

@@ -27,7 +27,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const ws = await resolveWorkspaceByToken(token)
   if (!ws) return res.status(401).json({ error: 'Jeton invalide (ni admin, ni client connu).' })
   // MT-0 — l'espace vient du jeton d'ingestion, déjà vérifié ci-dessus.
-  const tenant = tenantFromVerifiedWorkspace(ws)
+  const tenant = await tenantFromVerifiedWorkspace(ws)
   if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body

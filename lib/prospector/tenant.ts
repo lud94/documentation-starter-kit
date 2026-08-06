@@ -90,11 +90,52 @@ export function systemTenant(tag: SystemTag): TenantContext {
  * `client` : ce sont des espaces métier, imputables comme tels.
  * Un identifiant vide rend `null` — l'appelant doit refuser.
  */
-export function tenantFromVerifiedWorkspace(wsId: string | null | undefined): TenantContext | null {
+export async function tenantFromVerifiedWorkspace(
+  wsId: string | null | undefined,
+): Promise<TenantContext | null> {
   const id = (wsId || '').trim()
   if (!id) return null
   if (id === SYSTEM_TENANT_ID) return null // jamais usurpable depuis l'extérieur
-  return { id, kind: id === ADMIN_TENANT_ID ? 'admin' : 'client' }
+  if (id === ADMIN_TENANT_ID) return { id: ADMIN_TENANT_ID, kind: 'admin' }
+  return (await workspaceUsable(id)) ? { id, kind: 'client' } : null
+}
+
+/**
+ * L'espace existe-t-il ENCORE et est-il utilisable ?
+ *
+ * ── LE DÉFAUT QUE CECI FERME (lot SEC-0c) ───────────────────────────────────
+ * Les trois racines de confiance — session client, jeton d'ingestion, canal
+ * appairé — établissaient l'AUTHENTICITÉ d'un identifiant d'espace, jamais sa
+ * VALIDITÉ COURANTE :
+ *
+ *   • la session est un HMAC apatride de 12 h, sans révocation ; `authClient()`
+ *     ne teste `status = 'suspended'` qu'À LA CONNEXION ;
+ *   • le jeton d'ingestion est dérivé par HMAC de l'identifiant d'espace : il
+ *     reste valide tant que sa version ne bouge pas ;
+ *   • un lien de canal Telegram est durable par construction.
+ *
+ * Conséquence mesurée : SUSPENDRE ou SUPPRIMER un espace ne l'empêchait pas de
+ * travailler — jusqu'à douze heures pour une session, INDÉFINIMENT pour un
+ * jeton ou un canal. Une suspension qui ne suspend rien n'est pas une mesure
+ * de sécurité, c'est un affichage.
+ *
+ * ── LE COÛT, ASSUMÉ ──────────────────────────────────────────────────────────
+ * Une lecture par requête, sur la clé primaire de `prospector_workspaces`.
+ * La branche ADMIN la payait déjà depuis MT-0 ; les autres branches ne sont
+ * pas moins sensibles. AUCUN CACHE n'est introduit : un cache borne le délai de
+ * révocation, et ce délai serait précisément la fenêtre qu'on vient de fermer.
+ * Le jour où le profil de charge l'exigera, il faudra écrire ce délai noir sur
+ * blanc — pas le découvrir.
+ *
+ * Base indisponible ⇒ `false`. Un espace non vérifiable n'est pas un espace.
+ */
+async function workspaceUsable(id: string): Promise<boolean> {
+  try {
+    const ws = await getWorkspaceById(id)
+    return !!ws && ws.status !== 'suspended'
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -116,6 +157,14 @@ export async function resolveTenantFromRequest(req: NextApiRequest): Promise<Ten
     // Une session client sans espace est incohérente : on ferme plutôt que de
     // retomber sur un espace par défaut. Le body et la query ne sont jamais lus.
     if (!id || id === SYSTEM_TENANT_ID) return null
+    // Un client ne peut pas revendiquer l'espace propre de l'administrateur,
+    // même si son jeton le porte : `authClient()` ne l'émet jamais, donc un tel
+    // jeton est forcément anormal.
+    if (id === ADMIN_TENANT_ID) return null
+    // SEC-0c — la signature prouve l'authenticité de l'identifiant, pas que
+    // l'espace soit ENCORE utilisable. Sans cette lecture, une suspension
+    // n'aurait d'effet qu'à l'expiration du jeton, douze heures plus tard.
+    if (!(await workspaceUsable(id))) return null
     return { id, kind: 'client' }
   }
 

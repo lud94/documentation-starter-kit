@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { hasKey, keySource, hydrateKeystore } from '../../../lib/prospector/keystore'
 import { supabaseConfigured } from '../../../lib/supabase/client'
 import { envSummary } from '../../../lib/env'
-import { readSession, SESSION_COOKIE } from '../../../lib/auth/session'
+import { isAdminRequest } from '../../../lib/auth/guard'
 
 // Renvoie UNIQUEMENT des booléens/source : quelles clés sont configurées.
 // Ne renvoie JAMAIS la valeur d'un secret.
@@ -10,8 +10,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // Réservé aux administrateurs : la liste des connecteurs configurés et l'état
   // d'environnement renseignent sur l'infrastructure. Aucune valeur de secret
   // n'est renvoyée — uniquement des booléens et des identifiants publics.
-  const claims = await readSession(req.cookies?.[SESSION_COOKIE])
-  if (claims && claims.role && claims.role !== 'admin') return res.status(403).json({ error: 'Réservé aux administrateurs.' })
+  //
+  // ⚠️ FAIL-OPEN CORRIGÉ (lot SEC-0c). `claims && claims.role && ...` laissait
+  // passer une requête SANS session : `claims` nul rendait la condition fausse.
+  // Le refus précède désormais `hydrateKeystore()`, `supabaseConfigured()` et
+  // `envSummary()` — un non-admin n'apprend plus quels connecteurs existent, ni
+  // d'où viennent leurs clés, ni comment l'environnement est déclaré.
+  if (!(await isAdminRequest(req))) return res.status(403).json({ error: 'Réservé aux administrateurs.' })
   await hydrateKeystore()
   const row = (key: string, label: string) => ({ key, label, set: hasKey(key), source: keySource(key) })
   res.status(200).json({

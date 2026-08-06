@@ -47,7 +47,7 @@ async function handleUpdate(u: any, token: string): Promise<void> {
     const p = pendings.find((x) => x.id === chatKey)
     await deleteItem(PENDING_KIND, chatKey, PENDING_NS)
     if (cq.data === 'ok' && p?.action) {
-      const tenant = tenantFromVerifiedWorkspace(ws)
+      const tenant = await tenantFromVerifiedWorkspace(ws)
       if (!tenant) return
       const out = await executeJarvis(tenant, p.action, ws, p.url || '')
       await send(token, chatId, out)
@@ -100,7 +100,7 @@ async function handleUpdate(u: any, token: string): Promise<void> {
   if (!ws) { await send(token, chatId, "Ce chat n'est pas encore connecté. Génère un code dans <b>Admin → Canaux mobiles</b> et envoie-le ici."); return }
 
   // MT-0 — l'espace vient de l'appairage du canal, déjà vérifié ci-dessus.
-  const tenant = tenantFromVerifiedWorkspace(ws)
+  const tenant = await tenantFromVerifiedWorkspace(ws)
   if (!tenant) { await send(token, chatId, 'Espace client indéterminé : demande refusée.'); return }
 
   // ── Cerveau Jarvis ──

@@ -159,26 +159,80 @@ describe('G/H — contexte système explicite', () => {
     expect(SYSTEM_TENANT_ID).not.toBe(ADMIN_TENANT_ID)
   })
 
-  it('un endpoint public mal authentifié n\'obtient AUCUN contexte système', () => {
+  it('un endpoint public mal authentifié n\'obtient AUCUN contexte système', async () => {
     // Les routes publiques dérivent leur espace de leur propre garde ; un jeton
     // absent ou invalide rend `null` en amont, et `null` n'est pas un tenant.
-    expect(tenantFromVerifiedWorkspace(null)).toBeNull()
-    expect(tenantFromVerifiedWorkspace('')).toBeNull()
-    expect(tenantFromVerifiedWorkspace('   ')).toBeNull()
+    expect(await tenantFromVerifiedWorkspace(null)).toBeNull()
+    expect(await tenantFromVerifiedWorkspace('')).toBeNull()
+    expect(await tenantFromVerifiedWorkspace('   ')).toBeNull()
+    // Refus PUREMENT syntaxique : la base n'est pas interrogée pour rien.
+    expect(getWorkspaceById).not.toHaveBeenCalled()
   })
 
-  it('le tenant système n\'est pas usurpable depuis un jeton externe', () => {
-    expect(tenantFromVerifiedWorkspace(SYSTEM_TENANT_ID)).toBeNull()
+  it('le tenant système n\'est pas usurpable depuis un jeton externe', async () => {
+    expect(await tenantFromVerifiedWorkspace(SYSTEM_TENANT_ID)).toBeNull()
   })
 })
 
 describe('espaces résolus hors session (jeton d\'ingestion, appairage)', () => {
-  it('espace client vérifié → tenant client', () => {
-    expect(tenantFromVerifiedWorkspace('ws_fabel')).toEqual({ id: 'ws_fabel', kind: 'client' })
+  it('espace client vérifié → tenant client', async () => {
+    expect(await tenantFromVerifiedWorkspace('ws_fabel')).toEqual({ id: 'ws_fabel', kind: 'client' })
   })
 
-  it('jeton global → espace admin', () => {
-    expect(tenantFromVerifiedWorkspace(ADMIN_TENANT_ID)).toEqual({ id: 'admin', kind: 'admin' })
+  it('jeton global → espace admin, sans requête base', async () => {
+    expect(await tenantFromVerifiedWorkspace(ADMIN_TENANT_ID)).toEqual({ id: 'admin', kind: 'admin' })
+    expect(getWorkspaceById).not.toHaveBeenCalled()
+  })
+
+  // ── SEC-0c : la révocation atteint AUSSI les racines hors session ──────────
+  // Un jeton d'ingestion est dérivé par HMAC de l'identifiant d'espace, et un
+  // lien de canal Telegram est durable : tous deux restaient valides après une
+  // suspension ou une suppression. L'authenticité n'est pas la validité.
+  it('espace SUPPRIMÉ → plus aucun tenant, jeton pourtant authentique', async () => {
+    getWorkspaceById.mockResolvedValue(null)
+    expect(await tenantFromVerifiedWorkspace('ws_fabel')).toBeNull()
+  })
+
+  it('espace SUSPENDU → plus aucun tenant', async () => {
+    getWorkspaceById.mockResolvedValue({ id: 'ws_fabel', status: 'suspended' })
+    expect(await tenantFromVerifiedWorkspace('ws_fabel')).toBeNull()
+  })
+
+  it('base indisponible → refus, pas un tenant supposé', async () => {
+    getWorkspaceById.mockRejectedValue(new Error('db down'))
+    expect(await tenantFromVerifiedWorkspace('ws_fabel')).toBeNull()
+  })
+})
+
+// ── SEC-0c — révocation d'une session client ────────────────────────────────
+describe('révocation : une session valide ne suffit plus', () => {
+  it('DÉFAUT CORRIGÉ : suspendre un espace coupe l\'accès IMMÉDIATEMENT', async () => {
+    // La session est un HMAC apatride de 12 h, sans révocation, et
+    // `authClient()` ne teste `suspended` qu'à la CONNEXION. Suspendre un
+    // espace le laissait donc travailler jusqu'à douze heures.
+    const token = await clientSession('ws_fabel')
+    expect(await resolveTenantFromRequest(req({ [SESSION_COOKIE]: token }))).toEqual({ id: 'ws_fabel', kind: 'client' })
+
+    getWorkspaceById.mockResolvedValue({ id: 'ws_fabel', status: 'suspended' })
+    expect(await resolveTenantFromRequest(req({ [SESSION_COOKIE]: token }))).toBeNull()
+  })
+
+  it('espace SUPPRIMÉ → la session ne vaut plus rien', async () => {
+    getWorkspaceById.mockResolvedValue(null)
+    const t = await resolveTenantFromRequest(req({ [SESSION_COOKIE]: await clientSession('ws_fabel') }))
+    expect(t).toBeNull()
+  })
+
+  it('base indisponible → fail closed', async () => {
+    getWorkspaceById.mockRejectedValue(new Error('db down'))
+    const t = await resolveTenantFromRequest(req({ [SESSION_COOKIE]: await clientSession('ws_fabel') }))
+    expect(t).toBeNull()
+  })
+
+  it('un jeton client portant « admin » est refusé', async () => {
+    // `authClient()` n'émet jamais un tel jeton : sa présence est anormale.
+    const t = await resolveTenantFromRequest(req({ [SESSION_COOKIE]: await clientSession(ADMIN_TENANT_ID) }))
+    expect(t).toBeNull()
   })
 })
 
