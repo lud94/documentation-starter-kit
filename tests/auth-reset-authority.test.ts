@@ -44,7 +44,7 @@ function mockRes() {
 }
 const post = (body: any) => ({ method: 'POST', headers: {}, body, cookies: {}, query: {} } as any)
 
-const ENV = ['RESEND_API_KEY', 'APP_BASE_URL', 'APP_RESET_TOKEN', 'APP_RESET_TOKEN_HASH', 'APP_RESET_EXP', 'VERCEL_ENV', 'NEXT_PUBLIC_VERCEL_ENV', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']
+const ENV = ['APP_ENV', 'NEXT_PUBLIC_APP_ENV', 'RESEND_API_KEY', 'APP_BASE_URL', 'APP_RESET_TOKEN', 'APP_RESET_TOKEN_HASH', 'APP_RESET_EXP', 'VERCEL_ENV', 'NEXT_PUBLIC_VERCEL_ENV', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']
 let saved: Record<string, string | undefined> = {}
 
 /** Vide le keystore ET l'autorité de réinitialisation, où qu'elle vive. */
@@ -63,6 +63,9 @@ beforeEach(async () => {
   for (const k of ENV) delete process.env[k]
   await toutEffacer()
   vi.restoreAllMocks()
+  // SEC-AUTH-0.2 : le repli mémoire de l'autorité n'est plus implicite. Ces
+  // tests sont, par nature, un développement local — ils le DÉCLARENT.
+  process.env.APP_ENV = 'development'
   process.env.RESEND_API_KEY = 'clef-de-test-non-reelle'
   process.env.APP_BASE_URL = 'https://app.prospector-test.invalid'
   await setCredentials('boss@smart.ai', PASSWORD)

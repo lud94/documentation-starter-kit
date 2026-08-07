@@ -40,7 +40,7 @@
 // existent depuis C2a-1.
 import { upsertItem, claimItemIfField } from '../supabase/store'
 import { supabaseConfigured } from '../supabase/client'
-import { onVercel } from '../env'
+import { appEnv, onVercel } from '../env'
 
 export const RESET_KIND = 'authreset'
 export const RESET_ID = 'admin'
@@ -59,17 +59,43 @@ async function sha256Hex(s: string): Promise<string> {
  * Le magasin peut-il porter une AUTORITÉ ?
  *
  * `prospector_store` retombe sur une `Map` en mémoire quand Supabase n'est pas
- * configuré. C'est utile en développement, et ce serait faux ici : sur du
- * serverless, chaque instance a sa propre mémoire. Un jeton créé par l'instance
- * A serait inconnu de B (réinitialisation impossible) — mais surtout, chaque
- * instance porterait sa propre notion d'« usage unique », et le même lien
+ * configuré. C'est utile en développement, et ce serait faux partout ailleurs :
+ * une mémoire de processus n'est partagée par personne. Un jeton créé par
+ * l'instance A serait inconnu de B (réinitialisation impossible) — mais surtout,
+ * chaque instance porterait sa propre notion d'« usage unique », et le même lien
  * pourrait servir une fois par instance.
  *
- * Sur un déploiement, une base absente FERME donc la capacité, création comme
- * consommation. En local, le repli mémoire reste utilisable.
+ * ── LE DÉFAUT FERMÉ (lot SEC-AUTH-0.2) ──────────────────────────────────────
+ * La première version disait :
+ *
+ *     return supabaseConfigured() || !onVercel()
+ *
+ * C'est-à-dire : « tout ce qui n'est pas Vercel peut se contenter de sa
+ * mémoire ». Faux, et pour une raison qui n'a rien d'hypothétique : Vercel
+ * n'est pas la définition d'un déploiement. La même application sur Azure, AWS,
+ * une VM, un conteneur ou Kubernetes n'expose aucun `VERCEL_ENV` — et sa
+ * production, sans Supabase, se serait donc autorisé une autorité en mémoire.
+ * J'avais écrit un test d'environnement en nommant un HÉBERGEUR au lieu de
+ * nommer une PROPRIÉTÉ.
+ *
+ * ── LE CONTRAT ──────────────────────────────────────────────────────────────
+ *   Supabase configuré                          → OUI, quel que soit l'hébergeur
+ *   sinon : APP_ENV=development ET hors Vercel  → OUI, repli mémoire de dev
+ *   tout le reste                               → NON
+ *
+ * ⚠️ `APP_ENV` ABSENT OU INVALIDE ⇒ NON. `appEnv()` rend `null` dans les deux
+ * cas, et on ne le lit pas comme « development » : le repli mémoire d'un
+ * mécanisme de sécurité doit être une DÉCISION explicite, jamais un défaut.
+ * C'est volontairement plus strict que `canWrite()`, qui tolère l'absence de
+ * configuration — une écriture manquée se voit, une réinitialisation rejouable
+ * ne se voit pas.
+ *
+ * ⚠️ Et surtout pas `NODE_ENV !== 'production'` : cette variable ne distingue
+ * ni une préversion, ni une préproduction, ni un vrai déploiement.
  */
 export function resetStoreAuthoritative(): boolean {
-  return supabaseConfigured() || !onVercel()
+  if (supabaseConfigured()) return true
+  return appEnv() === 'development' && !onVercel()
 }
 
 /**

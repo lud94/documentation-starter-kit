@@ -95,6 +95,9 @@ beforeEach(async () => {
   // le repli mémoire survit d'un test à l'autre.
   await deleteItem(RESET_KIND, RESET_ID, RESET_NS)
   clientAuth = null
+  // SEC-AUTH-0.2 : l'autorité de réinitialisation n'accepte le repli mémoire
+  // que sur un environnement de développement DÉCLARÉ.
+  process.env.APP_ENV = 'development'
   useTestSessionSecret()
   vi.restoreAllMocks()
 })
