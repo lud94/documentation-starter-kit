@@ -7,7 +7,11 @@ export const MANAGED_KEYS = [
   'ANTHROPIC_API_KEY', 'EXA_API_KEY', 'PERPLEXITY_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY',
   'PAPPERS_API_KEY', 'UNIPILE_DSN', 'UNIPILE_API_KEY', 'UNIPILE_ACCOUNT_ID', 'SIGNALS_MODEL',
   'APP_EMAIL', 'APP_PASSWORD', 'APP_TOTP_SECRET', 'APP_MFA_ENABLED', 'PII_MASKING',
-  'APP_RESET_TOKEN', 'APP_RESET_EXP', 'INGEST_TOKEN', 'ANTHROPIC_BUDGET',
+  // `APP_RESET_TOKEN` (jeton PORTEUR en clair) n'est plus jamais écrit ni lu
+  // pour valider — voir lib/prospector/auth.ts. Il reste déclaré ici pour une
+  // seule raison : `setKeys` ignore les clés non gérées, et il faut pouvoir
+  // ÉCRASER l'ancien artefact là où il traîne encore.
+  'APP_RESET_TOKEN', 'APP_RESET_TOKEN_HASH', 'APP_RESET_EXP', 'INGEST_TOKEN', 'ANTHROPIC_BUDGET',
   // Modèles par tâche (surcharge des défauts économiques) — maîtrise des coûts.
   'JARVIS_MODEL', 'PLAN_MODEL', 'ENRICH_MODEL', 'WRITE_MODEL',
   // Canal mobile Telegram (Jarvis nomade).

@@ -77,6 +77,7 @@ import chatHandler from '../pages/api/jarvis/chat'
 import pairHandler from '../pages/api/channels/pair'
 import dbCheckHandler from '../pages/api/config/db-check'
 import { createSessionToken, SESSION_COOKIE } from '../lib/auth/session'
+import { useTestSessionSecret, forgeSession, futureExp } from './helpers/session'
 
 const ACTIVE_WS_COOKIE = 'ps_active_ws'
 
@@ -106,7 +107,11 @@ const ROUTES: { name: string; handler: any; method: string; body?: any; query?: 
 /** Toute opération métier — persistance ou lecture — sur l'une des six routes. */
 const BUSINESS = () => [listItems, upsertItem, deleteItem, listLeads, upsertLeadChecked, deleteLead]
 
+// SEC-AUTH-0 : plus aucun secret par défaut — la suite doit poser le sien.
+useTestSessionSecret()
+
 beforeEach(() => {
+  useTestSessionSecret()
   listItems.mockReset().mockResolvedValue([])
   upsertItem.mockReset().mockResolvedValue(true)
   deleteItem.mockReset().mockResolvedValue(true)

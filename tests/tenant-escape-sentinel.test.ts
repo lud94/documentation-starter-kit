@@ -115,6 +115,7 @@ import activeHandler from '../pages/api/workspaces/active'
 import meHandler from '../pages/api/auth/me'
 import externalAiHandler from '../pages/api/config/external-ai'
 import { createSessionToken, SESSION_COOKIE } from '../lib/auth/session'
+import { useTestSessionSecret, forgeSession, futureExp } from './helpers/session'
 
 const ACTIVE_WS_COOKIE = 'ps_active_ws'
 
@@ -131,7 +132,11 @@ const session = (ws: string) => createSessionToken(`user@${ws}.fr`, 3600, { role
 /** Sérialisation complète d'une réponse — corps ET en-têtes. */
 const seen = (res: any) => JSON.stringify(res.body ?? null) + JSON.stringify(res.headers ?? {})
 
+// SEC-AUTH-0 : plus aucun secret par défaut — la suite doit poser le sien.
+useTestSessionSecret()
+
 beforeEach(() => {
+  useTestSessionSecret()
   rows = [
     { kind: 'sequence', id: 'seq_a', ws: TENANT_A, data: { id: 'seq_a', note: SENTINEL_A } },
     { kind: 'sequence', id: 'seq_b', ws: TENANT_B, data: { id: 'seq_b', note: SENTINEL_B } },

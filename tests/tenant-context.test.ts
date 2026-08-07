@@ -18,6 +18,7 @@ import {
   SYSTEM_TENANT_ID, ADMIN_TENANT_ID, ACTIVE_WS_COOKIE, isBillableTenant,
 } from '../lib/prospector/tenant'
 import { createSessionToken, SESSION_COOKIE } from '../lib/auth/session'
+import { useTestSessionSecret, forgeSession, futureExp } from './helpers/session'
 
 const req = (cookies: Record<string, string> = {}, body?: any, query?: any) =>
   ({ cookies, body, query } as any)
@@ -29,7 +30,11 @@ async function adminSession() {
   return createSessionToken('admin@x.fr', 3600, { role: 'admin' })
 }
 
+// SEC-AUTH-0 : plus aucun secret par défaut — la suite doit poser le sien.
+useTestSessionSecret()
+
 beforeEach(() => {
+  useTestSessionSecret()
   getWorkspaceById.mockReset().mockResolvedValue({ id: 'ws_fabel', name: 'Fabel', status: 'active' })
 })
 
@@ -138,10 +143,19 @@ describe('D/E — admin : l\'espace actif doit EXISTER', () => {
     expect(t).toBeNull()
   })
 
-  it('session héritée sans rôle → admin, mais SEULEMENT signature vérifiée', async () => {
-    const legacy = await createSessionToken('admin@x.fr', 3600)
-    const t = await resolveTenantFromRequest(req({ [SESSION_COOKIE]: legacy }))
-    expect(t).toEqual({ id: ADMIN_TENANT_ID, kind: 'admin' })
+  // ⚠️ RUPTURE VOULUE (SEC-AUTH-0). Ce test affirmait l'inverse : une session
+  // SANS RÔLE devenait administrateur, « mais seulement signature vérifiée ».
+  // Or la signature ne prouve que l'intégrité — et avec le secret public qui
+  // régnait par défaut, n'importe qui pouvait la produire. Les sessions
+  // historiques sans rôle sont désormais invalidées, délibérément.
+  it('session sans rôle → DENY, la signature ne remplace pas une affirmation', async () => {
+    const sansRole = await forgeSession({ sub: 'admin@x.fr', exp: futureExp() })
+    expect(await resolveTenantFromRequest(req({ [SESSION_COOKIE]: sansRole }))).toBeNull()
+  })
+
+  it('rôle inconnu → DENY, jamais interprété', async () => {
+    const bidon = await forgeSession({ sub: 'x@y.z', role: 'superadmin', exp: futureExp() })
+    expect(await resolveTenantFromRequest(req({ [SESSION_COOKIE]: bidon }))).toBeNull()
   })
 })
 

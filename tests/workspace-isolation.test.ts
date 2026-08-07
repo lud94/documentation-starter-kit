@@ -31,6 +31,7 @@ vi.mock('../lib/supabase/workspaces', () => ({
 import wsHandler from '../pages/api/workspaces/index'
 import activeHandler from '../pages/api/workspaces/active'
 import { createSessionToken, SESSION_COOKIE } from '../lib/auth/session'
+import { useTestSessionSecret, forgeSession, futureExp } from './helpers/session'
 import { adminWorkspaceView, workspaceOption } from '../lib/prospector/workspaceView'
 
 const ACTIVE_WS_COOKIE = 'ps_active_ws'
@@ -65,7 +66,11 @@ const req = (method: string, cookies: Record<string, string> = {}, body?: any, q
 const clientSession = (ws: string) => createSessionToken('client@fabel.fr', 3600, { role: 'client', ws })
 const adminSession = () => createSessionToken('admin@smart.ai', 3600, { role: 'admin' })
 
+// SEC-AUTH-0 : plus aucun secret par défaut — la suite doit poser le sien.
+useTestSessionSecret()
+
 beforeEach(() => {
+  useTestSessionSecret()
   listWorkspaces.mockReset().mockResolvedValue([FABEL, CLIENT_B])
   getWorkspaceById.mockReset().mockImplementation(async (id: string) =>
     [FABEL, CLIENT_B].find((w) => w.id === id) || null)
@@ -176,12 +181,15 @@ describe('E/F — l\'Admin continue de fonctionner à l\'identique', () => {
     expect(fabel.permissions).toBeTruthy()
   })
 
-  it('E bis — une session héritée sans rôle reste admin', async () => {
-    const legacy = await createSessionToken('admin@smart.ai', 3600)
+  // ⚠️ RUPTURE VOULUE (SEC-AUTH-0) : ce test exigeait qu'une session sans rôle
+  // « reste admin ». C'était la porte — la liste des espaces clients était
+  // accessible à tout jeton signé dont le rôle manquait.
+  it('E bis — une session sans rôle n\'est plus admin : la liste est refusée', async () => {
+    const sansRole = await forgeSession({ sub: 'admin@smart.ai', exp: futureExp() })
     const res = mockRes()
-    await wsHandler(req('GET', { [SESSION_COOKIE]: legacy }), res)
-    expect(res.statusCode).toBe(200)
-    expect(res.body.workspaces).toHaveLength(2)
+    await wsHandler(req('GET', { [SESSION_COOKIE]: sansRole }), res)
+    expect(res.statusCode).toBe(403)
+    expect(res.body.workspaces).toBeUndefined()
   })
 
   it('F — le sélecteur d\'espace de l\'Admin est inchangé', async () => {

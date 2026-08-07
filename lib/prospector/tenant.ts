@@ -168,8 +168,13 @@ export async function resolveTenantFromRequest(req: NextApiRequest): Promise<Ten
     return { id, kind: 'client' }
   }
 
-  // Administrateur — y compris les sessions héritées sans `role`, qui ne sont
-  // acceptées QUE parce que leur signature a été vérifiée ci-dessus.
+  // ── Administrateur, et RIEN D'AUTRE (lot SEC-AUTH-0) ──────────────────────
+  // Ce chemin acceptait auparavant les sessions héritées SANS RÔLE, au motif
+  // que leur signature était vérifiée. Mais la signature ne prouve que
+  // l'intégrité : avec le secret public qui régnait par défaut, forger un jeton
+  // sans rôle donnait un administrateur. Le rôle doit être AFFIRMÉ.
+  if (claims.role !== 'admin') return null
+
   const requested = (req.cookies?.[ACTIVE_WS_COOKIE] || '').trim() || ADMIN_TENANT_ID
   if (requested === SYSTEM_TENANT_ID) return null
 

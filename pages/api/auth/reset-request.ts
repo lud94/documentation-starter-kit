@@ -1,41 +1,83 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { getEmail, isSetup, createResetToken } from '../../../lib/prospector/auth'
+import { getEmail, isSetup, createResetToken, invalidateResetToken } from '../../../lib/prospector/auth'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
+import { appBaseUrl } from '../../../lib/auth/baseUrl'
 
-// Demande de réinitialisation. Vérifie l'email, génère un lien à usage unique.
-// Si un fournisseur d'email est configuré (RESEND_API_KEY), on l'envoie ;
-// sinon (mono-admin) on renvoie le lien directement dans la réponse.
+/**
+ * Demande de réinitialisation du mot de passe administrateur.
+ *
+ * ── LES TROIS DÉFAUTS FERMÉS (§11 à §14) ────────────────────────────────────
+ *
+ * 1. LE BACKEND RENDAIT LE LIEN. Sans `RESEND_API_KEY`, ou dès que `fetch`
+ *    levait, la route répondait `{ sent:true, link, noEmailProvider:true }`.
+ *    Donc : n'importe qui postant l'email de l'administrateur — une adresse
+ *    publique — recevait dans la réponse HTTP un lien de réinitialisation
+ *    valide. Le mot de passe administrateur était accessible à un inconnu au
+ *    prix d'une requête. Ce n'était pas une commodité mono-admin : c'était la
+ *    porte d'entrée.
+ *
+ * 2. L'ORIGINE VENAIT DE LA REQUÊTE (`Origin` / `Host`). Voir
+ *    `lib/auth/baseUrl.ts` : le lien pouvait être empoisonné vers un domaine
+ *    hostile, puis envoyé par nous, dans un email authentique.
+ *
+ * 3. `fetch` NE LÈVE PAS SUR UN 4xx/5xx. Le `try/catch` autour de l'appel
+ *    Resend ne voyait donc jamais un 401 (clé révoquée) ni un 500 : l'envoi
+ *    était compté comme réussi alors que rien n'était parti — et un jeton de
+ *    réinitialisation restait actif, que personne n'avait reçu.
+ *
+ * ── LA RÈGLE MAINTENANT ─────────────────────────────────────────────────────
+ * UNE SEULE RÉPONSE EXTERNE, quoi qu'il arrive : `{ sent: true }`. Email connu
+ * ou inconnu, fournisseur absent, en panne ou refusant : rien ne distingue les
+ * cas. Aucun jeton, aucune URL, aucun état de fournisseur ne sort d'ici.
+ *
+ * Et aucun jeton n'est CRÉÉ tant que toutes les préconditions d'envoi ne sont
+ * pas réunies : un jeton actif que personne ne peut recevoir est une fenêtre
+ * ouverte sans bénéficiaire.
+ */
+const GENERIC = { sent: true }
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
   await hydrateKeystore()
-  if (!isSetup()) return res.status(409).json({ error: 'not_setup' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const email = String(body?.email || '').trim().toLowerCase()
-  const ref = (getEmail() || '').toLowerCase()
-  // Réponse générique pour ne pas révéler si l'email existe (anti-énumération).
-  if (!ref || email !== ref) return res.status(200).json({ sent: true })
+  const ref = (getEmail() || '').trim().toLowerCase()
+
+  // ── Préconditions. Chaque échec rend la MÊME réponse, sans créer de jeton ──
+  const key = (process.env.RESEND_API_KEY || '').trim()
+  const base = appBaseUrl()
+  if (!isSetup()) return res.status(200).json(GENERIC)
+  if (!ref || !email || email !== ref) return res.status(200).json(GENERIC)
+  if (!key || !base) return res.status(200).json(GENERIC)
 
   const token = await createResetToken()
-  const base = req.headers.origin || `https://${req.headers.host}`
+  // ⚠️ L'origine vient de la CONFIGURATION. Ni `Origin`, ni `Host`, ni
+  // `X-Forwarded-Host`, ni `Referer` ne sont lus — cette route ne touche pas
+  // à `req.headers`.
   const link = `${base}/login?reset=${token}`
 
-  const resendKey = process.env.RESEND_API_KEY
-  if (resendKey) {
-    try {
-      await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${resendKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          from: process.env.RESET_FROM_EMAIL || 'Prospector <onboarding@resend.dev>',
-          to: [ref], subject: 'Réinitialisation de votre mot de passe Prospector',
-          html: `<p>Cliquez pour réinitialiser votre mot de passe (valable 30 min) :</p><p><a href="${link}">${link}</a></p>`,
-        }),
-      })
-      return res.status(200).json({ sent: true })
-    } catch { /* retombe sur le lien direct */ }
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        from: process.env.RESET_FROM_EMAIL || 'Prospector <onboarding@resend.dev>',
+        to: [ref], subject: 'Réinitialisation de votre mot de passe Prospector',
+        html: `<p>Cliquez pour réinitialiser votre mot de passe (valable 30 min) :</p><p><a href="${link}">${link}</a></p>`,
+      }),
+    })
+    // Le statut HTTP fait foi : `fetch` a « réussi » même sur un 401.
+    if (!r.ok) {
+      await invalidateResetToken()
+      return res.status(200).json(GENERIC)
+    }
+  } catch {
+    // Réseau injoignable : le lien n'est pas parti, la réinitialisation meurt.
+    await invalidateResetToken()
+    return res.status(200).json(GENERIC)
   }
-  // Pas d'email configuré → lien direct (usage mono-admin).
-  return res.status(200).json({ sent: true, link, noEmailProvider: true })
+
+  return res.status(200).json(GENERIC)
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }
