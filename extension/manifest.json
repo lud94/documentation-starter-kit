@@ -31,6 +31,6 @@
       "128": "icon128.png"
     }
   },
-  "minimum_chrome_version": "111",
-  "//minimum_chrome_version": "Un navigateur incapable de cloisonner le stockage ne doit pas installer cette build. ⚠️ VALEUR NON VERIFIEE : developer.chrome.com et MDN sont inaccessibles depuis l'environnement de developpement, et les sources secondaires se CONTREDISENT sur la disponibilite de setAccessLevel pour chrome.storage.local (certaines la disent reservee a storage.session). A CONFIRMER contre la documentation officielle avant publication. La garantie reelle ne repose PAS sur ce champ : background.js refuse tout credential si le verrouillage n'est pas confirme a l'execution — API absente incluse."
+  "minimum_chrome_version": "102",
+  "//minimum_chrome_version": "CHROME 102+ REQUIS. StorageArea.setAccessLevel() est disponible depuis Chrome 102 et s'applique a chrome.storage.local : c'est la version a partir de laquelle cette build peut cloisonner son stockage. background.js appelle storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }) au demarrage, a l'installation et au reveil du service worker. ⚠️ CE CHAMP EST UNE COMPATIBILITE PREVENTIVE, PAS LA FRONTIERE DE SECURITE : il empeche une installation sur un navigateur trop ancien, rien de plus, et un manifeste ne garantit pas ce que le runtime fait. La garantie reste le verrou d'execution : background.js VERIFIE l'API a chaque demarrage et refuse tout credential et tout appel API tant que le cloisonnement n'est pas CONFIRME — API absente ou en echec incluses."
 }

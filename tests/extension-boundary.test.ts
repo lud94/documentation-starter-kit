@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { createContext, runInContext } from 'node:vm'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // Script utilitaire en JavaScript pur, importé pour éprouver le garde de
@@ -846,10 +847,6 @@ describe('SEC-EXT-0.1b — configuration absente, storage, URL, release', () => 
   it('§6 — le manifeste exige une version minimale de Chrome', () => {
     const m = JSON.parse(read('manifest.json'))
     expect(m.minimum_chrome_version).toBeTruthy()
-    // La valeur n'a pas pu être vérifiée contre la documentation officielle
-    // depuis cet environnement : la garantie réelle est le verrou d'exécution
-    // ci-dessus, pas ce champ.
-    expect(String(m['//minimum_chrome_version'])).toContain('NON VERIFIEE')
   })
 })
 
@@ -860,7 +857,7 @@ describe('SEC-EXT-0.1b — garde de build RELEASE', () => {
     const d = mkdtempSync(join(tmp, 'f-'))
     writeFileSync(join(d, 'config.js'), `const PROSPECTOR_ORIGIN = '${origin}'\n`)
     writeFileSync(join(d, 'manifest.json'), JSON.stringify({
-      host_permissions: hosts, minimum_chrome_version: '111', ...extra,
+      host_permissions: hosts, minimum_chrome_version: '102', ...extra,
     }))
     return d
   }
@@ -904,5 +901,172 @@ describe('SEC-EXT-0.1b — garde de build RELEASE', () => {
     writeFileSync(join(d, 'manifest.json'), JSON.stringify({ host_permissions: ['https://a.invalid/*'] }))
     expect(auditExtension(d, { release: false }).erreurs).toEqual([])
     expect(auditExtension(d, { release: true }).erreurs.join(' ')).toContain('minimum_chrome_version')
+  })
+})
+
+// ── SEC-EXT-0.1c — version Chrome exacte, verrou d'exécution INCHANGÉ ────────
+//
+// La documentation officielle Chrome tranche le point laissé ouvert par le lot
+// 0.1b : `StorageArea.setAccessLevel()` existe depuis **Chrome 102** et
+// s'applique à `chrome.storage.local`. `"minimum_chrome_version": "111"` était
+// donc trop restrictif — factuellement faux, pas dangereux : il excluait des
+// navigateurs parfaitement capables de cloisonner leur stockage.
+//
+// ⚠️ CE QUI NE CHANGE PAS, ET C'EST L'ESSENTIEL. Le champ du manifeste n'est
+// qu'une compatibilité préventive. La frontière reste le verrou d'exécution :
+// `storageSecurityReady` vaut `false` par défaut, l'API absente est un ÉCHEC,
+// l'API qui lève est un ÉCHEC, et aucun credential ne sort tant que le
+// verrouillage n'est pas CONFIRMÉ. Les tests ci-dessous ne lisent plus le
+// source : ils EXÉCUTENT `background.js` dans un faux navigateur et observent
+// le comportement. Une assertion sur le texte du fichier ne prouve rien du
+// comportement — c'est exactement l'erreur qui avait laissé passer le
+// fail-open de `getTokenVersion`.
+describe('SEC-EXT-0.1c — version minimale et verrou d\'exécution', () => {
+  const read = (f: string) => readFileSync(`extension/${f}`, 'utf8')
+
+  /** Charge `background.js` dans un service worker simulé. */
+  const loadWorker = (api: 'ok' | 'absent' | 'throws') => {
+    const store: Record<string, any> = {
+      tokenCapture: 'pk_capture_ws_fabel_' + 'a'.repeat(40),
+      tokenJarvis: 'pk_jarvis_ws_fabel_' + 'b'.repeat(40),
+      brand: 'Smart AI',
+    }
+    const fetches: any[] = []
+    let accessLevel: string | null = null
+    let listener: any = null
+
+    const local: any = {
+      get: async (keys: string[]) =>
+        Object.fromEntries(keys.filter((k) => k in store).map((k) => [k, store[k]])),
+    }
+    if (api === 'ok') local.setAccessLevel = async (o: any) => { accessLevel = o.accessLevel }
+    if (api === 'throws') local.setAccessLevel = async () => { throw new Error('non supporté') }
+    // `api === 'absent'` : la propriété n'existe tout simplement pas.
+
+    const ctx: any = createContext({
+      chrome: {
+        runtime: {
+          id: 'EXT_ID',
+          onInstalled: { addListener: () => {} },
+          onStartup: { addListener: () => {} },
+          onMessage: { addListener: (f: any) => { listener = f } },
+        },
+        storage: { local },
+      },
+      fetch: async (url: string, init: any) => {
+        fetches.push({ url, init })
+        return { json: async () => ({ ok: true }) }
+      },
+      importScripts: (f: string) => runInContext(read(f), ctx),
+      console,
+    })
+    ctx.self = ctx
+    runInContext(read('background.js'), ctx)
+
+    const send = (msg: any, senderId = 'EXT_ID') =>
+      new Promise<any>((resolve) => { listener(msg, { id: senderId }, resolve) })
+
+    return { send, fetches, level: () => accessLevel }
+  }
+
+  it('A — le manifeste exige Chrome 102, et le commentaire ne doute plus', () => {
+    const m = JSON.parse(read('manifest.json'))
+    expect(m.minimum_chrome_version).toBe('102')
+    const c = String(m['//minimum_chrome_version'])
+    // Le doute levé par la documentation officielle ne doit plus être documenté
+    // comme un doute : ni « non vérifiée », ni « à confirmer », ni la
+    // contradiction supposée entre les portées de stockage.
+    expect(c).not.toMatch(/NON VERIFIEE|non vérifiée|A CONFIRMER|CONTREDISENT|contredis/i)
+    expect(c).toContain('102')
+    // Mais le champ ne doit pas non plus être présenté comme la garantie.
+    expect(c).toMatch(/PAS LA FRONTIERE DE SECURITE/)
+  })
+
+  it('B — API setAccessLevel ABSENTE → aucun credential, aucun appel réseau', async () => {
+    const w = loadWorker('absent')
+    const r = await w.send({ type: 'capture.lead', url: 'https://x.fr', name: 'N' })
+    expect(r.error).toContain('Extension de sécurité non initialisée')
+    expect(w.fetches).toHaveLength(0)
+    // Et rien du jeton n'a pu fuir dans la réponse.
+    expect(JSON.stringify(r)).not.toContain('pk_')
+  })
+
+  it('C — API setAccessLevel qui LÈVE → aucun credential, aucun appel réseau', async () => {
+    const w = loadWorker('throws')
+    for (const type of ['capture.lead', 'jarvis.ask', 'jarvis.confirm', 'jarvis.cancel']) {
+      const r = await w.send({ type, message: 'm', confirmationId: 'c' })
+      expect(r.error).toContain('Extension de sécurité non initialisée')
+    }
+    expect(w.fetches).toHaveLength(0)
+  })
+
+  it('D — verrouillage CONFIRMÉ → TRUSTED_CONTEXTS, puis le credential part en en-tête', async () => {
+    const w = loadWorker('ok')
+    const r = await w.send({ type: 'jarvis.ask', message: 'salut' })
+    expect(r).toEqual({ ok: true })
+    expect(w.level()).toBe('TRUSTED_CONTEXTS')
+    expect(w.fetches).toHaveLength(1)
+    const { url, init } = w.fetches[0]
+    expect(url).toBe('https://app.prospector.example/api/jarvis/agent')
+    // Le credential voyage dans l'en-tête prévu, JAMAIS dans le corps.
+    expect(init.headers['x-ingest-token']).toMatch(/^pk_jarvis_/)
+    expect(init.body).not.toContain('pk_')
+  })
+
+  it('D bis — un émetteur étranger reste refusé, verrou ou pas', async () => {
+    for (const api of ['ok', 'absent'] as const) {
+      const w = loadWorker(api)
+      const r = await w.send({ type: 'capture.lead', url: 'https://x.fr' }, 'AUTRE_EXT')
+      expect(r).toEqual({ error: 'refusé' })
+      expect(w.fetches).toHaveLength(0)
+    }
+  })
+
+  it('non-régression — `ui.brand` reste servi sans verrou, et ne rend aucun jeton', async () => {
+    const w = loadWorker('absent')
+    const r = await w.send({ type: 'ui.brand' })
+    expect(r).toEqual({ brand: 'Smart AI' })
+    expect(JSON.stringify(r)).not.toContain('pk_')
+  })
+
+  it('E — le garde de publication reste VERT sur une build valide en 102', () => {
+    const d = mkdtempSync(join(tmpdir(), 'ext102-'))
+    writeFileSync(join(d, 'config.js'), "const PROSPECTOR_ORIGIN = 'https://app.prospector-test.invalid'\n")
+    writeFileSync(join(d, 'manifest.json'), JSON.stringify({
+      host_permissions: ['https://app.prospector-test.invalid/*'],
+      minimum_chrome_version: '102',
+    }))
+    expect(auditExtension(d, { release: true }).erreurs).toEqual([])
+  })
+
+  it('F — abaisser la version ne relâche AUCUNE autre règle de publication', () => {
+    const d = mkdtempSync(join(tmpdir(), 'ext102-'))
+    const build = (origin: string, hosts: string[], extra: any = {}) => {
+      const x = mkdtempSync(join(d, 'b-'))
+      writeFileSync(join(x, 'config.js'), `const PROSPECTOR_ORIGIN = '${origin}'\n`)
+      writeFileSync(join(x, 'manifest.json'), JSON.stringify({
+        host_permissions: hosts, minimum_chrome_version: '102', ...extra,
+      }))
+      return x
+    }
+    // placeholder
+    expect(auditExtension(build('https://app.prospector.example', ['https://app.prospector.example/*']),
+      { release: true }).erreurs.join(' ')).toContain('PLACEHOLDER')
+    // motif générique
+    expect(auditExtension(build('https://a.invalid', ['https://*/*']),
+      { release: true }).erreurs.join(' ')).toContain('trop large')
+    // divergence config / manifeste
+    expect(auditExtension(build('https://a.invalid', ['https://autre.invalid/*']),
+      { release: true }).erreurs.join(' ')).toContain('host_permissions')
+    // deux permissions d'hôte au lieu d'une
+    expect(auditExtension(build('https://a.invalid', ['https://a.invalid/*', 'https://b.invalid/*']),
+      { release: true }).erreurs.join(' ')).toContain('host_permissions')
+    // content_scripts global
+    expect(auditExtension(build('https://a.invalid', ['https://a.invalid/*'],
+      { content_scripts: [{ matches: ['https://a.invalid/*'] }] }),
+      { release: true }).erreurs.join(' ')).toContain('content_scripts')
+    // origine non HTTPS
+    expect(auditExtension(build('http://a.invalid', ['http://a.invalid/*']),
+      { release: true }).erreurs.join(' ')).toContain('non HTTPS')
   })
 })
