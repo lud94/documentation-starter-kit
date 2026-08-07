@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'node:crypto'
 
@@ -333,17 +333,54 @@ describe('getItemStrict — NOT_FOUND et ERROR restent distincts', () => {
     expect(await store.getItemStrict(KIND, randomUUID(), WS_A)).toEqual({ ok: true, value: null })
   })
 
-  it('base INJOIGNABLE → ok:false, JAMAIS une valeur nulle', async () => {
-    // On pointe le client vers un port fermé : c'est une vraie panne réseau,
-    // pas une absence de ligne.
-    const avant = process.env.SUPABASE_URL
+  it('base qui REFUSE → ok:false, JAMAIS une valeur nulle', async () => {
+    // ⚠️ DEUX VERSIONS DE CE CAS ÉTAIENT MAUVAISES, et la CI a attrapé la
+    // première. Elle changeait `SUPABASE_URL` puis réimportait avec une chaîne
+    // de requête `?panne=…`, en supposant obtenir une instance neuve : or
+    // `lib/supabase/client.ts` MÉMOÏSE son client, et le module n'était pas
+    // réévalué. Le test interrogeait la base qui marchait et prétendait mesurer
+    // une panne. La seconde pointait vers un port fermé — correct, mais
+    // supabase-js y réessaie longuement : cinq secondes de blocage, et un test
+    // lent au bord du délai n'est pas un test fiable.
+    //
+    // Ici, la base est BIEN JOIGNABLE et répond VITE — elle refuse le
+    // credential. C'est une erreur applicative franche, exactement la classe
+    // que `listItems` transformait en `[]`, donc en « aucune ligne ».
+    vi.resetModules()
+    const bonneClef = process.env.SUPABASE_SERVICE_ROLE_KEY
     try {
-      process.env.SUPABASE_URL = 'http://127.0.0.1:1'
-      const isole = await import(`../../lib/supabase/store?panne=${randomUUID()}`)
+      process.env.SUPABASE_SERVICE_ROLE_KEY = 'clef-de-service-invalide'
+      const isole = await import('../../lib/supabase/store')
       const r = await isole.getItemStrict(KIND, randomUUID(), WS_A)
       expect(r.ok).toBe(false)
       expect((r as any).value).toBeUndefined()
-    } finally { process.env.SUPABASE_URL = avant }
+    } finally {
+      process.env.SUPABASE_SERVICE_ROLE_KEY = bonneClef
+      vi.resetModules()
+      store = await import('../../lib/supabase/store')
+    }
+  })
+
+  it('LE POINT DÉCISIF : refus et absence ne se confondent pas', async () => {
+    // Les deux situations passent par le même appel ; seule la primitive
+    // stricte les distingue. C'est de cette distinction que dépend la
+    // révocation des jetons d'extension.
+    const absente = await store.getItemStrict(KIND, randomUUID(), WS_A)
+    expect(absente).toEqual({ ok: true, value: null })
+
+    vi.resetModules()
+    const bonneClef = process.env.SUPABASE_SERVICE_ROLE_KEY
+    try {
+      process.env.SUPABASE_SERVICE_ROLE_KEY = 'clef-de-service-invalide'
+      const isole = await import('../../lib/supabase/store')
+      const refus = await isole.getItemStrict(KIND, randomUUID(), WS_A)
+      expect(refus.ok).toBe(false)
+      expect(refus).not.toEqual(absente)
+    } finally {
+      process.env.SUPABASE_SERVICE_ROLE_KEY = bonneClef
+      vi.resetModules()
+      store = await import('../../lib/supabase/store')
+    }
   })
 
   it('requête INVALIDE → ok:false, distinct de l\'absence', async () => {
