@@ -137,7 +137,18 @@ describe('autorité de réinitialisation — exclusion par PostgreSQL réel', ()
     expect(await consommer(b)).toBe(true)            // et reste utilisable
   })
 
-  it('course RÉELLE : remplacement et consommation en parallèle, jamais deux gagnants', async () => {
+  it('course RÉELLE : remplacement et consommation en parallèle, un gagnant PAR BEARER', async () => {
+    // ⚠️ CORRECTION D'UNE ASSERTION FAUSSE DE MA PART. J'avais d'abord exigé
+    // « au plus UN gagnant au total », et la CI l'a mise en défaut (2). Elle
+    // avait raison et moi tort : si une réclamation sur A l'emporte AVANT que
+    // B ne remplace l'autorité, puis qu'une réclamation sur B l'emporte
+    // ensuite, cela fait deux gagnants — et c'est parfaitement correct. Ce sont
+    // deux réinitialisations distinctes, consommées chacune une fois.
+    //
+    // L'invariant réel n'est pas « un gagnant par course », c'est UN GAGNANT
+    // PAR BEARER. Un test qui affirme plus que la propriété défendue ne durcit
+    // rien : il devient rouge sur du comportement légitime, et on finit par le
+    // relâcher au mauvais endroit.
     const a = 'c9'.repeat(24)
     const b = 'd0'.repeat(24)
     await poser(a)
@@ -147,10 +158,13 @@ describe('autorité de réinitialisation — exclusion par PostgreSQL réel', ()
       poser(b),
       Promise.all(Array.from({ length: 12 }, () => consommer(b))),
     ])
-    const gagnants = surA.filter(Boolean).length + surB.filter(Boolean).length
-    // Au plus un gagnant au total : une autorité, un consommateur.
-    expect(gagnants).toBeLessThanOrEqual(1)
-    expect(await ligneExiste()).toBe(false)
+    expect(surA.filter(Boolean).length).toBeLessThanOrEqual(1)
+    expect(surB.filter(Boolean).length).toBeLessThanOrEqual(1)
+    // Et aucun des deux ne resert : ce qui a été consommé l'est définitivement.
+    if (surA.some(Boolean)) expect(await consommer(a)).toBe(false)
+    if (surB.some(Boolean)) expect(await consommer(b)).toBe(false)
+    // A ne survit jamais au remplacement par B.
+    expect(await consommer(a)).toBe(false)
   })
 
   it('l\'autorité stockée en base ne contient que l\'empreinte et l\'expiration', async () => {
