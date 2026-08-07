@@ -42,6 +42,14 @@ const claimItemIfField = vi.fn(async (kind: string, id: string, ws: string, fiel
 })
 const deleteExpired = vi.fn(async () => true)
 const getItem = vi.fn(async () => null)
+// LECTURE STRICTE : trois issues distinctes, comme la vraie primitive.
+//   { ok:true, value }  ligne présente
+//   { ok:true, null }   la base a répondu, pas de ligne
+//   { ok:false }        la base n'a pas répondu
+const getItemStrict = vi.fn(async (kind: string, id: string, ws: string) => {
+  const r = rows.find((x) => x.kind === kind && x.id === id && x.ws === ws)
+  return { ok: true as const, value: r ? r.data : null }
+})
 const deleteItem = vi.fn(async () => true)
 
 const WORKSPACES: Record<string, any> = {
@@ -53,6 +61,7 @@ const getWorkspaceById = vi.fn(async (id: string) => WORKSPACES[id] ?? null)
 vi.mock('../lib/supabase/store', () => ({
   listItems: (...a: any[]) => (listItems as any)(...a),
   getItem: (...a: any[]) => (getItem as any)(...a),
+  getItemStrict: (...a: any[]) => (getItemStrict as any)(...a),
   upsertItem: (...a: any[]) => (upsertItem as any)(...a),
   deleteItem: (...a: any[]) => (deleteItem as any)(...a),
   insertItemIfAbsent: (...a: any[]) => (insertItemIfAbsent as any)(...a),
@@ -118,6 +127,10 @@ beforeEach(() => {
   executeJarvis.mockResolvedValue('fait')
   listItems.mockImplementation(async (kind: string, ws: string) =>
     rows.filter((r) => r.kind === kind && r.ws === ws).map((r) => r.data))
+  getItemStrict.mockImplementation(async (kind: string, id: string, ws: string) => {
+    const r = rows.find((x) => x.kind === kind && x.id === id && x.ws === ws)
+    return { ok: true as const, value: r ? r.data : null }
+  })
 })
 
 // ── A/B — secret et version : aucun repli ───────────────────────────────────
@@ -131,9 +144,14 @@ describe('A/B — le jeton se ferme quand sa base de confiance manque', () => {
     expect(await resolveExtensionToken(t, 'capture')).toBeNull()
   })
 
-  it('B — DÉFAUT : version non vérifiable → refus, jamais un repli sur 1', async () => {
+  it('B — version non vérifiable → refus, jamais un repli sur 1', async () => {
+    // ⚠️ CE CAS MENTAIT (lot SEC-EXT-0). Il simulait un `reject`, que
+    // `listItems` ne produit JAMAIS : la vraie fonction absorbe les erreurs
+    // Supabase et rend `[]`. Le test passait donc pendant que la production
+    // repliait sur la version 1. On modélise maintenant ce que la base fait
+    // réellement : elle répond « je ne sais pas ».
     const t = (await tokenForWorkspace('ws_fabel', 'capture'))!
-    listItems.mockRejectedValue(new Error('db down'))
+    getItemStrict.mockResolvedValue({ ok: false } as any)
     expect(await getTokenVersion('ws_fabel')).toBeNull()
     expect(await resolveExtensionToken(t, 'capture')).toBeNull()
     expect(await tokenForWorkspace('ws_fabel', 'capture')).toBeNull()
@@ -410,16 +428,27 @@ describe('U–AD — l\'extension elle-même', () => {
   const read = (f: string) => readFileSync(`extension/${f}`, 'utf8')
   const manifest = () => JSON.parse(read('manifest.json'))
 
-  it('U — plus aucune permission d\'hôte sur tout Internet', () => {
+  it('U — permission d\'hôte : l\'origine EXACTE, jamais tout Internet', () => {
+    // ⚠️ SEC-EXT-0 laissait `host_permissions: []`, et je l'avais présenté
+    // comme le moindre privilège. C'était trop peu : MV3 EXIGE une permission
+    // d'hôte pour un `fetch` cross-origin depuis le service worker — l'extension
+    // n'aurait joint aucun backend. La bonne réponse n'est pas « rien », c'est
+    // « exactement l'origine Prospector ».
     const m = manifest()
-    expect(m.host_permissions || []).toEqual([])
-    // On vérifie les champs EFFECTIFS, pas le fichier entier : les clés `//…`
-    // documentent justement le défaut corrigé et citent l'ancien motif.
+    expect(m.host_permissions).toHaveLength(1)
+    expect(m.host_permissions[0]).toMatch(/^https:\/\/[^*]+\/\*$/)
     const effectifs = [
       ...(m.host_permissions || []), ...(m.permissions || []),
       ...((m.content_scripts || []).flatMap((c: any) => c.matches || [])),
     ]
     for (const v of effectifs) expect(String(v)).not.toContain('*/*')
+  })
+
+  it('U bis — le manifeste et config.js désignent LA MÊME origine', () => {
+    // Deux déclarations manuelles indépendantes divergent tôt ou tard : soit
+    // l'extension devient muette, soit la permission dépasse l'usage réel.
+    const origin = read('config.js').match(/const PROSPECTOR_ORIGIN = '([^']+)'/)![1]
+    expect(manifest().host_permissions[0]).toBe(`${origin}/*`)
   })
 
   it('V — plus aucun content script injecté automatiquement', () => {
@@ -487,5 +516,207 @@ describe('U–AD — l\'extension elle-même', () => {
 
   it('le service worker refuse un message qui ne vient pas de l\'extension', () => {
     expect(read('background.js')).toContain('sender.id !== chrome.runtime.id')
+  })
+})
+
+// ── SEC-EXT-0.1 — les écarts entre mes assertions et le code réel ───────────
+describe('SEC-EXT-0.1 — annulation, bouton périmé, storage, bornes', () => {
+  const read = (f: string) => readFileSync(`extension/${f}`, 'utf8')
+  const jarvisToken = () => tokenForWorkspace('ws_fabel', 'jarvis') as Promise<string>
+
+  async function proposer() {
+    const t = await jarvisToken()
+    const res = mockRes()
+    await agentHandler(withToken(t, { message: 'ajoute Redsen' }), res)
+    return { t, cid: res.body.confirmationId as string }
+  }
+
+  // ── §1 : version de jeton, NOT_FOUND ≠ ERROR ─────────────────────────────
+  it('base OK sans ligne wsver → version initiale 1', async () => {
+    expect(await getTokenVersion('ws_fabel')).toBe(1)
+  })
+
+  it('base OK avec wsver=7 → 7', async () => {
+    rows.push({ kind: 'wsver', id: 'ws_fabel', ws: '_meta', data: { id: 'ws_fabel', v: 7 } })
+    expect(await getTokenVersion('ws_fabel')).toBe(7)
+  })
+
+  it('base MUETTE → null, jamais 1', async () => {
+    getItemStrict.mockResolvedValue({ ok: false } as any)
+    expect(await getTokenVersion('ws_fabel')).toBeNull()
+  })
+
+  it('jeton v1 ET jeton v7 sont TOUS DEUX refusés quand la base est muette', async () => {
+    const v1 = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    rows.push({ kind: 'wsver', id: 'ws_fabel', ws: '_meta', data: { id: 'ws_fabel', v: 7 } })
+    const v7 = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    getItemStrict.mockResolvedValue({ ok: false } as any)
+    expect(await resolveExtensionToken(v1, 'jarvis')).toBeNull()
+    expect(await resolveExtensionToken(v7, 'jarvis')).toBeNull()
+  })
+
+  it('la version de B n\'influence pas celle de A', async () => {
+    rows.push({ kind: 'wsver', id: 'ws_client_b', ws: '_meta', data: { id: 'ws_client_b', v: 9 } })
+    expect(await getTokenVersion('ws_fabel')).toBe(1)
+    expect(await getTokenVersion('ws_client_b')).toBe(9)
+  })
+
+  it('G — aucun listItems dans le chemin de résolution : lecture CIBLÉE', async () => {
+    const t = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    listItems.mockClear(); getItemStrict.mockClear()
+    await resolveExtensionToken(t, 'jarvis')
+    // On ne charge plus les versions de TOUS les espaces pour en lire une.
+    for (const call of listItems.mock.calls) expect(call[0]).not.toBe('wsver')
+    expect(getItemStrict).toHaveBeenCalledWith('wsver', 'ws_fabel', '_meta')
+  })
+
+  // ── §6 : annulation inter-tenants ────────────────────────────────────────
+  it('A — Fabel annule SON attente → supprimée', async () => {
+    const { t, cid } = await proposer()
+    await agentHandler(withToken(t, { cancel: cid }), mockRes())
+    expect(rows.filter((r) => r.kind === 'extpending')).toHaveLength(0)
+  })
+
+  it('B — DÉFAUT : Client B ne peut PLUS détruire l\'attente de Fabel', async () => {
+    // `dropExtensionPending` recevait `ws` et l'IGNORAIT : un porteur de jeton
+    // d'un autre espace connaissant le nonce provoquait un déni de service.
+    const { cid } = await proposer()
+    const autre = (await tokenForWorkspace('ws_client_b', 'jarvis'))!
+    await agentHandler(withToken(autre, { cancel: cid }), mockRes())
+    expect(rows.filter((r) => r.kind === 'extpending')).toHaveLength(1)
+  })
+
+  it('C — après la tentative de B, Fabel confirme toujours', async () => {
+    const { t, cid } = await proposer()
+    const autre = (await tokenForWorkspace('ws_client_b', 'jarvis'))!
+    await agentHandler(withToken(autre, { cancel: cid }), mockRes())
+    executeJarvis.mockClear()
+    await agentHandler(withToken(t, { confirmationId: cid }), mockRes())
+    expect(executeJarvis).toHaveBeenCalledTimes(1)
+  })
+
+  it('D — 20 annulations simultanées → une seule consommation', async () => {
+    const { t, cid } = await proposer()
+    await Promise.all(Array.from({ length: 20 }, () =>
+      agentHandler(withToken(t, { cancel: cid }), mockRes())))
+    expect(rows.filter((r) => r.kind === 'extpending')).toHaveLength(0)
+  })
+
+  it('E — confirm et cancel simultanés → UNE seule issue', async () => {
+    const { t, cid } = await proposer()
+    executeJarvis.mockClear()
+    await Promise.all([
+      ...Array.from({ length: 10 }, () => agentHandler(withToken(t, { confirmationId: cid }), mockRes())),
+      ...Array.from({ length: 10 }, () => agentHandler(withToken(t, { cancel: cid }), mockRes())),
+    ])
+    expect(executeJarvis.mock.calls.length).toBeLessThanOrEqual(1)
+    expect(rows.filter((r) => r.kind === 'extpending')).toHaveLength(0)
+  })
+
+  // ── §8 : bouton périmé ───────────────────────────────────────────────────
+  it('le bouton capture SON identifiant dans sa closure, pas une globale', () => {
+    // `let pendingId` partagé : cliquer sur le bouton d'une proposition A APRÈS
+    // qu'une proposition B l'ait écrasé confirmait B — l'utilisateur validait
+    // autre chose que ce qu'il avait sous les yeux.
+    const c = read('content.js')
+    expect(c).toContain('const confirmationId = d.confirmationId')
+    expect(c).toContain('confirmAction(confirmationId)')
+    expect(c).toContain('cancelAction(confirmationId)')
+    // Plus aucune variable mutable partagée ne sert d'autorité.
+    expect(c).not.toMatch(/let pendingId/)
+    expect(c).not.toMatch(/confirmAction\(pendingId\)/)
+  })
+
+  it('deux propositions successives produisent DEUX identifiants distincts', async () => {
+    const t = await jarvisToken()
+    const a = mockRes(); const b = mockRes()
+    await agentHandler(withToken(t, { message: 'un' }), a)
+    await agentHandler(withToken(t, { message: 'deux' }), b)
+    expect(a.body.confirmationId).not.toBe(b.body.confirmationId)
+    // Et chacune reste consommable indépendamment : le serveur ne les confond pas.
+    executeJarvis.mockClear()
+    await agentHandler(withToken(t, { confirmationId: a.body.confirmationId }), mockRes())
+    await agentHandler(withToken(t, { confirmationId: b.body.confirmationId }), mockRes())
+    expect(executeJarvis).toHaveBeenCalledTimes(2)
+  })
+
+  // ── §10/§11/§12 : le storage ─────────────────────────────────────────────
+  it('le storage est restreint aux CONTEXTES DE CONFIANCE', () => {
+    const bg = read('background.js')
+    expect(bg).toContain("accessLevel: 'TRUSTED_CONTEXTS'")
+    expect(bg).toContain('chrome.runtime.onInstalled')
+  })
+
+  it('le content script ne touche plus DU TOUT au storage', () => {
+    // L'assertion de SEC-EXT-0 — « il ne LIT pas les jetons » — portait sur le
+    // code, pas sur la capacité : un content script atteint normalement le
+    // storage de son extension. Il n'y accède plus, et ne le peut plus.
+    // On regarde le CODE, pas les commentaires : celui d'à-côté cite justement
+    // l'ancien `chrome.storage.local['token']`. Les blocs `/* … */` sont
+    // retirés en entier — un filtre ligne à ligne les laissait passer.
+    const code = read('content.js')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    expect(code).not.toContain('chrome.storage')
+  })
+
+  it('aucun message ne permet de demander une clé arbitraire du storage', () => {
+    const bg = read('background.js')
+    expect(bg).toContain("msg?.type === 'ui.brand'")
+    // La marque, et rien d'autre : pas de `settings.get(<nom>)` générique.
+    expect(bg).toMatch(/storage\.local\.get\(\['brand'\]\)/)
+    expect(bg).not.toMatch(/storage\.local\.get\(\[?msg/)
+  })
+
+  // ── §13 : bornes ─────────────────────────────────────────────────────────
+  it('capture : les données métier sont TRONQUÉES, l\'URL est REFUSÉE', async () => {
+    const t = (await tokenForWorkspace('ws_fabel', 'capture'))!
+    const res = mockRes()
+    await ingestHandler(withToken(t, { name: 'x'.repeat(5000), url: 'https://ok.fr' }), res)
+    expect(res.statusCode).toBe(200)
+    expect(identifyLead.mock.calls[0][1].name.length).toBeLessThanOrEqual(200)
+
+    const res2 = mockRes()
+    await ingestHandler(withToken(t, { name: 'ok', url: 'https://x.fr/' + 'a'.repeat(5000) }), res2)
+    expect(res2.statusCode).toBe(413)
+  })
+
+  it('jarvis : une directive démesurée est REFUSÉE, jamais tronquée', async () => {
+    // Tronquée en son milieu, elle deviendrait une instruction que
+    // l'utilisateur n'a pas écrite — et elle serait tout de même facturée.
+    const t = await jarvisToken()
+    const res = mockRes()
+    await agentHandler(withToken(t, { message: 'z'.repeat(50_000) }), res)
+    expect(res.statusCode).toBe(413)
+    expect(planJarvis).not.toHaveBeenCalled()
+  })
+
+  it('jarvis : le contexte de page est borné, sans refuser la requête', async () => {
+    const t = await jarvisToken()
+    await agentHandler(withToken(t, { message: 'ok', title: 'T'.repeat(9000), url: 'u'.repeat(9000) }), mockRes())
+    const ctx = planJarvis.mock.calls[0][2]
+    expect(ctx.title.length).toBeLessThanOrEqual(200)
+    expect(ctx.url.length).toBeLessThanOrEqual(2048)
+  })
+
+  // ── §14 : le contexte de page reste minimal ──────────────────────────────
+  it('le content script ne transmet QUE la directive, l\'URL et le titre', () => {
+    const c = read('content.js')
+    expect(c).toContain('location.href')
+    expect(c).toContain('document.title')
+    // Ce qui est interdit, c'est de LIRE la page. Écrire sa propre interface
+    // dans sa propre racine d'ombre (`root.innerHTML = …`) n'est pas du
+    // scraping — l'assertion précédente était trop grossière et confondait les
+    // deux. Ce lot ne doit ajouter aucune capacité d'extraction : SEC-AI les
+    // traitera comme des capacités explicites.
+    // `textContent = …` ÉCRIT dans notre propre interface : ce n'est pas une
+    // lecture de la page, et l'inclure était une nouvelle imprécision de ma
+    // part. La liste ne retient que ce qui LIT le document hôte.
+    for (const interdit of [
+      'document.body', 'documentElement.innerHTML', 'innerText',
+      'document.cookie', 'localStorage', 'querySelectorAll', 'document.forms',
+    ]) {
+      expect(c).not.toContain(interdit)
+    }
   })
 })

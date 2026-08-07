@@ -4,7 +4,7 @@ import { planJarvis, executeJarvis, isWrite } from '../../../lib/prospector/jarv
 import { resolveExtensionToken } from '../../../lib/prospector/wstoken'
 import { tenantFromVerifiedWorkspace } from '../../../lib/prospector/tenant'
 import {
-  decideCors, applyCors, readCredential,
+  decideCors, applyCors, readCredential, LIMITS, bounded, boundedOrReject,
   createExtensionPending, consumeExtensionPending, dropExtensionPending,
 } from '../../../lib/prospector/extensionGate'
 
@@ -33,13 +33,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const tenant = await tenantFromVerifiedWorkspace(ws)
   if (!tenant) return res.status(403).json({ error: 'forbidden' })
 
-  const message = String(body?.message || '')
+  // La directive est REFUSÉE si elle dépasse : tronquée en son milieu, elle
+  // deviendrait une instruction que l'utilisateur n'a pas écrite.
+  const message = boundedOrReject(body?.message, LIMITS.message)
+  if (message === null) return res.status(413).json({ error: 'payload_too_large' })
   // ⚠️ DONNÉES DE PAGE = NON FIABLES. `url` et `title` viennent du navigateur :
   // ce sont des données métier contextuelles, jamais un élément d'autorité. Ni
   // l'espace, ni la portée, ni l'action n'en dérivent — et `body.workspace_id`,
   // `body.tenant` ou `body.action` ne sont tout simplement pas lus.
-  const url = String(body?.url || '')
-  const title = String(body?.title || '')
+  const url = bounded(body?.url, LIMITS.url)
+  const title = bounded(body?.title, LIMITS.title)
+  // Jamais tronqué : sa forme exacte est vérifiée par la consommation.
   const confirmationId = String(body?.confirmationId || '')
 
   try {

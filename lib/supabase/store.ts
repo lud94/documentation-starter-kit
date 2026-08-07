@@ -42,6 +42,51 @@ export async function getItem<T = any>(kind: string, id: string, ws: string): Pr
   } catch { return null }
 }
 
+/**
+ * LECTURE STRICTE — distingue « absent » de « illisible ».
+ *
+ * ── LE DÉFAUT QUE CECI FERME (lot SEC-EXT-0.1) ──────────────────────────────
+ * `listItems` et `getItem` absorbent les erreurs : `if (error || !data) return
+ * []` puis `catch { return [] }`. Pour lire des séquences ou des missions, ce
+ * silence est raisonnable — une liste vide dégrade l'affichage, rien de plus.
+ *
+ * Il devient FAUX dès que l'absence a un sens de sécurité. `getTokenVersion`
+ * lisait la version d'un jeton avec `listItems` : une panne rendait `[]`, donc
+ * « aucune ligne », donc la version initiale 1 — et un ancien jeton de première
+ * génération, pourtant révoqué, redevenait valide. J'avais écrit que ce chemin
+ * fermait ; il ne fermait pas, parce que la primitive sous-jacente ment.
+ *
+ * Ici, les trois issues restent distinctes :
+ *   { ok: true,  value: T    }   la ligne existe
+ *   { ok: true,  value: null }   la base a répondu, il n'y a pas de ligne
+ *   { ok: false }                la base n'a pas répondu — on ne sait pas
+ *
+ * ⚠️ `getItem` et `listItems` ne changent PAS de contrat : leurs appelants
+ * historiques comptent sur leur indulgence. On ajoute une primitive, on ne
+ * réécrit pas celle de tout le monde.
+ */
+export type StrictRead<T> = { ok: true; value: T | null } | { ok: false }
+
+export async function getItemStrict<T = any>(
+  kind: string, id: string, ws: string,
+): Promise<StrictRead<T>> {
+  const sb = supabase()
+  if (!sb) {
+    // Repli mémoire : la structure est en main, l'absence est certaine.
+    return { ok: true, value: (mem.get(key(kind, ws, id)) as T) ?? null }
+  }
+  try {
+    const { data, error } = await sb.from(TABLE).select('data')
+      .eq('kind', kind).eq('id', id).eq('workspace_id', ws).maybeSingle()
+    // `maybeSingle` rend `data: null` sans erreur quand il n'y a pas de ligne :
+    // c'est exactement la distinction qu'on veut conserver.
+    if (error) return { ok: false }
+    return { ok: true, value: data ? ((data as any).data as T) : null }
+  } catch {
+    return { ok: false }
+  }
+}
+
 export async function upsertItem(kind: string, id: string, data: any, ws: string): Promise<boolean> {
   if (!writeAllowed('prospector_store')) return false
   const sb = supabase()

@@ -19,6 +19,31 @@
  */
 importScripts('config.js')
 
+/* ── LE STORAGE DEVIENT INACCESSIBLE AUX CONTENT SCRIPTS (lot SEC-EXT-0.1) ───
+ *
+ * SEC-EXT-0 affirmait que `content.js` ne LIT PAS les jetons. C'était vrai du
+ * code, mais pas de la capacité : par défaut, un content script atteint
+ * `chrome.storage.local` de son extension. La propriété reposait donc sur la
+ * discipline du code, et une seule ligne ajoutée par mégarde l'aurait annulée.
+ *
+ * `TRUSTED_CONTEXTS` restreint l'accès au service worker et au popup. Le
+ * content script vit, lui, dans le document d'une page arbitraire : il n'a plus
+ * accès au credential, quoi qu'on écrive dedans.
+ *
+ * Appelé aussi à l'installation ET au démarrage : un service worker MV3 est
+ * arrêté et relancé sans prévenir. */
+async function restrictStorage() {
+  try {
+    // API disponible depuis Chrome 111 ; en son absence, on n'invente rien.
+    if (chrome.storage.local.setAccessLevel) {
+      await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+    }
+  } catch (_) { /* rien à faire de plus ici */ }
+}
+restrictStorage()
+chrome.runtime.onInstalled.addListener(restrictStorage)
+chrome.runtime.onStartup?.addListener(restrictStorage)
+
 /** Le jeton ne sort JAMAIS de ce fichier. Aucun message ne le renvoie. */
 async function credential(scope) {
   const s = await chrome.storage.local.get(['tokenCapture', 'tokenJarvis'])
@@ -73,6 +98,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return sendResponse(await callProspector('/api/jarvis/agent', 'jarvis', {
         cancel: String(msg.confirmationId || ''),
       }))
+    }
+
+    /* ⚠️ ALLOWLIST FERMÉE DE RÉGLAGES. `ui.brand` rend UNIQUEMENT la marque.
+       Aucun message ne permet de demander une clé arbitraire du storage : il
+       n'existe pas de `settings.get(<nom>)`, précisément pour qu'aucun appelant
+       ne puisse réclamer `tokenJarvis`. */
+    if (msg?.type === 'ui.brand') {
+      const s = await chrome.storage.local.get(['brand'])
+      return sendResponse({ brand: typeof s.brand === 'string' ? s.brand : '' })
     }
 
     if (msg?.type === 'capture.lead') {

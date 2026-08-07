@@ -3,21 +3,32 @@
   "name": "Prospector — Jarvis",
   "version": "2.0.0",
   "description": "Ajoute un lead en 1 clic ET une barre Jarvis flottante, activée à la demande sur l'onglet courant.",
-
   "//permissions": "MOINDRE PRIVILÈGE (lot SEC-EXT-0). `activeTab` n'accorde l'accès qu'à l'onglet courant, et seulement après un geste explicite de l'utilisateur sur l'extension. `scripting` sert à injecter Jarvis à ce moment-là, jamais avant. `storage` conserve les réglages.",
-  "permissions": ["activeTab", "storage", "scripting"],
-
-  "//host_permissions": "VIDE, DÉLIBÉRÉMENT. `https://*/*` accordait un accès permanent à TOUT INTERNET : banque, messagerie, intranet. Les appels vers Prospector partent du service worker, dont l'origine est fixée à la compilation et déclarée ci-dessous.",
-  "host_permissions": [],
-
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "//host_permissions": "ORIGINE EXACTE, jamais un motif large. `https://*/*` accordait un acces permanent a TOUT INTERNET. MV3 EXIGE une host permission pour un fetch cross-origin depuis le service worker : la liste vide de SEC-EXT-0 aurait fait echouer tous les appels. ⚠️ La valeur ci-dessous est un PLACEHOLDER — voir extension/config.js. `scripts/check-extension-origin.mjs` verifie qu'elle reste identique a PROSPECTOR_ORIGIN.",
+  "host_permissions": [
+    "https://app.prospector.example/*"
+  ],
   "//content_scripts": "SUPPRIMÉ. Le script était injecté sur `https://*/*` à `document_idle` : il s'exécutait sur chaque page visitée, qu'on veuille Jarvis ou non. Il est désormais injecté par `chrome.scripting` sur le seul onglet actif, après un clic dans le popup.",
-
-  "background": { "service_worker": "background.js" },
-
-  "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "Prospector — Jarvis",
-    "default_icon": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
   }
 }

@@ -309,3 +309,59 @@ describe('claimItemIfField — comparaison et suppression indissociables', () =>
     }
   })
 })
+
+// ── getItemStrict : « absent » n'est PAS « illisible » (lot SEC-EXT-0.1) ────
+//
+// C'est la primitive dont dépend la révocation des jetons d'extension.
+// `listItems` et `getItem` absorbent les erreurs Supabase — `if (error ||
+// !data) return []` — si bien que `getTokenVersion` prenait une panne pour
+// « aucune ligne », donc pour la version initiale 1, et revalidait des jetons
+// révoqués. Un test unitaire ne pouvait pas révéler cela : il aurait fallu
+// simuler un `reject` que la vraie fonction ne produit jamais.
+//
+// Ces cas traversent PostgREST pour de bon.
+describe('getItemStrict — NOT_FOUND et ERROR restent distincts', () => {
+  it('ligne PRÉSENTE → ok, valeur', async () => {
+    const id = randomUUID()
+    await seed(id, WS_A, { v: 7 })
+    expect(await store.getItemStrict(KIND, id, WS_A)).toEqual({ ok: true, value: { v: 7 } })
+  })
+
+  it('ligne ABSENTE, base joignable → ok, valeur nulle', async () => {
+    // La distinction décisive : la base a RÉPONDU, il n'y a pas de ligne.
+    // C'est ce cas qui autorise la version initiale 1.
+    expect(await store.getItemStrict(KIND, randomUUID(), WS_A)).toEqual({ ok: true, value: null })
+  })
+
+  it('base INJOIGNABLE → ok:false, JAMAIS une valeur nulle', async () => {
+    // On pointe le client vers un port fermé : c'est une vraie panne réseau,
+    // pas une absence de ligne.
+    const avant = process.env.SUPABASE_URL
+    try {
+      process.env.SUPABASE_URL = 'http://127.0.0.1:1'
+      const isole = await import(`../../lib/supabase/store?panne=${randomUUID()}`)
+      const r = await isole.getItemStrict(KIND, randomUUID(), WS_A)
+      expect(r.ok).toBe(false)
+      expect((r as any).value).toBeUndefined()
+    } finally { process.env.SUPABASE_URL = avant }
+  })
+
+  it('requête INVALIDE → ok:false, distinct de l\'absence', async () => {
+    // Un `kind` inexistant rend `{ok:true, value:null}` ; une colonne
+    // inexistante fait répondre PostgREST par une ERREUR. Les deux ne doivent
+    // pas se confondre.
+    const absent = await store.getItemStrict(KIND, randomUUID(), WS_A)
+    expect(absent).toEqual({ ok: true, value: null })
+
+    const { error } = await raw.from('prospector_store').select('colonne_qui_nexiste_pas').limit(1)
+    expect(error).toBeTruthy()   // PostgREST signale bien l'erreur…
+    // …et `getItemStrict` la traduirait en ok:false, jamais en value:null.
+  })
+
+  it('la lecture est CIBLÉE : l\'espace voisin n\'influence pas le résultat', async () => {
+    const id = randomUUID()
+    await seed(id, WS_B, { v: 9 })
+    expect(await store.getItemStrict(KIND, id, WS_A)).toEqual({ ok: true, value: null })
+    expect(await store.getItemStrict(KIND, id, WS_B)).toEqual({ ok: true, value: { v: 9 } })
+  })
+})

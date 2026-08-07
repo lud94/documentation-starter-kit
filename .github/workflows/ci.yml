@@ -49,6 +49,9 @@ jobs:
       - name: Isolation des espaces clients (SEC-0)
         run: npm run check:workspace
 
+      - name: Origine de l'extension (SEC-EXT-0.1)
+        run: npm run check:extension
+
       - name: Tests unitaires
         run: npm test
 

@@ -15,10 +15,17 @@
   if (window.__prospectorJarvis) return
   window.__prospectorJarvis = true
 
-  let pendingId = null
-  chrome.storage.local.get(['brand'], (s) => {
-    if (s.brand) { const el = root.getElementById('brand'); if (el) el.textContent = s.brand }
-  })
+  /* ⚠️ AUCUNE VARIABLE GLOBALE D'AUTORITÉ (lot SEC-EXT-0.1). Un `pendingId`
+     partagé faisait que le bouton d'une proposition A, cliqué APRÈS qu'une
+     proposition B l'ait écrasé, confirmait B — l'utilisateur croyait valider ce
+     qu'il avait sous les yeux. Chaque bloc capture désormais SON identifiant
+     dans sa propre closure.
+
+     La marque ne vient plus du storage : depuis SEC-EXT-0.1 il est restreint
+     aux contextes de confiance, et le content script n'y a plus accès. */
+  chrome.runtime.sendMessage({ type: 'ui.brand' }).then((r) => {
+    if (r && r.brand) { const el = root.getElementById('brand'); if (el) el.textContent = r.brand }
+  }).catch(() => {})
 
   const host = document.createElement('div')
   host.id = 'prospector-jarvis-host'
@@ -128,19 +135,21 @@
       if (d.result) add(d.result, 'ja')
       // Le serveur ne renvoie plus l'action, seulement son identifiant.
       if (d.needsConfirm && d.confirmationId) {
-        pendingId = d.confirmationId
+        // Capturé ICI, immuable pour ce bloc : une proposition ultérieure ne
+        // peut plus détourner ces deux boutons.
+        const confirmationId = d.confirmationId
         const box = add('', 'ja'); const act = document.createElement('div'); act.className = 'act'
         const ok = document.createElement('button'); ok.textContent = 'Confirmer'
         const no = document.createElement('button'); no.textContent = 'Annuler'
         ok.addEventListener('click', async (ev) => {
           if (!human(ev)) return
           act.remove(); const w2 = add('…', 'ja')
-          const r = (await confirmAction(pendingId)) || {}
-          w2.remove(); add(r.error || r.reply || 'Fait.', 'ja'); pendingId = null
+          const r = (await confirmAction(confirmationId)) || {}
+          w2.remove(); add(r.error || r.reply || 'Fait.', 'ja')
         })
         no.addEventListener('click', async (ev) => {
           if (!human(ev)) return
-          act.remove(); await cancelAction(pendingId); pendingId = null; add('Annulé.', 'ja')
+          act.remove(); await cancelAction(confirmationId); add('Annulé.', 'ja')
         })
         act.appendChild(ok); act.appendChild(no); box.appendChild(act)
       }

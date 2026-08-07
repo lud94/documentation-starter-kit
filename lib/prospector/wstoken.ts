@@ -31,7 +31,7 @@
 // ignore la portée voulue ne doit pas s'en voir attribuer une par défaut. Chaque
 // espace doit recopier ses deux nouveaux jetons dans l'extension.
 import { getKey } from './keystore'
-import { listItems, upsertItem } from '../supabase/store'
+import { getItemStrict, upsertItem } from '../supabase/store'
 
 const VER_NS = '_meta'
 const VER_KIND = 'wsver'
@@ -63,15 +63,26 @@ async function hmacHex(key: string, data: string): Promise<string> {
  *
  * ⚠️ PAS DE REPLI SUR 1. C'est une primitive de RÉVOCATION : un repli
  * ressusciterait les jetons de première génération dès que la base hoquette.
+ *
+ * ── DÉFAUT RÉEL CORRIGÉ (lot SEC-EXT-0.1) ───────────────────────────────────
+ * La version précédente utilisait `listItems` dans un `try/catch`. Or
+ * `listItems` ABSORBE les erreurs Supabase — `if (error || !data) return []` —
+ * et ne rejette jamais : le `catch` ne se déclenchait pas, `[]` passait pour
+ * « aucune ligne », et `it?.v || 1` rendait 1. Une panne de base revalidait
+ * donc tous les jetons de première génération. J'avais affirmé que ce chemin
+ * fermait ; il ne fermait pas, et seul un test qui simulait un `reject`
+ * — ce que la vraie fonction ne fait jamais — le laissait croire.
+ *
+ * `getItemStrict` conserve la distinction entre « pas de ligne » et « pas de
+ * réponse ». Lecture CIBLÉE au passage : on ne charge plus les versions de tous
+ * les espaces pour en lire une.
  */
 export async function getTokenVersion(wsId: string): Promise<number | null> {
-  try {
-    const items = await listItems<{ id: string; v: number }>(VER_KIND, VER_NS)
-    const it = items.find((x) => x.id === wsId)
-    return it?.v || 1
-  } catch {
-    return null
-  }
+  const id = (wsId || '').trim()
+  if (!id) return null
+  const r = await getItemStrict<{ id: string; v: number }>(VER_KIND, id, VER_NS)
+  if (!r.ok) return null                 // base muette ⇒ on ne sait pas ⇒ refus
+  return r.value?.v || 1                 // absence de ligne ⇒ version initiale
 }
 
 /** Incrémente la version → révoque TOUS les jetons de cet espace, toutes portées. */

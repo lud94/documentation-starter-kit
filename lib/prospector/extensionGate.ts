@@ -8,7 +8,7 @@
 //   1. l'origine autorisée (défense supplémentaire, jamais l'autorité) ;
 //   2. le credential, lu UNIQUEMENT dans l'en-tête prévu ;
 //   3. l'attente de confirmation, dont l'action ne quitte jamais le serveur.
-import { claimItem, claimItemIfField, insertItemIfAbsent, deleteExpired } from '../supabase/store'
+import { claimItemIfField, insertItemIfAbsent, deleteExpired } from '../supabase/store'
 import { getKey } from './keystore'
 
 // ── CORS ────────────────────────────────────────────────────────────────────
@@ -64,6 +64,49 @@ export function applyCors(res: any, d: CorsDecision): void {
 export function readCredential(req: any): string {
   const h = req?.headers?.['x-ingest-token']
   return typeof h === 'string' ? h.trim() : ''
+}
+
+// ── Bornes d'entrée ─────────────────────────────────────────────────────────
+//
+// Les routes d'extension coulaient chaque champ par `String(...)`, sans plafond.
+// Un corps de plusieurs mégaoctets traversait donc `identifyLead`, l'appel LLM
+// et la persistance : coût fournisseur et charge serveur, à la main de qui
+// détient un jeton. Les bornes sont ici, et pas dupliquées dans chaque route.
+//
+// ── LE CHOIX TRONQUER / REFUSER, CHAMP PAR CHAMP ────────────────────────────
+// TRONQUER une donnée métier est acceptable : un nom de 400 caractères est une
+// erreur de saisie, pas une intention, et le lead reste exploitable.
+// REFUSER s'impose dès que la troncature changerait le SENS : un message adressé
+// à l'agent, coupé au milieu, devient une instruction que l'utilisateur n'a pas
+// écrite — et une URL tronquée désigne une autre ressource.
+//
+// Les identifiants et credentials ne sont JAMAIS tronqués : ils sont validés par
+// forme exacte ailleurs, et raboter un secret n'a aucun sens.
+export const LIMITS = {
+  /** Saisies libres du popup. Cent caractères couvrent tout nom réel. */
+  name: 200,
+  company: 200,
+  title: 200,
+  /** ~2 000 : au-delà, les navigateurs eux-mêmes deviennent capricieux. */
+  url: 2048,
+  /** RFC 5321 : 64 + @ + 255. */
+  email: 320,
+  /** Directive à l'agent. Généreux pour un usage réel, borné pour le coût. */
+  message: 4000,
+} as const
+
+/** Donnée métier : on coupe, et le lead reste utilisable. */
+export function bounded(v: unknown, max: number): string {
+  return String(v ?? '').slice(0, max)
+}
+
+/**
+ * Donnée dont la troncature changerait le sens : on REFUSE.
+ * `null` ⇒ l'appelant répond une erreur, il ne devine pas.
+ */
+export function boundedOrReject(v: unknown, max: number): string | null {
+  const s = String(v ?? '')
+  return s.length > max ? null : s
 }
 
 // ── Attente de confirmation ─────────────────────────────────────────────────
@@ -152,7 +195,19 @@ export async function consumeExtensionPending(
   return row
 }
 
-/** Abandon explicite — même consommation atomique. */
-export async function dropExtensionPending(id: string, ws: string): Promise<void> {
-  if (/^[0-9a-f]{32}$/.test((id || '').trim())) await claimItem(KIND_PENDING, id.trim(), NS)
+/**
+ * Abandon explicite — MÊME liaison à l'espace que la confirmation.
+ *
+ * ⚠️ DÉFAUT CORRIGÉ (lot SEC-EXT-0.1). Cette fonction recevait `ws` et
+ * l'IGNORAIT : elle appelait `claimItem`, sans prédicat. Un porteur de jeton
+ * d'un AUTRE espace qui connaissait le nonce pouvait donc détruire l'attente
+ * du propriétaire — un déni de service inter-tenants, franchi par une simple
+ * annulation. Un identifiant difficile à deviner n'est pas une frontière
+ * tenant : la frontière, c'est le prédicat dans l'instruction de suppression.
+ */
+export async function dropExtensionPending(id: string, ws: string): Promise<boolean> {
+  const cid = (id || '').trim()
+  const owner = (ws || '').trim()
+  if (!owner || !/^[0-9a-f]{32}$/.test(cid)) return false
+  return (await claimItemIfField(KIND_PENDING, cid, NS, 'ws', owner)) !== null
 }

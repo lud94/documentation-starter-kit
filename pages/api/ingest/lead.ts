@@ -5,7 +5,7 @@ import { lookupByName } from '../../../lib/prospector/datagouv'
 import { identifyLead } from '../../../lib/prospector/identify'
 import { resolveExtensionToken } from '../../../lib/prospector/wstoken'
 import { tenantFromVerifiedWorkspace } from '../../../lib/prospector/tenant'
-import { decideCors, applyCors, readCredential } from '../../../lib/prospector/extensionGate'
+import { decideCors, applyCors, readCredential, LIMITS, bounded, boundedOrReject } from '../../../lib/prospector/extensionGate'
 import type { Lead } from '../../../types/prospector'
 
 // Point d'entrée pour l'extension navigateur (Jarvis web).
@@ -38,13 +38,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!tenant) return res.status(403).json({ error: 'forbidden' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
-  const name = String(body?.name || '').trim()
-  const url = String(body?.url || '')
+  // ── BORNES (lot SEC-EXT-0.1) ─────────────────────────────────────────────
+  // Sans plafond, un corps de plusieurs mégaoctets traversait `identifyLead`,
+  // l'appel LLM et la persistance : coût fournisseur à la main du porteur du
+  // jeton. Les données métier sont TRONQUÉES — une saisie trop longue est une
+  // erreur, pas une intention. L'URL est REFUSÉE : tronquée, elle désignerait
+  // une autre ressource.
+  const name = bounded(body?.name, LIMITS.name).trim()
+  const company = bounded(body?.company, LIMITS.company).trim()
+  const jobTitle = bounded(body?.title, LIMITS.title).trim()
+  const email = boundedOrReject(body?.email, LIMITS.email)
+  const url = boundedOrReject(body?.url, LIMITS.url)
+  if (url === null || email === null) return res.status(413).json({ error: 'payload_too_large' })
   const isProfile = /linkedin\.com\/in\//i.test(url)
 
   // Classification personne (contact) vs entreprise (compte) : URL → agent web
   // (Exa→Claude si clés) → heuristique + data.gouv. Aucune donnée devinée.
-  const id = await identifyLead(tenant, { name, title: String(body?.title || ''), company: String(body?.company || ''), url })
+  const id = await identifyLead(tenant, { name, title: jobTitle, company, url })
   const isPerson = id.kind === 'person'
 
   const lead: Lead = {
@@ -52,10 +62,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     kind: isPerson ? 'contact' : 'account',
     firstName: isPerson ? (id.firstName || name.split(' ')[0] || '') : '',
     lastName: isPerson ? (id.lastName || name.split(' ').slice(1).join(' ')) : '',
-    title: isPerson ? (id.title || String(body?.title || '').trim() || 'À qualifier') : '',
-    company: (id.company || String(body?.company || '').trim() || (isPerson ? '—' : name) || '—'),
+    title: isPerson ? (id.title || jobTitle || 'À qualifier') : '',
+    company: (id.company || company || (isPerson ? '—' : name) || '—'),
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite',
-    email: body?.email || null, phone: null,
+    email: email || null, phone: null,
     website: id.website || undefined,
     // On ne renseigne linkedinUrl que si l'URL est vraiment un profil LinkedIn.
     linkedinUrl: isProfile ? url.trim() : undefined,
