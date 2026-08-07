@@ -30,5 +30,7 @@
       "48": "icon48.png",
       "128": "icon128.png"
     }
-  }
+  },
+  "minimum_chrome_version": "111",
+  "//minimum_chrome_version": "Un navigateur incapable de cloisonner le stockage ne doit pas installer cette build. ⚠️ VALEUR NON VERIFIEE : developer.chrome.com et MDN sont inaccessibles depuis l'environnement de developpement, et les sources secondaires se CONTREDISENT sur la disponibilite de setAccessLevel pour chrome.storage.local (certaines la disent reservee a storage.session). A CONFIRMER contre la documentation officielle avant publication. La garantie reelle ne repose PAS sur ce champ : background.js refuse tout credential si le verrouillage n'est pas confirme a l'execution — API absente incluse."
 }

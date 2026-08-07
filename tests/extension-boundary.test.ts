@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+// Script utilitaire en JavaScript pur, importé pour éprouver le garde de
+// publication sur des FIXTURES plutôt que sur le dépôt lui-même — sans quoi il
+// faudrait rendre la branche volontairement rouge pour le tester.
+import { auditExtension } from '../scripts/check-extension-origin.mjs'
 
 // Lot SEC-EXT-0 — le navigateur n'est jamais une autorité.
 //
@@ -73,6 +79,13 @@ vi.mock('../lib/supabase/workspaces', () => ({
   getWorkspaceById: (...a: any[]) => (getWorkspaceById as any)(...a),
   listWorkspaces: async () => Object.values(WORKSPACES),
 }))
+// `getTokenVersion` exige désormais une base CONFIGURÉE : sans elle, l'absence
+// de ligne n'est plus une certitude, c'est une ignorance.
+const supabaseConfigured = vi.fn(() => true)
+vi.mock('../lib/supabase/client', () => ({
+  supabaseConfigured: (...a: any[]) => (supabaseConfigured as any)(...a),
+  supabase: () => null,
+}))
 
 const KEYS: Record<string, string> = {}
 vi.mock('../lib/prospector/keystore', () => ({
@@ -127,6 +140,7 @@ beforeEach(() => {
   executeJarvis.mockResolvedValue('fait')
   listItems.mockImplementation(async (kind: string, ws: string) =>
     rows.filter((r) => r.kind === kind && r.ws === ws).map((r) => r.data))
+  supabaseConfigured.mockReturnValue(true)
   getItemStrict.mockImplementation(async (kind: string, id: string, ws: string) => {
     const r = rows.find((x) => x.kind === kind && x.id === id && x.ws === ws)
     return { ok: true as const, value: r ? r.data : null }
@@ -691,12 +705,17 @@ describe('SEC-EXT-0.1 — annulation, bouton périmé, storage, bornes', () => {
     expect(planJarvis).not.toHaveBeenCalled()
   })
 
-  it('jarvis : le contexte de page est borné, sans refuser la requête', async () => {
+  it('jarvis : le TITRE est borné, sans refuser la requête', async () => {
+    // ⚠️ CE CAS PORTAIT L'ANCIEN CONTRAT : il envoyait aussi une URL démesurée
+    // et attendait qu'elle soit TRONQUÉE. SEC-EXT-0.1b la refuse — tronquée,
+    // elle désignerait une autre ressource. Le titre, lui, reste tronqué.
     const t = await jarvisToken()
-    await agentHandler(withToken(t, { message: 'ok', title: 'T'.repeat(9000), url: 'u'.repeat(9000) }), mockRes())
+    const res = mockRes()
+    await agentHandler(withToken(t, { message: 'ok', title: 'T'.repeat(9000), url: 'https://x.fr' }), res)
+    expect(res.statusCode).toBe(200)
     const ctx = planJarvis.mock.calls[0][2]
-    expect(ctx.title.length).toBeLessThanOrEqual(200)
-    expect(ctx.url.length).toBeLessThanOrEqual(2048)
+    expect(ctx.title.length).toBe(200)
+    expect(ctx.url).toBe('https://x.fr')
   })
 
   // ── §14 : le contexte de page reste minimal ──────────────────────────────
@@ -718,5 +737,172 @@ describe('SEC-EXT-0.1 — annulation, bouton périmé, storage, bornes', () => {
     ]) {
       expect(c).not.toContain(interdit)
     }
+  })
+})
+
+// ── SEC-EXT-0.1b — les quatre derniers fail-open ────────────────────────────
+describe('SEC-EXT-0.1b — configuration absente, storage, URL, release', () => {
+  const read = (f: string) => readFileSync(`extension/${f}`, 'utf8')
+
+  // ── §1 : Supabase NON CONFIGURÉ n'est pas une absence ────────────────────
+  it('A — SUPABASE non configuré → getTokenVersion = null, jamais 1', async () => {
+    // `getItemStrict` bascule sur son repli MÉMOIRE et rend `{ok:true,
+    // value:null}` : vrai d'un cache local, FAUX d'une révocation. Une instance
+    // démarrée sans base concluait « version 1 ».
+    supabaseConfigured.mockReturnValue(false)
+    expect(await getTokenVersion('ws_fabel')).toBeNull()
+  })
+
+  it('C/D — jetons v1 ET v7 refusés quand la base n\'est pas configurée', async () => {
+    const v1 = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    rows.push({ kind: 'wsver', id: 'ws_fabel', ws: '_meta', data: { id: 'ws_fabel', v: 7 } })
+    const v7 = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    supabaseConfigured.mockReturnValue(false)
+    expect(await resolveExtensionToken(v1, 'jarvis')).toBeNull()
+    expect(await resolveExtensionToken(v7, 'jarvis')).toBeNull()
+    // Et aucun jeton ne peut plus être ÉMIS non plus.
+    expect(await tokenForWorkspace('ws_fabel', 'jarvis')).toBeNull()
+  })
+
+  it('E — base configurée sans ligne wsver → version 1 reste correcte', async () => {
+    supabaseConfigured.mockReturnValue(true)
+    expect(await getTokenVersion('ws_fabel')).toBe(1)
+  })
+
+  it('la route refuse un jeton dès que la base n\'est pas configurée', async () => {
+    const t = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    supabaseConfigured.mockReturnValue(false)
+    const res = mockRes()
+    await agentHandler(withToken(t, { message: 'x' }), res)
+    expect(res.statusCode).toBe(401)
+    expect(planJarvis).not.toHaveBeenCalled()
+  })
+
+  // ── §9/§11 : l'URL Jarvis est REFUSÉE, pas tronquée ──────────────────────
+  it('A — URL de 2048 caractères → acceptée', async () => {
+    const t = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    const url = 'https://x.fr/' + 'a'.repeat(2048 - 13)
+    expect(url.length).toBe(2048)
+    const res = mockRes()
+    await agentHandler(withToken(t, { message: 'ok', url }), res)
+    expect(res.statusCode).toBe(200)
+    expect(planJarvis).toHaveBeenCalledTimes(1)
+  })
+
+  it('B–E — URL de 2049 → 413, aucun plan, aucun LLM, aucune attente', async () => {
+    // Tronquée, elle désignerait une AUTRE ressource, et Jarvis l'aurait
+    // traitée comme celle que l'utilisateur regardait.
+    const t = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    const res = mockRes()
+    await agentHandler(withToken(t, { message: 'ok', url: 'https://x.fr/' + 'a'.repeat(2049 - 13) }), res)
+    expect(res.statusCode).toBe(413)
+    expect(planJarvis).not.toHaveBeenCalled()
+    expect(executeJarvis).not.toHaveBeenCalled()
+    expect(rows.filter((r) => r.kind === 'extpending')).toHaveLength(0)
+  })
+
+  it('le TITRE reste tronqué : le couper ne le fait pas pointer ailleurs', async () => {
+    const t = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    const res = mockRes()
+    await agentHandler(withToken(t, { message: 'ok', title: 'T'.repeat(9000) }), res)
+    expect(res.statusCode).toBe(200)
+    expect(planJarvis.mock.calls[0][2].title.length).toBe(200)
+  })
+
+  // ── §4–§8 : le storage, fail-closed ──────────────────────────────────────
+  it('l\'absence de l\'API est un ÉCHEC, jamais une dispense', () => {
+    const bg = read('background.js')
+    expect(bg).toContain("typeof chrome.storage.local.setAccessLevel !== 'function'")
+    expect(bg).toContain('storageSecurityReady = false')
+  })
+
+  it('aucun credential n\'est lu tant que le verrou n\'est pas CONFIRMÉ', () => {
+    const bg = read('background.js')
+    // `credential()` et `callProspector()` passent tous deux par la garde.
+    const credentialFn = bg.slice(bg.indexOf('async function credential('))
+    expect(credentialFn.slice(0, 400)).toContain('await securityReady()')
+    const callFn = bg.slice(bg.indexOf('async function callProspector('))
+    expect(callFn.slice(0, 400)).toContain('await securityReady()')
+  })
+
+  it('le message d\'échec est générique et ne décrit aucune interne', () => {
+    const bg = read('background.js')
+    expect(bg).toContain('Extension de sécurité non initialisée')
+  })
+
+  it('E — ui.brand reste servi sans credential, choix explicite', () => {
+    const bg = read('background.js')
+    const brand = bg.slice(bg.indexOf("msg?.type === 'ui.brand'"), bg.indexOf("msg?.type === 'capture.lead'"))
+    expect(brand).not.toContain('securityReady')
+    expect(brand).toContain("get(['brand'])")
+  })
+
+  it('F — aucune réponse runtime ne rend un jeton', () => {
+    const bg = read('background.js')
+    expect(bg).not.toMatch(/sendResponse\([^)]*token(Capture|Jarvis)/)
+    expect(bg).not.toMatch(/brand:\s*s\.token/)
+  })
+
+  it('§6 — le manifeste exige une version minimale de Chrome', () => {
+    const m = JSON.parse(read('manifest.json'))
+    expect(m.minimum_chrome_version).toBeTruthy()
+    // La valeur n'a pas pu être vérifiée contre la documentation officielle
+    // depuis cet environnement : la garantie réelle est le verrou d'exécution
+    // ci-dessus, pas ce champ.
+    expect(String(m['//minimum_chrome_version'])).toContain('NON VERIFIEE')
+  })
+})
+
+// ── §13/§15 : le garde de publication ───────────────────────────────────────
+describe('SEC-EXT-0.1b — garde de build RELEASE', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'ext-'))
+  const fixture = (origin: string, hosts: string[], extra: any = {}) => {
+    const d = mkdtempSync(join(tmp, 'f-'))
+    writeFileSync(join(d, 'config.js'), `const PROSPECTOR_ORIGIN = '${origin}'\n`)
+    writeFileSync(join(d, 'manifest.json'), JSON.stringify({
+      host_permissions: hosts, minimum_chrome_version: '111', ...extra,
+    }))
+    return d
+  }
+
+  it('A — placeholder en mode DÉVELOPPEMENT → accepté', () => {
+    const d = fixture('https://app.prospector.example', ['https://app.prospector.example/*'])
+    expect(auditExtension(d, { release: false }).erreurs).toEqual([])
+  })
+
+  it('B — placeholder en mode RELEASE → refusé', () => {
+    const d = fixture('https://app.prospector.example', ['https://app.prospector.example/*'])
+    const { erreurs } = auditExtension(d, { release: true })
+    expect(erreurs.join(' ')).toContain('PLACEHOLDER')
+  })
+
+  it('C — origine réelle en mode RELEASE → acceptée', () => {
+    // Domaine de fixture contrôlé, qui ne se termine PAS par `.example`.
+    const d = fixture('https://app.prospector-test.invalid', ['https://app.prospector-test.invalid/*'])
+    expect(auditExtension(d, { release: true }).erreurs).toEqual([])
+  })
+
+  it('D — motif générique → refusé dans les DEUX modes', () => {
+    const d = fixture('https://app.prospector-test.invalid', ['https://*/*'])
+    expect(auditExtension(d, { release: false }).erreurs.length).toBeGreaterThan(0)
+    expect(auditExtension(d, { release: true }).erreurs.join(' ')).toContain('trop large')
+  })
+
+  it('E — config ≠ manifeste → refusé', () => {
+    const d = fixture('https://app.prospector-test.invalid', ['https://autre.invalid/*'])
+    expect(auditExtension(d, { release: false }).erreurs.join(' ')).toContain('host_permissions')
+  })
+
+  it('content_scripts déclaré → refusé', () => {
+    const d = fixture('https://a.invalid', ['https://a.invalid/*'], { content_scripts: [{ matches: ['https://a.invalid/*'] }] })
+    expect(auditExtension(d, { release: false }).erreurs.join(' ')).toContain('content_scripts')
+  })
+
+  it('minimum_chrome_version absent → refusé en RELEASE seulement', () => {
+    const d = mkdtempSync(join(tmp, 'g-'))
+    writeFileSync(join(d, 'config.js'), "const PROSPECTOR_ORIGIN = 'https://a.invalid'\n")
+    writeFileSync(join(d, 'manifest.json'), JSON.stringify({ host_permissions: ['https://a.invalid/*'] }))
+    expect(auditExtension(d, { release: false }).erreurs).toEqual([])
+    expect(auditExtension(d, { release: true }).erreurs.join(' ')).toContain('minimum_chrome_version')
   })
 })

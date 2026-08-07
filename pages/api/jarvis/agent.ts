@@ -41,7 +41,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // ce sont des données métier contextuelles, jamais un élément d'autorité. Ni
   // l'espace, ni la portée, ni l'action n'en dérivent — et `body.workspace_id`,
   // `body.tenant` ou `body.action` ne sont tout simplement pas lus.
-  const url = bounded(body?.url, LIMITS.url)
+  // ⚠️ L'URL est REFUSÉE, pas tronquée (lot SEC-EXT-0.1b). `bounded` la coupait :
+  // une URL tronquée désigne une AUTRE ressource, et Jarvis l'aurait traitée
+  // comme celle que l'utilisateur regardait. Même contrat que /api/ingest/lead.
+  // Le titre, lui, reste tronqué : c'est un libellé, le couper ne le fait pas
+  // pointer ailleurs.
+  const url = boundedOrReject(body?.url, LIMITS.url)
+  if (url === null) return res.status(413).json({ error: 'payload_too_large' })
   const title = bounded(body?.title, LIMITS.title)
   // Jamais tronqué : sa forme exacte est vérifiée par la consommation.
   const confirmationId = String(body?.confirmationId || '')

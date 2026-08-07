@@ -22,7 +22,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "check:tenant": "node scripts/check-tenant-context.mjs",
     "check:workspace": "node scripts/check-workspace-projection.mjs",
-    "check:extension": "node scripts/check-extension-origin.mjs"
+    "check:extension": "node scripts/check-extension-origin.mjs",
+    "check:extension:release": "node scripts/check-extension-origin.mjs --release"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

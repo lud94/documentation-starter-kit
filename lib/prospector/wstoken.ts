@@ -32,6 +32,7 @@
 // espace doit recopier ses deux nouveaux jetons dans l'extension.
 import { getKey } from './keystore'
 import { getItemStrict, upsertItem } from '../supabase/store'
+import { supabaseConfigured } from '../supabase/client'
 
 const VER_NS = '_meta'
 const VER_KIND = 'wsver'
@@ -76,10 +77,24 @@ async function hmacHex(key: string, data: string): Promise<string> {
  * `getItemStrict` conserve la distinction entre « pas de ligne » et « pas de
  * réponse ». Lecture CIBLÉE au passage : on ne charge plus les versions de tous
  * les espaces pour en lire une.
+ *
+ * ── SECONDE PASSE (lot SEC-EXT-0.1b) ────────────────────────────────────────
+ * Il restait un trou, et du même genre. Sans configuration Supabase,
+ * `getItemStrict` bascule sur son repli MÉMOIRE et rend `{ok:true, value:null}`
+ * — « la structure est en main, il n'y a pas de ligne ». C'est vrai d'un cache
+ * local, et FAUX d'une révocation : une instance démarrée sans `SUPABASE_URL`
+ * ou sans clé de service concluait « version 1 » et revalidait tous les jetons
+ * de première génération. Une absence de configuration n'est pas une certitude.
+ *
+ * On vérifie donc explicitement la configuration AVANT de lire. Le repli
+ * mémoire de `getItemStrict` reste utile à ses autres appelants — c'est ce
+ * chemin de sécurité-ci qui refuse de s'en contenter.
  */
 export async function getTokenVersion(wsId: string): Promise<number | null> {
   const id = (wsId || '').trim()
   if (!id) return null
+  // Pas de base ⇒ aucune révocation vérifiable ⇒ aucun jeton valide.
+  if (!supabaseConfigured()) return null
   const r = await getItemStrict<{ id: string; v: number }>(VER_KIND, id, VER_NS)
   if (!r.ok) return null                 // base muette ⇒ on ne sait pas ⇒ refus
   return r.value?.v || 1                 // absence de ligne ⇒ version initiale

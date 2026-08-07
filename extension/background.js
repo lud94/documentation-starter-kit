@@ -19,39 +19,69 @@
  */
 importScripts('config.js')
 
-/* ── LE STORAGE DEVIENT INACCESSIBLE AUX CONTENT SCRIPTS (lot SEC-EXT-0.1) ───
+/* ── LE STORAGE INACCESSIBLE AUX CONTENT SCRIPTS, OU RIEN (lots 0.1 / 0.1b) ──
  *
  * SEC-EXT-0 affirmait que `content.js` ne LIT PAS les jetons. C'était vrai du
  * code, mais pas de la capacité : par défaut, un content script atteint
- * `chrome.storage.local` de son extension. La propriété reposait donc sur la
- * discipline du code, et une seule ligne ajoutée par mégarde l'aurait annulée.
+ * `chrome.storage.local` de son extension. SEC-EXT-0.1 a donc appelé
+ * `setAccessLevel({ TRUSTED_CONTEXTS })`.
  *
- * `TRUSTED_CONTEXTS` restreint l'accès au service worker et au popup. Le
- * content script vit, lui, dans le document d'une page arbitraire : il n'a plus
- * accès au credential, quoi qu'on écrive dedans.
+ * ⚠️ MAIS L'ÉCHEC ÉTAIT IGNORÉ. L'appel vivait dans un `try { … } catch {}`, et
+ * le courtier continuait ensuite à lire les jetons et à appeler l'API. Si l'API
+ * manquait, ou levait, la protection n'existait pas — et l'assertion « un
+ * content script ne PEUT PAS lire le credential » redevenait une simple
+ * promesse de code. Un garde dont on ignore l'échec n'est pas un garde.
  *
- * Appelé aussi à l'installation ET au démarrage : un service worker MV3 est
- * arrêté et relancé sans prévenir. */
+ * Désormais, la propriété est binaire : PAS DE PROTECTION = PAS DE CREDENTIAL.
+ * Aucun jeton n'est lu, aucun appel n'est émis, tant que le verrouillage n'est
+ * pas CONFIRMÉ. Et l'absence de l'API est un échec, pas une dispense.
+ */
+let storageSecurityReady = false
+
 async function restrictStorage() {
   try {
-    // API disponible depuis Chrome 111 ; en son absence, on n'invente rien.
-    if (chrome.storage.local.setAccessLevel) {
-      await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+    // Absence d'API = refus. Surtout pas « si l'API existe, on sécurise ;
+    // sinon, on continue » — ce serait exactement le fail-open corrigé ici.
+    if (typeof chrome.storage.local.setAccessLevel !== 'function') {
+      storageSecurityReady = false
+      return false
     }
-  } catch (_) { /* rien à faire de plus ici */ }
+    await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+    storageSecurityReady = true
+    return true
+  } catch (_) {
+    storageSecurityReady = false
+    return false
+  }
 }
-restrictStorage()
-chrome.runtime.onInstalled.addListener(restrictStorage)
-chrome.runtime.onStartup?.addListener(restrictStorage)
+
+/* Le service worker MV3 est arrêté et relancé sans prévenir : on reverrouille
+ * au démarrage, à l'installation, et on RETIENT la promesse pour que le premier
+ * message n'ait pas à courir devant elle. */
+let storageSecurityPromise = restrictStorage()
+chrome.runtime.onInstalled.addListener(() => { storageSecurityPromise = restrictStorage() })
+chrome.runtime.onStartup?.addListener(() => { storageSecurityPromise = restrictStorage() })
+
+/** Le verrou est-il CONFIRMÉ ? Toute opération à credential passe par là. */
+async function securityReady() {
+  try { await storageSecurityPromise } catch (_) { /* déjà reflété dans l'état */ }
+  return storageSecurityReady === true
+}
 
 /** Le jeton ne sort JAMAIS de ce fichier. Aucun message ne le renvoie. */
 async function credential(scope) {
+  // Ceinture ET bretelles : même appelé par erreur, rien ne sort sans verrou.
+  if (!(await securityReady())) return null
   const s = await chrome.storage.local.get(['tokenCapture', 'tokenJarvis'])
   const t = scope === 'jarvis' ? s.tokenJarvis : s.tokenCapture
   return typeof t === 'string' && t.trim() ? t.trim() : null
 }
 
 async function callProspector(path, scope, payload) {
+  // Aucun appel tant que le cloisonnement du storage n'est pas confirmé.
+  if (!(await securityReady())) {
+    return { error: "Extension de sécurité non initialisée : ce navigateur ne peut pas cloisonner le stockage." }
+  }
   const origin = resolveOrigin(PROSPECTOR_ORIGIN)
   if (!origin) return { error: 'Origine Prospector non autorisée dans cette build.' }
   const token = await credential(scope)
@@ -105,6 +135,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
        n'existe pas de `settings.get(<nom>)`, précisément pour qu'aucun appelant
        ne puisse réclamer `tokenJarvis`. */
     if (msg?.type === 'ui.brand') {
+      // Choix explicite : la marque reste servie même sans verrou. C'est un
+      // libellé d'affichage, jamais un secret — et priver l'interface de son nom
+      // n'ajouterait aucune sécurité. Les capacités à credential, elles,
+      // refusent (voir `callProspector`).
       const s = await chrome.storage.local.get(['brand'])
       return sendResponse({ brand: typeof s.brand === 'string' ? s.brand : '' })
     }
