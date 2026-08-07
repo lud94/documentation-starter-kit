@@ -46,7 +46,12 @@ vi.mock('../lib/supabase/workspaces', () => ({
 }))
 
 import { createSessionToken, readSession, verifySessionToken, SESSION_COOKIE } from '../lib/auth/session'
-import { checkCredentials, isSetup, setCredentials, createResetToken, checkResetToken, resetPassword, getEmail } from '../lib/prospector/auth'
+import { checkCredentials, isSetup, setCredentials, resetPassword, getEmail } from '../lib/prospector/auth'
+// SEC-AUTH-0.1 : l'autorité de réinitialisation a quitté le keystore pour une
+// ligne de `prospector_store`, et se consomme atomiquement. Les tests
+// l'inspectent là où elle vit désormais.
+import { getItemStrict, deleteItem } from '../lib/supabase/store'
+import { RESET_KIND, RESET_ID, RESET_NS } from '../lib/auth/resetAuthority'
 import { getKey } from '../lib/prospector/keystore'
 import loginHandler from '../pages/api/auth/login'
 import setupHandler from '../pages/api/auth/setup'
@@ -82,10 +87,13 @@ function resetKeystore() {
 const ENV_KEYS = ['APP_SESSION_SECRET', 'RESEND_API_KEY', 'APP_BASE_URL', 'ALLOW_LOCAL_AUTH_SETUP', 'APP_ENV', 'VERCEL_ENV', 'NEXT_PUBLIC_APP_ENV', 'NEXT_PUBLIC_VERCEL_ENV']
 let saved: Record<string, string | undefined> = {}
 
-beforeEach(() => {
+beforeEach(async () => {
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
   for (const k of ENV_KEYS) delete process.env[k]
   resetKeystore()
+  // L'autorité de réinitialisation vit maintenant dans `prospector_store`, dont
+  // le repli mémoire survit d'un test à l'autre.
+  await deleteItem(RESET_KIND, RESET_ID, RESET_NS)
   clientAuth = null
   useTestSessionSecret()
   vi.restoreAllMocks()
@@ -337,9 +345,11 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     }
   }
 
-  /** Une réinitialisation est-elle ACTIVE ? (aucun jeton brut n'est stocké) */
-  const aucunResetActif = () =>
-    !getKey('APP_RESET_TOKEN_HASH') && !getKey('APP_RESET_TOKEN')
+  /** Une autorité de réinitialisation existe-t-elle ? (aucun jeton brut nulle part) */
+  const aucunResetActif = async () => {
+    const r = await getItemStrict<any>(RESET_KIND, RESET_ID, RESET_NS)
+    return r.ok === true && r.value === null && !getKey('APP_RESET_TOKEN')
+  }
 
   it('U — email inconnu → réponse générique, aucun jeton créé', async () => {
     await admin()
@@ -349,7 +359,7 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     expect(res.statusCode).toBe(200)
     expect(res.body).toEqual(GENERIC)
     expect(e.appels()).toBe(0)
-    expect(aucunResetActif()).toBe(true)
+    expect(await aucunResetActif()).toBe(true)
   })
 
   it('V — DÉFAUT : sans fournisseur d\'email, la réponse ne contient AUCUN lien', async () => {
@@ -361,7 +371,7 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     await resetRequestHandler(post({ email: 'boss@smart.ai' }), res)
     expect(res.body).toEqual(GENERIC)
     expect(JSON.stringify(res.body)).not.toMatch(/link|token|reset=|noEmailProvider/i)
-    expect(aucunResetActif()).toBe(true)
+    expect(await aucunResetActif()).toBe(true)
   })
 
   it('W — le fournisseur lève → même réponse, et le jeton est invalidé', async () => {
@@ -370,7 +380,7 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     const res = mockRes()
     await resetRequestHandler(post({ email: 'boss@smart.ai' }), res)
     expect(res.body).toEqual(GENERIC)
-    expect(aucunResetActif()).toBe(true)
+    expect(await aucunResetActif()).toBe(true)
   })
 
   it('X — DÉFAUT : un 401/500 du fournisseur n\'est PAS un envoi réussi', async () => {
@@ -378,15 +388,16 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     // rien, et une réinitialisation restait active que personne n'avait reçue.
     for (const status of [400, 401, 429, 500]) {
       resetKeystore()
+      await deleteItem(RESET_KIND, RESET_ID, RESET_NS)
       await admin()
       const e = captureEmail({ ok: false, status })
       const res = mockRes()
       await resetRequestHandler(post({ email: 'boss@smart.ai' }), res)
       expect(res.body).toEqual(GENERIC)
       expect(e.appels()).toBe(1)                  // l'appel a bien eu lieu…
-      expect(aucunResetActif()).toBe(true)        // …et pourtant rien ne reste actif
+      expect(await aucunResetActif()).toBe(true)  // …et pourtant rien ne reste actif
       // Le jeton émis pendant cette tentative ne vaut plus rien.
-      expect(await checkResetToken(e.jeton() || 'x')).toBe(false)
+      expect(await resetPassword(e.jeton() || 'x', 'nouveau-mot-de-passe')).toBe(false)
     }
   })
 
@@ -410,6 +421,7 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
   it('AA/AB — APP_BASE_URL absente ou invalide → aucun jeton actif', async () => {
     for (const base of [undefined, '', 'pas-une-url', 'http://evil.example', 'ftp://x.fr', 'javascript:alert(1)']) {
       resetKeystore()
+      await deleteItem(RESET_KIND, RESET_ID, RESET_NS)
       await admin()
       if (base === undefined) delete process.env.APP_BASE_URL
       else process.env.APP_BASE_URL = base
@@ -418,7 +430,7 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
       await resetRequestHandler(post({ email: 'boss@smart.ai' }), res)
       expect(res.body).toEqual(GENERIC)
       expect(e.appels()).toBe(0)
-      expect(aucunResetActif()).toBe(true)
+      expect(await aucunResetActif()).toBe(true)
     }
   })
 
@@ -426,7 +438,7 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     await admin()
     const reponses: any[] = []
     for (const scenario of ['inconnu', 'ok', 'throw', 'http500', 'sans-cle'] as const) {
-      resetKeystore(); await admin()
+      resetKeystore(); await deleteItem(RESET_KIND, RESET_ID, RESET_NS); await admin()
       if (scenario === 'sans-cle') delete process.env.RESEND_API_KEY
       captureEmail(scenario === 'throw' ? 'throw' : { ok: scenario === 'ok', status: 500 })
       const res = mockRes()
@@ -445,7 +457,9 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     expect(brut).toMatch(/^[0-9a-f]{48}$/)
     // Le jeton porteur ne doit se trouver NULLE PART dans les réglages.
     expect(getKey('APP_RESET_TOKEN')).toBeFalsy()
-    const empreinte = getKey('APP_RESET_TOKEN_HASH')
+    expect(getKey('APP_RESET_TOKEN_HASH')).toBeFalsy()
+    const r = await getItemStrict<any>(RESET_KIND, RESET_ID, RESET_NS)
+    const empreinte = r.ok ? r.value?.hash : null
     expect(empreinte).toBeTruthy()
     expect(empreinte).not.toBe(brut)
     expect(empreinte).toMatch(/^[0-9a-f]{64}$/)
@@ -482,7 +496,6 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     const vraiNow = Date.now
     Date.now = () => vraiNow() + 31 * 60 * 1000
     try {
-      expect(await checkResetToken(brut)).toBe(false)
       expect(await resetPassword(brut, 'nouveau-mot-de-passe')).toBe(false)
     } finally { Date.now = vraiNow }
     expect(checkCredentials('boss@smart.ai', PASSWORD)).toBe(true)
@@ -495,7 +508,6 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     const brut = e.jeton()!
     const altere = brut.slice(0, -1) + (brut.endsWith('a') ? 'b' : 'a')
     for (const t of ['', 'x', altere, brut.toUpperCase(), brut.slice(0, 10)]) {
-      expect(await checkResetToken(t)).toBe(false)
       const res = mockRes()
       await resetHandler(post({ token: t, password: 'nouveau-mot-de-passe' }), res)
       expect(res.statusCode).toBe(400)
@@ -503,8 +515,8 @@ describe('§25 U–AI — la réinitialisation de mot de passe', () => {
     // Une nouvelle demande périme la précédente : un seul reset vivant.
     const e2 = captureEmail({ ok: true })
     await resetRequestHandler(post({ email: 'boss@smart.ai' }), mockRes())
-    expect(await checkResetToken(brut)).toBe(false)
-    expect(await checkResetToken(e2.jeton()!)).toBe(true)
+    expect(await resetPassword(brut, 'nouveau-mot-de-passe')).toBe(false)
+    expect(await resetPassword(e2.jeton()!, 'nouveau-mot-de-passe')).toBe(true)
   })
 
   it('bornes : jeton démesuré et mot de passe hors bornes sont refusés avant bcrypt', async () => {

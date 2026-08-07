@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { getEmail, isSetup, createResetToken, invalidateResetToken } from '../../../lib/prospector/auth'
+import { getEmail, isSetup, purgeLegacyResetKeys } from '../../../lib/prospector/auth'
+import { createResetAuthority, invalidateResetAuthority } from '../../../lib/auth/resetAuthority'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { appBaseUrl } from '../../../lib/auth/baseUrl'
 
@@ -33,6 +34,13 @@ import { appBaseUrl } from '../../../lib/auth/baseUrl'
  * Et aucun jeton n'est CRÉÉ tant que toutes les préconditions d'envoi ne sont
  * pas réunies : un jeton actif que personne ne peut recevoir est une fenêtre
  * ouverte sans bénéficiaire.
+ *
+ * ── CE QUE SEC-AUTH-0.1 AJOUTE ──────────────────────────────────────────────
+ * L'invalidation qui suit un échec d'envoi est désormais CONDITIONNELLE à
+ * l'empreinte créée par CETTE requête. Inconditionnelle, elle supprimait
+ * l'autorité d'une demande concurrente arrivée entre-temps : provoquer des
+ * échecs d'envoi suffisait à tuer en boucle la réinitialisation d'autrui —
+ * un déni de service sur la seule voie de récupération du compte.
  */
 const GENERIC = { sent: true }
 
@@ -51,7 +59,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!ref || !email || email !== ref) return res.status(200).json(GENERIC)
   if (!key || !base) return res.status(200).json(GENERIC)
 
-  const token = await createResetToken()
+  // L'écriture de l'autorité peut échouer (base absente sur un déploiement,
+  // base muette) : alors rien n'est envoyé, et la réponse ne change pas.
+  const authority = await createResetAuthority()
+  if (!authority) return res.status(200).json(GENERIC)
+  const { token, hash } = authority
+  // Au passage : on écrase les artefacts de réinitialisation d'avant ce lot.
+  await purgeLegacyResetKeys()
   // ⚠️ L'origine vient de la CONFIGURATION. Ni `Origin`, ni `Host`, ni
   // `X-Forwarded-Host`, ni `Referer` ne sont lus — cette route ne touche pas
   // à `req.headers`.
@@ -69,12 +83,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     })
     // Le statut HTTP fait foi : `fetch` a « réussi » même sur un 401.
     if (!r.ok) {
-      await invalidateResetToken()
+      await invalidateResetAuthority(hash)
       return res.status(200).json(GENERIC)
     }
   } catch {
-    // Réseau injoignable : le lien n'est pas parti, la réinitialisation meurt.
-    await invalidateResetToken()
+    // Réseau injoignable : le lien n'est pas parti, CETTE réinitialisation
+    // meurt — et elle seule.
+    await invalidateResetAuthority(hash)
     return res.status(200).json(GENERIC)
   }
 

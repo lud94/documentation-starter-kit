@@ -3,6 +3,7 @@
 import bcrypt from 'bcryptjs'
 import { getKey, setKeys } from './keystore'
 import { appEnv, onVercel } from '../env'
+import { claimResetAuthority } from '../auth/resetAuthority'
 
 /** Empreinte bcrypt ? Seul format d'identifiant admin accepté depuis SEC-AUTH-0. */
 function isBcrypt(v: string | undefined): boolean {
@@ -81,62 +82,40 @@ export function checkCredentials(email: string, pw: string): boolean {
 
 // ── Réinitialisation du mot de passe ────────────────────────────────────────
 //
-// ── LE DÉFAUT FERMÉ (§15) ───────────────────────────────────────────────────
-// Le jeton était stocké EN CLAIR dans `APP_RESET_TOKEN`, donc dans
-// `prospector_settings`. C'est un jeton PORTEUR : le lire, c'est pouvoir
-// changer le mot de passe administrateur. Une lecture de la table des réglages
-// — sauvegarde, export, fuite de la clé de service — donnait le compte.
+// ⚠️ L'AUTORITÉ N'EST PLUS ICI (lot SEC-AUTH-0.1). Elle vit dans
+// `lib/auth/resetAuthority.ts`, sur une ligne de `prospector_store`, et se
+// consomme d'un seul `DELETE … RETURNING`. Deux raisons, toutes deux des
+// défauts constatés :
 //
-// Désormais : le jeton brut n'existe QUE dans l'email. On ne conserve que son
-// empreinte. SHA-256 suffit ici et bcrypt serait un contresens : bcrypt protège
-// un secret DEVINABLE choisi par un humain ; ce jeton fait 192 bits d'aléa, il
-// n'y a rien à ralentir.
+//   1. la séquence `checkResetToken → setCredentials → invalidateResetToken`
+//      était un check-then-act : vingt requêtes simultanées passaient toutes
+//      la vérification avant la première invalidation ;
+//
+//   2. `getKey` retombe sur `process.env`. Une empreinte posée en variable
+//      d'environnement survivait donc à toute invalidation, et redevenait une
+//      autorisation de changer le mot de passe administrateur.
+//
+// `APP_RESET_TOKEN`, `APP_RESET_TOKEN_HASH` et `APP_RESET_EXP` ne sont PLUS
+// LUS pour décider quoi que ce soit. Ils restent déclarés dans le keystore pour
+// une seule raison : pouvoir écraser l'artefact hérité là où il traîne encore.
+// Le nettoyage physique complet des secrets historiques relève de SEC-SECRETS-0.
 
-const RESET_TTL_MS = 30 * 60 * 1000
-
-async function sha256Hex(s: string): Promise<string> {
-  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))
-  return Array.from(new Uint8Array(d)).map((b) => b.toString(16).padStart(2, '0')).join('')
+/** Efface les artefacts de réinitialisation d'avant SEC-AUTH-0.1. */
+export async function purgeLegacyResetKeys(): Promise<void> {
+  await setKeys({ APP_RESET_TOKEN: '', APP_RESET_TOKEN_HASH: '', APP_RESET_EXP: '' })
 }
 
-/** Comparaison à temps constant — même contrat que pour les signatures. */
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
-  return diff === 0
-}
-
-/** Crée un jeton fort. Le BRUT est rendu à l'appelant — pour l'email, et rien d'autre. */
-export async function createResetToken(): Promise<string> {
-  const token = Array.from(crypto.getRandomValues(new Uint8Array(24)))
-    .map((b) => b.toString(16).padStart(2, '0')).join('')
-  await setKeys({
-    APP_RESET_TOKEN_HASH: await sha256Hex(token),
-    APP_RESET_EXP: String(Date.now() + RESET_TTL_MS),
-    APP_RESET_TOKEN: '',    // écrase l'artefact hérité en clair, là où il traîne
-  })
-  return token
-}
-
-/** Ferme immédiatement toute réinitialisation en cours. */
-export async function invalidateResetToken(): Promise<void> {
-  await setKeys({ APP_RESET_TOKEN_HASH: '', APP_RESET_EXP: '', APP_RESET_TOKEN: '' })
-}
-
-export async function checkResetToken(token: string): Promise<boolean> {
-  const ref = getKey('APP_RESET_TOKEN_HASH')
-  const exp = parseInt(getKey('APP_RESET_EXP') || '0', 10)
-  if (!ref || !token || typeof token !== 'string') return false
-  if (!Number.isFinite(exp) || Date.now() >= exp) return false
-  return timingSafeEqual(await sha256Hex(token), ref)
-}
-
+/**
+ * Change le mot de passe administrateur contre un bearer de réinitialisation.
+ *
+ * ORDRE IMPOSÉ : CONSOMMER, puis vérifier l'expiration, puis seulement écrire
+ * le mot de passe. Jamais l'inverse. Si l'écriture échouait après la
+ * réclamation, la réinitialisation serait perdue et l'utilisateur devrait en
+ * redemander une — c'est préférable à un bearer réutilisable.
+ */
 export async function resetPassword(token: string, pw: string): Promise<boolean> {
-  if (!(await checkResetToken(token))) return false
-  const email = getEmail() || ''
-  await setCredentials(email, pw)
-  await invalidateResetToken()          // usage unique
+  if (!(await claimResetAuthority(token))) return false
+  await setCredentials(getEmail() || '', pw)
   return true
 }
 
