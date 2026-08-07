@@ -2,10 +2,28 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { getUsageAll } from '../../../lib/supabase/pappersCache'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { budgetLeft } from '../../../lib/prospector/llm'
+import { isAdminRequest } from '../../../lib/auth/guard'
 
-// Conso RÉELLE (aucune simulation) : Pappers + IA (appels/tokens/coût), agrégée
-// depuis les compteurs, avec un détail par modèle, par agent et par jour.
-export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
+/**
+ * Conso RÉELLE (aucune simulation) : Pappers + IA, agrégée depuis les
+ * compteurs — ADMINISTRATEUR UNIQUEMENT (lot SEC-AUTH-2).
+ *
+ * ── LE DÉFAUT FERMÉ ─────────────────────────────────────────────────────────
+ * La signature était `handler(_req, res)` : l'identité était ignorée, et le
+ * middleware n'exige qu'une session VALIDE. Un CLIENT recevait donc la
+ * consommation GLOBALE de la plateforme — appels, jetons, coûts par modèle, par
+ * agent et par jour — ainsi que le budget Anthropic restant. C'est-à-dire
+ * l'activité agrégée de TOUS les espaces, y compris ceux de ses concurrents,
+ * et le train de dépense de Smart.AI.
+ *
+ * Ces compteurs ne sont PAS cloisonnés par espace : il n'y a donc rien à
+ * projeter pour un client ici. La vue par tenant relève de MT-1, pas de ce lot.
+ *
+ * La garde est la première opération : ni hydratation, ni lecture de compteurs,
+ * ni `budgetLeft()` avant elle.
+ */
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (!(await isAdminRequest(req))) return res.status(403).json({ error: 'Réservé aux administrateurs.' })
   await hydrateKeystore()
   const all = await getUsageAll()
   const g = (k: string) => all[k] || 0

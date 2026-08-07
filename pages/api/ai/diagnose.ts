@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
+import { isAdminRequest } from '../../../lib/auth/guard'
 import { pickModel, anthropicPost } from '../../../lib/prospector/llm'
 import { buildTag } from '../../../lib/version'
 import { systemTenant } from '../../../lib/prospector/tenant'
@@ -19,20 +20,65 @@ export const config = { maxDuration: 60 }
 // quel appel : elles passent par la passerelle, qui pose la réservation. Un refus
 // budgétaire est rapporté DISTINCTEMENT d'un échec de capacité — sinon l'écran
 // dirait « la clé est en cause » alors que c'est le plafond.
+/**
+ * Catégorie d'échec, DÉDUITE DU STATUT HTTP — jamais du corps du fournisseur.
+ *
+ * ── POURQUOI (lot SEC-AUTH-2, §7) ───────────────────────────────────────────
+ * La version précédente renvoyait `r.text.slice(0, 220)`, c'est-à-dire le CORPS
+ * D'ERREUR D'ANTHROPIC tel quel, et `String(e?.message)` pour une exception.
+ * Un corps d'erreur de tiers n'est pas sous notre contrôle : il peut contenir
+ * l'en-tête présenté, un fragment de requête, une URL authentifiée, ou tout ce
+ * que le fournisseur choisira d'y mettre demain. On ne relaie pas un texte
+ * qu'on n'a pas écrit.
+ *
+ * Le statut, lui, est une donnée structurée et sûre : il porte tout ce dont
+ * l'administrateur a besoin pour agir (clé refusée, quota, panne).
+ */
+function categorieEchec(status: number): string {
+  if (status === 401 || status === 403) return 'clé refusée par Anthropic (401/403)'
+  if (status === 404) return 'modèle ou point d\'accès inconnu (404)'
+  if (status === 429) return 'limite de débit atteinte chez Anthropic (429)'
+  if (status >= 500) return `panne côté Anthropic (${status})`
+  if (status > 0) return `refus d'Anthropic (${status})`
+  return 'appel impossible (réseau ou exception locale)'
+}
+
 async function probe(key: string, model: string, extra: any): Promise<{ ok: boolean; blocked?: boolean; detail?: string }> {
   try {
     const r = await anthropicPost(key, {
       model, max_tokens: 64, messages: [{ role: 'user', content: 'Réponds juste: OK' }], ...extra,
     }, { tenant: systemTenant('diagnose'), agent: 'diagnose', task: 'research' })
+    // `blockedDetail` est un message que NOUS écrivons (garde budgétaire) : il
+    // n'est pas du contenu tiers, et il reste utile tel quel.
     if (r.blocked) return { ok: false, blocked: true, detail: (r.blockedDetail || 'Appel refusé par le garde budgétaire.').slice(0, 220) }
     if (r.ok) return { ok: true }
-    return { ok: false, detail: r.text.slice(0, 220) }
-  } catch (e: any) {
-    return { ok: false, detail: String(e?.message || e).slice(0, 220) }
+    return { ok: false, detail: categorieEchec(r.status) }
+  } catch {
+    // Aucun détail d'exception ne remonte : le message peut porter une URL ou
+    // un en-tête. On ne le journalise pas davantage, pour la même raison.
+    return { ok: false, detail: categorieEchec(0) }
   }
 }
 
-export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
+/**
+ * Sondes de capacité Anthropic — ADMINISTRATEUR UNIQUEMENT (lot SEC-AUTH-2).
+ *
+ * ── LE DÉFAUT FERMÉ ─────────────────────────────────────────────────────────
+ * La signature était `handler(_req, res)` : l'identité de l'appelant était
+ * littéralement ignorée. Le middleware n'exige qu'une session VALIDE, donc une
+ * session CLIENT suffisait à :
+ *
+ *   • lire `ANTHROPIC_API_KEY` (la clé PLATEFORME) ;
+ *   • déclencher QUATRE appels Anthropic réels ;
+ *   • les faire imputer au TENANT SYSTÈME (`systemTenant('diagnose')`), donc à
+ *     personne — une dépense non facturable, déclenchable en boucle ;
+ *   • apprendre quels modèles et quels outils serveur la plateforme sait
+ *     utiliser.
+ *
+ * La garde précède TOUT : hydratation, lecture de clé, choix de modèle, sonde.
+ */
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (!(await isAdminRequest(req))) return res.status(403).json({ error: 'Réservé aux administrateurs.' })
   await hydrateKeystore()
   const key = getKey('ANTHROPIC_API_KEY')
   const model = pickModel('research')

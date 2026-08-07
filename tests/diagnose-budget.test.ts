@@ -22,6 +22,10 @@ vi.mock('../lib/supabase/aiBudget', () => ({
   engaged: vi.fn(),
 }))
 vi.mock('../lib/env', () => ({ writeAllowed: () => true }))
+// SEC-AUTH-2 : `/api/ai/diagnose` est désormais réservé à l'administrateur —
+// la route ignorait purement et simplement l'identité de l'appelant. Ce fichier
+// éprouve le comportement BUDGÉTAIRE : on lui donne donc un administrateur.
+vi.mock('../lib/auth/guard', () => ({ isAdminRequest: async () => true }))
 vi.mock('../lib/prospector/keystore', () => ({
   hydrateKeystore: async () => undefined,
   getKey: (n: string) => process.env[n] || '',
@@ -41,7 +45,7 @@ async function run() {
   vi.resetModules()
   const mod = await import('../pages/api/ai/diagnose')
   const r = res()
-  await mod.default({} as any, r)
+  await mod.default({ method: 'POST', headers: {}, cookies: {}, query: {} } as any, r)
   return r.body
 }
 
