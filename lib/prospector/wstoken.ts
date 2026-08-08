@@ -30,9 +30,9 @@
 // reconnu — il n'est pas dégradé en « capture », il est REFUSÉ. Un jeton dont on
 // ignore la portée voulue ne doit pas s'en voir attribuer une par défaut. Chaque
 // espace doit recopier ses deux nouveaux jetons dans l'extension.
-import { getKey } from './keystore'
 import { getItemStrict, upsertItem } from '../supabase/store'
 import { supabaseConfigured } from '../supabase/client'
+import { sessionSecret } from '../auth/session'
 
 const VER_NS = '_meta'
 const VER_KIND = 'wsver'
@@ -46,11 +46,32 @@ export type ExtensionScope = typeof EXTENSION_SCOPES[number]
  *
  * Un secret connu de tous n'est pas un secret : avec l'ancien littéral, forger
  * un jeton pour l'espace de son choix ne demandait que de lire ce fichier.
+ *
+ * ── LE DÉFAUT FERMÉ (lot SEC-SECRETS-0C.0.1) ────────────────────────────────
+ * Ce module lisait :
+ *
+ *     process.env.APP_SESSION_SECRET || getKey('APP_SESSION_SECRET')
+ *
+ * Deux problèmes, et le second est le grave.
+ *
+ * 1. AUCUN PLANCHER DE LONGUEUR. `lib/auth/session.ts` exige 32 octets UTF-8
+ *    depuis SEC-AUTH-0 ; ici, trois caractères suffisaient. La même racine
+ *    d'identité était donc soumise à deux contrats différents selon qu'elle
+ *    signait une session ou un jeton d'extension.
+ *
+ * 2. UN REPLI VERS LA BASE. `getKey` rend `store.get(name) || process.env[name]`,
+ *    et `hydrateKeystore()` charge dans ce `store` TOUTES les lignes de
+ *    `prospector_settings` — sans filtrer par `MANAGED_KEYS`, qui ne s'applique
+ *    qu'à l'écriture. Une ligne `APP_SESSION_SECRET` posée en base — par une
+ *    restauration, un import, ou quelqu'un ayant la clé de service — devenait
+ *    donc la clé de signature des jetons d'extension, PRIORITAIRE sur
+ *    l'environnement dès que celui-ci était absent. Une racine de signature
+ *    d'identité ne doit jamais pouvoir revenir de la base qu'elle protège.
+ *
+ * La source est désormais UNIQUE et partagée avec `session.ts` : environnement
+ * seul, plancher unique. Il n'y a plus de second contrat à faire diverger.
  */
-function secret(): string | null {
-  const s = process.env.APP_SESSION_SECRET || getKey('APP_SESSION_SECRET') || ''
-  return s.trim() ? s.trim() : null
-}
+const secret = sessionSecret
 
 const enc = new TextEncoder()
 async function hmacHex(key: string, data: string): Promise<string> {

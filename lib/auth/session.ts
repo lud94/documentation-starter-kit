@@ -49,8 +49,19 @@ const enc = new TextEncoder()
  *
  * UNIQUEMENT depuis la configuration serveur. Jamais depuis le corps, le
  * cookie, la base, ni un littéral de repli.
+ *
+ * ⚠️ EXPORTÉ DEPUIS SEC-SECRETS-0C.0.1, et pour une raison précise :
+ * `lib/prospector/wstoken.ts` signait les jetons d'extension avec sa PROPRE
+ * lecture du même secret — `process.env.APP_SESSION_SECRET || getKey(...)`,
+ * sans plancher de longueur. Deux lectures d'une même racine d'identité
+ * divergent toujours ; ici elles divergeaient déjà. Plutôt que de recopier le
+ * plancher de 32 octets à un second endroit — ce qui reproduirait la divergence
+ * un cran plus loin — les deux appelants partagent désormais CETTE fonction.
+ * Il n'existe qu'une définition de « le secret de session est-il utilisable ».
+ *
+ * Aucune dépendance Node n'est ajoutée : ce module reste compatible edge.
  */
-function sessionSecret(): string | null {
+export function sessionSecret(): string | null {
   const s = (process.env.APP_SESSION_SECRET || '').trim()
   if (!s) return null
   return enc.encode(s).length >= MIN_SESSION_SECRET_BYTES ? s : null

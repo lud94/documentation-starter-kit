@@ -115,8 +115,16 @@ import agentHandler from '../pages/api/jarvis/agent'
 import ingestHandler from '../pages/api/ingest/lead'
 import { tokenForWorkspace, resolveExtensionToken, getTokenVersion } from '../lib/prospector/wstoken'
 import { consumeExtensionPending, EXT_PENDING_TTL_MS } from '../lib/prospector/extensionGate'
+// Le plancher est celui de la racine d'identité — importé, jamais recopié.
+import { MIN_SESSION_SECRET_BYTES } from '../lib/auth/session'
 
-const SECRET = 'un-vrai-secret-de-signature'
+// ⚠️ ALLONGÉ AU LOT SEC-SECRETS-0C.0.1. L'ancienne valeur faisait 27 octets :
+// `wstoken.ts` n'imposait aucun plancher, si bien que cette suite signait des
+// jetons d'extension avec un secret que `session.ts` REFUSAIT déjà depuis
+// SEC-AUTH-0. Les deux lectures de la même racine d'identité ne partagent plus
+// qu'un seul contrat — et ce test le paie, ce qui est la preuve que le contrat
+// s'applique. Valeur de TEST, sans aucune valeur ailleurs. ≥ 32 octets.
+const SECRET = 'un-vrai-secret-de-signature-de-test-0123456789'
 
 function mockRes() {
   const r: any = { statusCode: 0, body: undefined, headers: {} as Record<string, string> }
@@ -1068,5 +1076,125 @@ describe('SEC-EXT-0.1c — version minimale et verrou d\'exécution', () => {
     // origine non HTTPS
     expect(auditExtension(build('http://a.invalid', ['http://a.invalid/*']),
       { release: true }).erreurs.join(' ')).toContain('non HTTPS')
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// SEC-SECRETS-0C.0.1 — LA RACINE DE SIGNATURE NE REVIENT PAS DE LA BASE
+//
+// `wstoken.ts` lisait `process.env.APP_SESSION_SECRET || getKey('APP_SESSION_SECRET')`.
+// Deux défauts, et le second est le grave :
+//
+//   1. aucun plancher de longueur, là où `session.ts` en impose 32 octets
+//      depuis SEC-AUTH-0 — la même racine, deux contrats ;
+//   2. un REPLI VERS LA BASE. `getKey` rend `store.get() || process.env[]`, et
+//      `hydrateKeystore()` charge dans ce `store` TOUTES les lignes de
+//      `prospector_settings` sans filtrer par `MANAGED_KEYS` — ce filtre ne
+//      s'applique qu'à l'ÉCRITURE. Une ligne `APP_SESSION_SECRET` posée en base
+//      devenait donc la clé de signature des jetons d'extension.
+//
+// Le mock de keystore de ce fichier reproduit fidèlement ce chemin : `getKey`
+// y rend `KEYS[n]`, exactement comme le ferait une ligne hydratée depuis la
+// base. Poser `KEYS.APP_SESSION_SECRET` EST donc le scénario réel.
+// ══════════════════════════════════════════════════════════════════════════
+describe('SEC-SECRETS-0C.0.1 — APP_SESSION_SECRET : environnement seul, plancher unique', () => {
+  // Faux secret « de base », volontairement long pour qu'aucun plancher ne
+  // puisse expliquer un refus : seule l'origine doit le disqualifier.
+  const SECRET_DB = 'valeur-posee-en-base-de-donnees-non-legitime-0123456789'
+
+  it('1 — env ABSENT + secret présent en base → aucun jeton émis ni résolu', async () => {
+    const legitime = (await tokenForWorkspace('ws_fabel', 'jarvis'))!
+    expect(legitime).toBeTruthy()
+
+    delete process.env.APP_SESSION_SECRET
+    KEYS.APP_SESSION_SECRET = SECRET_DB          // ← la base « propose » une clé
+
+    expect(await tokenForWorkspace('ws_fabel', 'jarvis')).toBeNull()
+    expect(await resolveExtensionToken(legitime, 'jarvis')).toBeNull()
+  })
+
+  it('1 bis — un jeton FORGÉ avec le secret de la base est refusé', async () => {
+    // Le scénario complet : quelqu'un qui peut écrire dans `prospector_settings`
+    // pose sa propre clé, signe un jeton d'extension pour l'espace de son choix,
+    // et le présente. Hier, sur une instance sans variable d'environnement, ce
+    // jeton était VALIDE.
+    process.env.APP_SESSION_SECRET = SECRET_DB   // on fabrique le jeton « du pirate »
+    const forge = (await tokenForWorkspace('ws_client_b', 'jarvis'))!
+    expect(forge).toBeTruthy()
+
+    delete process.env.APP_SESSION_SECRET
+    KEYS.APP_SESSION_SECRET = SECRET_DB          // la base porte la même clé
+    expect(await resolveExtensionToken(forge, 'jarvis')).toBeNull()
+
+    // Et même avec un environnement légitime posé, la base ne signe rien.
+    process.env.APP_SESSION_SECRET = SECRET
+    expect(await resolveExtensionToken(forge, 'jarvis')).toBeNull()
+  })
+
+  it('2 — env TROP COURT + secret long en base → DENY (aucun repli compensatoire)', async () => {
+    process.env.APP_SESSION_SECRET = 'a'.repeat(31)   // 31 octets : sous le plancher
+    KEYS.APP_SESSION_SECRET = SECRET_DB
+    expect(await tokenForWorkspace('ws_fabel', 'jarvis')).toBeNull()
+  })
+
+  it('2 bis — le plancher est celui de session.ts, à l\'octet près', async () => {
+    for (const n of [0, 1, 31]) {
+      process.env.APP_SESSION_SECRET = 'a'.repeat(n)
+      expect(await tokenForWorkspace('ws_fabel', 'jarvis'), `${n} octets`).toBeNull()
+    }
+    process.env.APP_SESSION_SECRET = 'a'.repeat(MIN_SESSION_SECRET_BYTES)
+    expect(await tokenForWorkspace('ws_fabel', 'jarvis')).toBeTruthy()
+    // Octets UTF-8, pas points de code : 16 caractères accentués = 32 octets.
+    process.env.APP_SESSION_SECRET = 'é'.repeat(16)
+    expect(await tokenForWorkspace('ws_fabel', 'jarvis')).toBeTruthy()
+    process.env.APP_SESSION_SECRET = 'é'.repeat(15)
+    expect(await tokenForWorkspace('ws_fabel', 'jarvis')).toBeNull()
+  })
+
+  it('3 — env valide ≥ 32 octets → jeton émis et résolu normalement', async () => {
+    process.env.APP_SESSION_SECRET = SECRET
+    const t = (await tokenForWorkspace('ws_fabel', 'capture'))!
+    expect(t).toMatch(/^pk_capture_ws_fabel_[0-9a-f]{40}$/)
+    expect(await resolveExtensionToken(t, 'capture')).toBe('ws_fabel')
+  })
+
+  it('4 — changer la valeur en base ne change RIEN à la signature produite', async () => {
+    process.env.APP_SESSION_SECRET = SECRET
+    delete KEYS.APP_SESSION_SECRET
+    const sansBase = await tokenForWorkspace('ws_fabel', 'jarvis')
+
+    for (const valeur of [SECRET_DB, 'autre-valeur-en-base-0123456789012345', '']) {
+      KEYS.APP_SESSION_SECRET = valeur
+      // Signature identique : la base n'a aucune influence, dans aucun sens.
+      expect(await tokenForWorkspace('ws_fabel', 'jarvis')).toBe(sansBase)
+      expect(await resolveExtensionToken(sansBase!, 'jarvis')).toBe('ws_fabel')
+    }
+  })
+
+  it('5 — aucune valeur de secret n\'apparaît en journal ni en erreur', async () => {
+    const journal: string[] = []
+    const espion = (...a: any[]) => { journal.push(a.map(String).join(' ')) }
+    const spies = (['log', 'error', 'warn'] as const).map((m) => vi.spyOn(console, m).mockImplementation(espion as any))
+    try {
+      process.env.APP_SESSION_SECRET = 'a'.repeat(31)
+      KEYS.APP_SESSION_SECRET = SECRET_DB
+      await tokenForWorkspace('ws_fabel', 'jarvis')
+      await resolveExtensionToken('pk_jarvis_ws_fabel_' + 'a'.repeat(40), 'jarvis')
+      delete process.env.APP_SESSION_SECRET
+      await tokenForWorkspace('ws_fabel', 'capture')
+    } finally { for (const s of spies) s.mockRestore() }
+
+    const tout = journal.join('\n')
+    expect(tout).not.toContain(SECRET_DB)
+    expect(tout).not.toContain(SECRET)
+    expect(journal).toHaveLength(0)
+  })
+
+  it('le module ne lit plus le keystore du tout pour ce secret', () => {
+    const src = readFileSync('lib/prospector/wstoken.ts', 'utf8')
+    const sansCommentaires = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+    // Ni l'import, ni l'appel : il n'existe plus de chemin vers la base.
+    expect(sansCommentaires).not.toContain('getKey')
+    expect(sansCommentaires).toContain('sessionSecret')
   })
 })
