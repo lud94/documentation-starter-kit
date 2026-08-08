@@ -20,7 +20,7 @@ import {
 } from '../lib/secrets/crypto'
 import {
   parseKeyring, loadKeyringFromEnv, keyringConfigured, keyringKids,
-  assertSafeKeyringTransition, KEYRING_ENV, KEY_BYTES, type Keyring,
+  assertSafeKeyringTransition, isValidKid, KEYRING_ENV, KEY_BYTES, type Keyring,
 } from '../lib/secrets/keyring'
 import { SecretCryptoError, isSecretCryptoError } from '../lib/secrets/errors'
 
@@ -112,7 +112,6 @@ describe('C–H — un chiffré ne s\'ouvre que sous SON contexte', () => {
 
   const VARIANTES: Array<[string, SecretContext]> = [
     ['C — autre workspace', { ...CTX, workspaceId: 'ws_client_b' }],
-    ['C bis — workspace retiré', { ...CTX, workspaceId: null }],
     ['D — autre secretName', { ...CTX, secretName: 'autre_secret' }],
     ['E — autre provider', { ...CTX, provider: 'openai' }],
     ['E bis — provider retiré', { ...CTX, provider: null }],
@@ -127,6 +126,16 @@ describe('C–H — un chiffré ne s\'ouvre que sous SON contexte', () => {
       expect(codeErreur(() => openSecret(scelle, ctx, k))).toBe('secret_decrypt_failed')
     })
   }
+
+  it('C bis — un tenant SANS workspace n\'est plus « un autre contexte », il est INVALIDE', () => {
+    // ⚠️ CE TEST A CHANGÉ DE VERDICT AU LOT 0B.1, et c'est un durcissement.
+    // Il attendait `secret_decrypt_failed` : le contexte sans espace était
+    // accepté, scellait `null`, et échouait « seulement » à l'ouverture. La
+    // primitive prétendait donc cloisonner par espace un contexte qui n'en
+    // nommait aucun. Le refus intervient maintenant AVANT toute cryptographie.
+    expect(codeErreur(() => openSecret(scelle, { ...CTX, workspaceId: null }, k)))
+      .toBe('secret_context_invalid')
+  })
 
   it('H — le SCÉNARIO RÉEL : un chiffré recopié d\'une ligne vers une autre', () => {
     // Fabel et Client-B ont chacun leur credential Anthropic. Quelqu'un qui
@@ -166,9 +175,11 @@ describe('C–H — un chiffré ne s\'ouvre que sous SON contexte', () => {
     expect(codeErreur(() => sealSecret('x', { ...CTX, workspaceId: 42 as any }, k))).toBe('secret_context_invalid')
     expect(codeErreur(() => sealSecret('x', { ...CTX, secretVersion: 1.5 }, k))).toBe('secret_context_invalid')
     expect(codeErreur(() => sealSecret('x', { ...CTX, secretVersion: -1 }, k))).toBe('secret_context_invalid')
-    // Les quatre portées prévues fonctionnent.
+    // Les portées RÉELLEMENT prises en charge fonctionnent, avec leur contrat.
+    const ctxDe = (scope: typeof SECRET_SCOPES[number]) =>
+      scope === 'tenant' ? { scope, secretName: 'n', workspaceId: 'ws_fabel' } : { scope, secretName: 'n' }
     for (const scope of SECRET_SCOPES) {
-      expect(openSecret(sealSecret('x', { scope, secretName: 'n' }, k), { scope, secretName: 'n' }, k)).toBe('x')
+      expect(openSecret(sealSecret('x', ctxDe(scope), k), ctxDe(scope), k)).toBe('x')
     }
   })
 })
@@ -469,5 +480,224 @@ describe('AA/AB — rien ne fuit, et l\'IV ne se répète pas', () => {
     const vus = new Set<string>()
     for (let i = 0; i < 1000; i++) vus.add(parseEnvelope(sealSecret(SECRET, CTX, k)).iv)
     expect(vus.size).toBe(1000)
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// SEC-SECRETS-0B.1 — DURCISSEMENT DU CONTRAT, AVANT TOUT VRAI SECRET
+//
+// L'audit de 0B a relevé quatre promesses trop larges. Aucune n'était une
+// faille exploitable — rien n'utilise encore cette primitive — mais toutes
+// auraient été figées le jour où un secret serait entré : un chiffré porte son
+// contexte pour toujours, et une clé maîtresse posée ne se reformate pas.
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('0B.1 §A — le contrat des portées : `platform` et `tenant`, rien d\'autre', () => {
+  const k = trousseau('v1', ['v1'])
+
+  it('1 — tenant avec workspaceId valide → aller-retour OK', () => {
+    const ctx: SecretContext = { scope: 'tenant', secretName: 'provider_api_key', workspaceId: 'ws_fabel' }
+    expect(openSecret(sealSecret(SECRET, ctx, k), ctx, k)).toBe(SECRET)
+  })
+
+  it('2–6 — tenant sans workspaceId exploitable → secret_context_invalid', () => {
+    // Absent, `undefined`, `null`, vide, espaces, tabulation : cinq façons de
+    // ne pas nommer d'espace, un seul verdict. Et le refus vaut au SCELLEMENT
+    // comme à l'OUVERTURE — sinon on pourrait produire ce qu'on refuse de lire.
+    const manquants: Array<Partial<SecretContext>> = [
+      {},                              // 2 — champ absent
+      { workspaceId: undefined },      // 3
+      { workspaceId: null },           // 4
+      { workspaceId: '' },             // 5
+      { workspaceId: '   ' },          // 6
+      { workspaceId: '\t\n' },
+    ]
+    for (const partiel of manquants) {
+      const ctx = { scope: 'tenant', secretName: 'provider_api_key', ...partiel } as SecretContext
+      expect(codeErreur(() => sealSecret(SECRET, ctx, k))).toBe('secret_context_invalid')
+      // Et une enveloppe légitime ne s'ouvre pas non plus sous ce contexte.
+      const legitime = sealSecret(SECRET, { scope: 'tenant', secretName: 'provider_api_key', workspaceId: 'ws_fabel' }, k)
+      expect(codeErreur(() => openSecret(legitime, ctx, k))).toBe('secret_context_invalid')
+    }
+  })
+
+  it('un workspaceId non textuel est refusé, jamais converti', () => {
+    for (const mauvais of [42, true, {}, [], Symbol('x')]) {
+      const ctx = { scope: 'tenant', secretName: 'n', workspaceId: mauvais } as any
+      expect(codeErreur(() => sealSecret(SECRET, ctx, k))).toBe('secret_context_invalid')
+    }
+  })
+
+  it('7 — platform n\'exige aucun workspaceId', () => {
+    const ctx: SecretContext = { scope: 'platform', secretName: 'totp_secret' }
+    expect(openSecret(sealSecret(SECRET, ctx, k), ctx, k)).toBe(SECRET)
+  })
+
+  it('8/9/10 — user, ephemeral et toute autre portée → secret_context_invalid', () => {
+    // ⚠️ `user` et `ephemeral` étaient ANNONCÉS pris en charge par 0B. Une
+    // primitive qui accepte une portée promet de l'authentifier correctement ;
+    // or aucun contrat d'identité ni de cycle de vie n'existe pour ces deux-là.
+    // Les casts forcent le passage en dépit du type : c'est bien le RUNTIME
+    // qu'on éprouve, pas le compilateur.
+    const refusees = ['user', 'ephemeral', 'root', 'PLATFORM', 'Tenant', 'tenant ', '', null, undefined, 0, {}]
+    for (const scope of refusees) {
+      const ctx = { scope, secretName: 'n', workspaceId: 'ws_fabel' } as any
+      expect(codeErreur(() => sealSecret(SECRET, ctx, k))).toBe('secret_context_invalid')
+    }
+    // La nomenclature publique elle-même ne les annonce plus.
+    expect([...SECRET_SCOPES]).toEqual(['platform', 'tenant'])
+  })
+})
+
+describe('0B.1 §B — la clé maîtresse : base64url canonique, ou rien', () => {
+  const cle32 = () => randomBytes(KEY_BYTES).toString('base64url')
+  const avec = (valeur: string) => JSON.stringify({ currentKid: 'v1', keys: { v1: valeur } })
+
+  it('une clé produite par randomBytes(32).toString(\'base64url\') est acceptée', () => {
+    for (let i = 0; i < 50; i++) {
+      const v = cle32()
+      expect(v).toMatch(/^[A-Za-z0-9_-]{43}$/)      // 32 octets, non padded
+      expect(keyringKids(parseKeyring(avec(v)))).toEqual(['v1'])
+    }
+  })
+
+  it('alphabet non canonique → secret_keyring_invalid', () => {
+    const brut = randomBytes(KEY_BYTES)
+    const canonique = brut.toString('base64url')
+    const standard = brut.toString('base64')       // peut contenir + / et du padding
+
+    const refusees: Array<[string, string]> = [
+      ['padding « = »', canonique + '='],
+      ['padding double', canonique + '=='],
+      ['espace avant', ' ' + canonique],
+      ['espace après', canonique + ' '],
+      ['saut de ligne', canonique + '\n'],
+      ['espace interne', canonique.slice(0, 20) + ' ' + canonique.slice(20)],
+      ['point d\'exclamation', canonique + '!'],
+      ['astérisque', canonique + '*'],
+      ['guillemet', canonique.slice(0, 10) + '"' + canonique.slice(10)],
+      ['vide', ''],
+    ]
+    for (const [nom, v] of refusees) {
+      expect(codeErreur(() => parseKeyring(avec(v))), nom).toBe('secret_keyring_invalid')
+    }
+    // base64 STANDARD n'est accepté que s'il se trouve être identique à
+    // base64url — ce qui arrive quand le tirage ne produit ni « + » ni « / ».
+    // Dès qu'il en contient, il est refusé : un seul format, pas deux.
+    if (/[+/=]/.test(standard)) {
+      expect(codeErreur(() => parseKeyring(avec(standard)))).toBe('secret_keyring_invalid')
+    }
+  })
+
+  it('LE DÉFAUT : du bruit ajouté à une clé valide n\'est plus « nettoyé » puis accepté', () => {
+    // `Buffer.from(x, 'base64')` IGNORE les caractères hors alphabet. Une clé
+    // suivie de bruit décodait donc en 32 octets valides, et l'ancienne version
+    // l'ACCEPTAIT : deux chaînes visiblement différentes désignaient la même
+    // clé, et l'opérateur qui relisait sa configuration ne voyait pas ce que le
+    // programme avait réellement lu.
+    const canonique = randomBytes(KEY_BYTES).toString('base64url')
+    for (const bruit of ['!!!!', '####', '  ', '\t', '%%%', '<>']) {
+      const pollue = canonique + bruit
+      // Le décodeur permissif rend bien 32 octets — c'est là tout le piège.
+      expect(Buffer.from(pollue, 'base64').length).toBe(KEY_BYTES)
+      // Et c'est refusé.
+      expect(codeErreur(() => parseKeyring(avec(pollue)))).toBe('secret_keyring_invalid')
+    }
+  })
+
+  it('longueur décodée ≠ 32 octets → refus, même avec un alphabet parfait', () => {
+    for (const n of [0, 1, 16, 31, 33, 48, 64]) {
+      const v = randomBytes(n).toString('base64url')
+      if (!v) { expect(codeErreur(() => parseKeyring(avec(v)))).toBe('secret_keyring_invalid'); continue }
+      expect(v).toMatch(/^[A-Za-z0-9_-]+$/)
+      expect(codeErreur(() => parseKeyring(avec(v)))).toBe('secret_keyring_invalid')
+    }
+  })
+
+  it('représentation NON CANONIQUE → refus, prouvé par aller-retour', () => {
+    // Les bits de bourrage de fin doivent être nuls. Deux chaînes distinctes
+    // peuvent décoder vers les mêmes 32 octets ; une seule est canonique, et
+    // c'est le ré-encodage qui les départage — la longueur ne suffit pas.
+    const canonique = randomBytes(KEY_BYTES).toString('base64url')
+    const dernier = canonique[canonique.length - 1]
+    const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+    let variante = ''
+    for (const c of ALPHABET) {
+      if (c === dernier) continue
+      const essai = canonique.slice(0, -1) + c
+      const decode = Buffer.from(essai, 'base64url')
+      // Même longueur décodée, mais ré-encodage différent : non canonique.
+      if (decode.length === KEY_BYTES && decode.toString('base64url') !== essai) { variante = essai; break }
+    }
+    expect(variante, 'aucune variante non canonique trouvée').not.toBe('')
+    expect(Buffer.from(variante, 'base64url')).toHaveLength(KEY_BYTES)   // la longueur ne suffit pas
+    expect(codeErreur(() => parseKeyring(avec(variante)))).toBe('secret_keyring_invalid')
+  })
+
+  it('aucun message de refus ne contient la clé rejetée', () => {
+    const canonique = randomBytes(KEY_BYTES).toString('base64url')
+    for (const v of [canonique + '!', canonique + '=', ' ' + canonique]) {
+      try { parseKeyring(avec(v)); throw new Error('aurait dû lever') } catch (e) {
+        const msg = String((e as Error).message)
+        expect(msg).not.toContain(canonique)
+        expect(msg).not.toContain(v)
+      }
+    }
+  })
+})
+
+describe('0B.1 §C — le `kid` : une seule règle, partagée', () => {
+  const k = trousseau('v1', ['v1'])
+  const scelle = sealSecret(SECRET, CTX, k)
+
+  const VALIDES = ['v1', 'a_b-1', 'a', '0', 'v'.repeat(32), 'x1_y-z9']
+  const INVALIDES = ['', '-v1', '_v1', 'V1', 'v 1', 'v.1', 'v/1', '../', 'v'.repeat(33), 'é1', 'v1\n', ' v1']
+
+  it('la même règle vaut pour le trousseau et pour l\'enveloppe', () => {
+    for (const kid of VALIDES) expect(isValidKid(kid)).toBe(true)
+    for (const kid of INVALIDES) expect(isValidKid(kid)).toBe(false)
+    for (const kid of [null, undefined, 42, {}, []]) expect(isValidKid(kid)).toBe(false)
+  })
+
+  it('un kid valide est accepté des DEUX côtés', () => {
+    for (const kid of VALIDES) {
+      const tr = trousseau(kid, [kid])
+      const e = sealSecret(SECRET, CTX, tr)
+      expect(parseEnvelope(e).kid).toBe(kid)
+      expect(openSecret(e, CTX, tr)).toBe(SECRET)
+    }
+  })
+
+  it('kid SYNTAXIQUEMENT INVALIDE dans l\'enveloppe → secret_envelope_invalid', () => {
+    // ⚠️ AVANT 0B.1 : l'enveloppe n'exigeait qu'une « chaîne non vide ». Un kid
+    // de 400 caractères ou hors alphabet passait l'analyse et n'était refusé
+    // qu'en aval, avec le motif TROMPEUR « clé absente du trousseau » — ce qui
+    // aurait envoyé un opérateur chercher une clé manquante au lieu d'une
+    // enveloppe corrompue.
+    for (const kid of INVALIDES) {
+      expect(codeErreur(() => openSecret(retoucher(scelle, { kid }), CTX, k)), kid)
+        .toBe('secret_envelope_invalid')
+    }
+    for (const kid of [null, 42, {}, []]) {
+      expect(codeErreur(() => openSecret(retoucher(scelle, { kid }), CTX, k)))
+        .toBe('secret_envelope_invalid')
+    }
+  })
+
+  it('kid VALIDE mais inconnu du trousseau → secret_key_missing', () => {
+    // La distinction compte : « je ne connais pas cette clé » et « cette
+    // enveloppe est corrompue » appellent deux gestes d'exploitation opposés.
+    for (const kid of ['v9', 'z', 'abc-42']) {
+      expect(codeErreur(() => openSecret(retoucher(scelle, { kid }), CTX, k)))
+        .toBe('secret_key_missing')
+    }
+  })
+
+  it('kid mal formé dans le TROUSSEAU → secret_keyring_invalid', () => {
+    const c = randomBytes(KEY_BYTES).toString('base64url')
+    for (const kid of INVALIDES) {
+      expect(codeErreur(() => parseKeyring(JSON.stringify({ currentKid: kid, keys: { [kid]: c } })))) 
+        .toBe('secret_keyring_invalid')
+    }
   })
 })

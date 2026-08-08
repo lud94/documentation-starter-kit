@@ -29,7 +29,7 @@
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { SecretCryptoError } from './errors'
-import type { Keyring } from './keyring'
+import { isValidKid, type Keyring } from './keyring'
 
 export const ENVELOPE_VERSION = 1
 export const ALG = 'A256GCM' as const
@@ -40,13 +40,31 @@ export const TAG_BYTES = 16
 
 // ── CONTEXTE ────────────────────────────────────────────────────────────────
 
-/** Nomenclature FERMÉE. Une portée inconnue n'est pas « autre chose », elle est refusée. */
-export const SECRET_SCOPES = ['platform', 'tenant', 'user', 'ephemeral'] as const
+/**
+ * Nomenclature FERMÉE, et volontairement RÉDUITE (lot 0B.1).
+ *
+ * ── POURQUOI `user` ET `ephemeral` ONT DISPARU ──────────────────────────────
+ * SEC-SECRETS-0B les annonçait comme pris en charge. C'était faux, et d'une
+ * façon qui compte : une primitive cryptographique qui accepte une portée
+ * PROMET de l'authentifier correctement. Or il n'existe encore aucun contrat
+ * d'identité pour `user` (qui est le sujet ? l'administrateur, un client, une
+ * session ?) ni aucun cycle de vie pour `ephemeral` (quelle expiration ? quel
+ * stockage ? qui purge ?). Sceller sous ces portées aurait produit des chiffrés
+ * dont personne n'aurait su, plus tard, quel contexte ils affirmaient — et
+ * l'AAD les aurait figés pour toujours dans cette ambiguïté.
+ *
+ * « Non pris en charge » ne veut pas dire abandonné : cela veut dire qu'aucune
+ * garantie cryptographique ne sera vendue avant que l'architecture n'ait défini
+ * ce qu'elle garantit. Les ajouter plus tard est facile ; défaire des chiffrés
+ * déjà scellés sous un contexte mal défini ne l'est pas.
+ */
+export const SECRET_SCOPES = ['platform', 'tenant'] as const
 export type SecretScope = typeof SECRET_SCOPES[number]
 
 export interface SecretContext {
   scope: SecretScope
   secretName: string
+  /** OBLIGATOIRE pour `tenant`. Ignoré — et facultatif — pour `platform`. */
   workspaceId?: string | null
   provider?: string | null
   credentialId?: string | null
@@ -83,10 +101,27 @@ function champOptionnel(v: unknown, nom: string): string | null {
  */
 function aad(ctx: SecretContext, kid: string): Buffer {
   if (!SECRET_SCOPES.includes(ctx?.scope as SecretScope)) {
+    // Couvre aussi bien une valeur inventée que `user` et `ephemeral`, qui ne
+    // sont plus pris en charge : rien n'est interprété « au mieux ».
     throw new SecretCryptoError('secret_context_invalid', 'scope hors nomenclature')
   }
   if (typeof ctx.secretName !== 'string' || !ctx.secretName.trim()) {
     throw new SecretCryptoError('secret_context_invalid', 'secretName absent')
+  }
+  // ⚠️ UN SECRET DE TENANT SANS TENANT N'EXISTE PAS (lot 0B.1). La version
+  // précédente l'acceptait : `workspaceId` était optionnel pour toutes les
+  // portées, et l'AAD scellait simplement `null`. Le chiffré restait cohérent
+  // avec lui-même — donc indéchiffrable sous un vrai workspace — mais la
+  // propriété annoncée était fausse : la primitive prétendait cloisonner par
+  // espace un contexte qui n'en nommait aucun. Un appelant qui oubliait de
+  // passer l'espace obtenait un scellement « réussi », et l'erreur ne se
+  // découvrait qu'à la relecture.
+  if (ctx.scope === 'tenant') {
+    const ws = typeof ctx.workspaceId === 'string' ? ctx.workspaceId.trim() : ''
+    if (!ws) {
+      throw new SecretCryptoError('secret_context_invalid',
+        'scope tenant : workspaceId obligatoire et non vide')
+    }
   }
   const version = ctx.secretVersion
   if (version !== undefined && version !== null
@@ -179,8 +214,14 @@ export function parseEnvelope(serialisee: string): SecretEnvelope {
   if (obj.alg !== ALG) {
     throw new SecretCryptoError('secret_envelope_invalid', 'algorithme non pris en charge')
   }
-  if (typeof obj.kid !== 'string' || !obj.kid.trim()) {
-    throw new SecretCryptoError('secret_envelope_invalid', 'kid absent')
+  // ⚠️ MÊME RÈGLE QUE LE TROUSSEAU (lot 0B.1). L'enveloppe se contentait d'une
+  // « chaîne non vide » : un `kid` de 400 caractères, en majuscules ou hors
+  // alphabet passait l'analyse et n'était refusé qu'en aval, sous le motif
+  // trompeur « clé absente du trousseau ». Un identifiant mal formé est une
+  // ENVELOPPE invalide, pas une clé manquante — et la distinction compte pour
+  // qui diagnostique.
+  if (!isValidKid(obj.kid)) {
+    throw new SecretCryptoError('secret_envelope_invalid', 'kid absent ou mal formé')
   }
   // Longueurs vérifiées ici : elles ne dépendent pas de la clé, et une IV ou un
   // tag de taille inattendue est une enveloppe corrompue, pas un échec d'auth.

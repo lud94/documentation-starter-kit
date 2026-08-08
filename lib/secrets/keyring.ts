@@ -30,8 +30,20 @@ export const KEY_BYTES = 32
 /**
  * Un `kid` désigne une génération de clé. Format volontairement étroit : il
  * voyage dans l'enveloppe, donc dans la base, et sera comparé et journalisé.
+ *
+ * ⚠️ RÈGLE UNIQUE, PARTAGÉE (lot 0B.1). Le trousseau et l'enveloppe validaient
+ * le `kid` séparément — le trousseau avec cette expression, l'enveloppe avec un
+ * simple « chaîne non vide ». Deux validations d'une même notion divergent
+ * toujours, et ici la divergence était déjà là : une enveloppe pouvait porter
+ * `kid = "../"` ou une chaîne de 400 caractères et n'être rejetée qu'en aval,
+ * au motif que la clé était introuvable. `parseEnvelope` importe désormais
+ * cette fonction ; il n'existe plus qu'une définition de ce qu'est un `kid`.
  */
 const KID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/
+
+export function isValidKid(v: unknown): v is string {
+  return typeof v === 'string' && KID_RE.test(v)
+}
 
 export interface Keyring {
   readonly currentKid: string
@@ -44,18 +56,43 @@ export function keyringKids(k: Keyring): string[] {
   return Array.from(k.keys.keys()).sort()
 }
 
+/** Alphabet base64url strict : ni `+`, ni `/`, ni `=`, ni espace. */
+const B64URL_RE = /^[A-Za-z0-9_-]+$/
+
+/**
+ * Décode UNE clé maîtresse. Format unique : base64url canonique, non padded.
+ *
+ * ── LE DÉFAUT FERMÉ (lot 0B.1) ──────────────────────────────────────────────
+ * La version précédente faisait `Buffer.from(raw.trim(), 'base64')` et se
+ * contentait de vérifier la longueur décodée. Or ce décodeur est INDULGENT : il
+ * ignore purement et simplement les caractères hors alphabet. Une clé accompagnée
+ * de bruit — `"…AAAA!!!!####"` — était donc silencieusement nettoyée, et si le
+ * reste décodait en 32 octets, elle était ACCEPTÉE. Deux chaînes différentes
+ * pouvaient ainsi désigner la même clé, et l'opérateur qui vérifiait sa
+ * configuration à l'œil ne voyait pas ce que le programme avait réellement lu.
+ * Pour une clé maîtresse, « à peu près la bonne valeur » n'existe pas.
+ *
+ * Trois vérifications, toutes nécessaires :
+ *   1. l'alphabet est exactement base64url, sans padding ;
+ *   2. le décodage rend exactement 32 octets ;
+ *   3. le RÉ-ENCODAGE redonne la chaîne fournie — c'est ce qui élimine les
+ *      représentations non canoniques (bits de bourrage non nuls en fin de
+ *      chaîne), que les deux premiers contrôles laissent passer.
+ *
+ * Aucune compatibilité historique n'existe : aucune clé n'a encore été posée.
+ * On impose donc un format unique tant que c'est gratuit.
+ */
 function decodeKey(raw: unknown, kid: string): Uint8Array {
-  if (typeof raw !== 'string' || !raw.trim()) {
+  if (typeof raw !== 'string' || !raw) {
     throw new SecretCryptoError('secret_keyring_invalid', `clé « ${kid} » : valeur absente ou non textuelle`)
   }
-  let buf: Buffer
-  try {
-    // base64 et base64url sont acceptés en entrée : l'opérateur colle ce que son
-    // générateur produit. Ce qui est vérifié, c'est la LONGUEUR DÉCODÉE.
-    buf = Buffer.from(raw.trim(), 'base64')
-  } catch {
-    throw new SecretCryptoError('secret_keyring_invalid', `clé « ${kid} » : décodage impossible`)
+  // ⚠️ Pas de `trim()`. Un espace autour d'une clé maîtresse est une erreur de
+  // saisie qu'il faut voir, pas absorber.
+  if (!B64URL_RE.test(raw)) {
+    throw new SecretCryptoError('secret_keyring_invalid',
+      `clé « ${kid} » : base64url strict attendu (ni « + », ni « / », ni « = », ni espace)`)
   }
+  const buf = Buffer.from(raw, 'base64url')
   if (buf.length !== KEY_BYTES) {
     // ⚠️ Le message dit la LONGUEUR ATTENDUE et la longueur obtenue, jamais la
     // valeur. Une clé trop courte n'est pas « complétée » ni dérivée : elle est
@@ -63,6 +100,10 @@ function decodeKey(raw: unknown, kid: string): Uint8Array {
     // qui a l'air de fonctionner.
     throw new SecretCryptoError('secret_keyring_invalid',
       `clé « ${kid} » : ${buf.length} octets décodés, ${KEY_BYTES} exigés`)
+  }
+  if (buf.toString('base64url') !== raw) {
+    throw new SecretCryptoError('secret_keyring_invalid',
+      `clé « ${kid} » : représentation base64url non canonique`)
   }
   return new Uint8Array(buf)
 }
@@ -90,7 +131,7 @@ export function parseKeyring(json: string): Keyring {
   }
 
   const currentKid = obj.currentKid
-  if (typeof currentKid !== 'string' || !KID_RE.test(currentKid)) {
+  if (!isValidKid(currentKid)) {
     throw new SecretCryptoError('secret_keyring_invalid', 'currentKid absent ou mal formé')
   }
   const keysObj = obj.keys
@@ -100,7 +141,7 @@ export function parseKeyring(json: string): Keyring {
 
   const keys = new Map<string, Uint8Array>()
   for (const kid of Object.keys(keysObj)) {
-    if (!KID_RE.test(kid)) {
+    if (!isValidKid(kid)) {
       throw new SecretCryptoError('secret_keyring_invalid', `identifiant de clé mal formé : « ${kid} »`)
     }
     keys.set(kid, decodeKey(keysObj[kid], kid))
