@@ -1,11 +1,16 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { listItems, upsertItem, deleteItem } from '../../../lib/supabase/store'
-import { activeWs } from '../../../lib/auth/ws'
+import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import type { Mission } from '../../../types/prospector'
 
 // CRUD des missions, cloisonné par espace.
+//
+// SEC-0b — l'espace vient du résolveur MT-0. Aucun repli sur « admin » : une
+// session absente, un client sans espace ou un espace admin invalide ferment.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  const ws = await activeWs(req)
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return res.status(403).json({ error: 'forbidden' })
+  const ws = tenant.id
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
 
   if (req.method === 'GET') {

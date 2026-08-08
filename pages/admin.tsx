@@ -49,7 +49,7 @@ export default function AdminPage() {
   const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [usagePeriod, setUsagePeriod] = useState<Period>('month')
   const [pappersCalls, setPappersCalls] = useState<number | null>(null)
-  const [budget, setBudget] = useState<{ anthropic: number; spent: number; remaining: number | null } | null>(null)
+  const [budget, setBudget] = useState<{ anthropic: number; spent: number; remaining: number | null; state?: string; blocked?: boolean; reason?: string | null; degraded?: boolean } | null>(null)
   const [budgetInput, setBudgetInput] = useState('')
   const [budgetSaving, setBudgetSaving] = useState(false)
   const loadUsageMeta = () => fetch('/api/config/usage').then((r) => r.json()).then((d) => { setPappersCalls(d.pappersCalls ?? null); setBudget(d.budget ?? null); if (d.budget?.anthropic) setBudgetInput(String(d.budget.anthropic)) }).catch(() => {})
@@ -151,12 +151,31 @@ export default function AdminPage() {
                 <button onClick={saveBudget} disabled={budgetSaving} className="gradient-brand text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-40">{budgetSaving ? '…' : 'Enregistrer'}</button>
               </div>
             </div>
+            {/* Un suivi indisponible n'est PAS un crédit épuisé : les deux bloquent
+                les appels, mais l'un se corrige en rechargeant, l'autre en réparant
+                la base ou la configuration d'environnement. */}
+            {budget?.state === 'usage_unavailable' && (
+              <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
+                <p className="text-xs font-semibold text-amber-800">Suivi de consommation indisponible — appels IA bloqués</p>
+                <p className="text-[11px] text-amber-700 mt-0.5">{budget.reason || 'Le compteur d’usage durable est illisible ou non inscriptible. Les chiffres ci-dessous ne font pas autorité.'}</p>
+              </div>
+            )}
+            {budget?.state === 'budget_exhausted' && (
+              <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2">
+                <p className="text-xs font-semibold text-red-800">Crédit épuisé — appels IA bloqués</p>
+                <p className="text-[11px] text-red-700 mt-0.5">Recharge la clé Anthropic, puis mets à jour le montant chargé ci-dessus.</p>
+              </div>
+            )}
             {budget && budget.anthropic > 0 ? (
               <>
                 <div className="grid grid-cols-3 gap-3 mb-3">
                   <div><p className="text-xs text-gray-400">Chargé</p><p className="text-lg font-bold text-gray-700">${budget.anthropic.toFixed(2)}</p></div>
-                  <div><p className="text-xs text-gray-400">Dépensé (réel)</p><p className="text-lg font-bold text-gray-700">${budget.spent.toFixed(2)}</p></div>
-                  <div><p className="text-xs text-gray-400">Restant estimé</p><p className={`text-lg font-bold ${(budget.remaining ?? 0) < budget.anthropic * 0.15 ? 'text-red-600' : 'gradient-text'}`}>${(budget.remaining ?? 0).toFixed(2)}</p></div>
+                  <div><p className="text-xs text-gray-400">Dépensé{budget.degraded ? ' (non fiable)' : ' (réel)'}</p><p className="text-lg font-bold text-gray-700">${budget.spent.toFixed(2)}</p></div>
+                  {/* `remaining` est null quand la consommation n'a pas pu être lue.
+                      Afficher 0,00 $ ferait passer une panne de suivi pour un crédit épuisé. */}
+                  <div><p className="text-xs text-gray-400">Restant estimé</p>{budget.remaining === null
+                    ? <p className="text-lg font-bold text-gray-400">—</p>
+                    : <p className={`text-lg font-bold ${budget.remaining < budget.anthropic * 0.15 ? 'text-red-600' : 'gradient-text'}`}>${budget.remaining.toFixed(2)}</p>}</div>
                 </div>
                 <div className="bg-gray-100 rounded-full h-2 overflow-hidden">
                   <div className="h-2 rounded-full gradient-brand" style={{ width: `${Math.min(100, (budget.spent / budget.anthropic) * 100)}%` }} />
@@ -616,7 +635,7 @@ function ConnexionsTab({ channels, onChange }: { channels: Channel[]; onChange: 
               <code className="text-sm font-mono font-semibold text-gray-800 tracking-wider break-all">{mfaSecret}</code>
               <p className="text-[10px] text-gray-400 mt-2 break-all">{mfaUri}</p>
             </div>
-            <p className="text-xs text-gray-600 mb-2">2. Entrez le code à 6 chiffres généré :</p>
+            <p className="text-xs text-gray-600 mb-2">2. Entrez le code d'appairage généré :</p>
             <div className="flex items-center gap-2">
               <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" className={`${fieldCls} w-32 text-center tracking-[0.3em] font-semibold`} />
               <button onClick={confirmMfa} disabled={mfaCode.length !== 6} className="gradient-brand text-white text-xs font-semibold px-3 py-2 rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50">Confirmer</button>
@@ -939,10 +958,12 @@ function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose
   const [perms, setPerms] = useState<WorkspacePermissions>(ws.permissions || { ...DEFAULT_PERMISSIONS })
   const [clientPw, setClientPw] = useState('')
   const [busy, setBusy] = useState(false)
-  const [wsToken, setWsToken] = useState<string | null>(null)
+  const [wsToken, setWsToken] = useState<{ capture: string | null; jarvis: string | null } | null>(null)
   const [tokCopied, setTokCopied] = useState(false)
   const [confirmRegen, setConfirmRegen] = useState(false)
-  useEffect(() => { fetch(`/api/workspaces/token?id=${ws.id}`).then((r) => r.json()).then((d) => setWsToken(d.token || null)).catch(() => {}) }, [ws.id])
+  // Deux jetons depuis SEC-EXT-0 : capture et Jarvis. Séparer les capacités
+  // borne le rayon d'explosion d'un vol dans un navigateur client.
+  useEffect(() => { fetch(`/api/workspaces/token?id=${ws.id}`).then((r) => r.json()).then((d) => setWsToken(d.capture || d.jarvis ? { capture: d.capture, jarvis: d.jarvis } : null)).catch(() => {}) }, [ws.id])
 
   const save = async () => {
     setBusy(true)
@@ -989,9 +1010,12 @@ function WorkspaceManageModal({ ws, onClose, onSaved }: { ws: Workspace; onClose
           <div className="col-span-2">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Jeton extension Jarvis <span className="font-normal text-gray-400">— à remettre au client pour son extension (écrit dans SON espace)</span></label>
             <div className="flex items-center gap-2">
-              <input readOnly value={wsToken || 'Génération…'} className={`${fieldCls} font-mono text-[11px]`} onFocus={(e) => e.target.select()} />
-              <button onClick={() => { if (wsToken) { navigator.clipboard?.writeText(wsToken); setTokCopied(true); setTimeout(() => setTokCopied(false), 1500) } }} className="text-xs font-semibold text-gray-600 border border-gray-200 px-3 py-2 rounded-xl hover:bg-gray-50 flex-shrink-0">{tokCopied ? '✓ Copié' : 'Copier'}</button>
-              <button onClick={async () => { if (!confirmRegen) { setConfirmRegen(true); return } setConfirmRegen(false); setWsToken(null); const d = await fetch('/api/workspaces/token', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: ws.id }) }).then((r) => r.json()); setWsToken(d.token || null) }} className={`text-xs font-semibold px-3 py-2 rounded-xl flex-shrink-0 ${confirmRegen ? 'bg-red-500 text-white' : 'text-red-500 border border-red-200 hover:bg-red-50'}`}>{confirmRegen ? 'Confirmer' : 'Régénérer'}</button>
+              <div className="flex-1 space-y-1.5">
+                <input readOnly value={wsToken?.capture || 'Génération…'} title="Jeton Capture" className={`${fieldCls} font-mono text-[11px]`} onFocus={(e) => e.target.select()} />
+                <input readOnly value={wsToken?.jarvis || 'Génération…'} title="Jeton Jarvis" className={`${fieldCls} font-mono text-[11px]`} onFocus={(e) => e.target.select()} />
+              </div>
+              <button onClick={() => { if (wsToken) { navigator.clipboard?.writeText(`capture: ${wsToken.capture}\njarvis: ${wsToken.jarvis}`); setTokCopied(true); setTimeout(() => setTokCopied(false), 1500) } }} className="text-xs font-semibold text-gray-600 border border-gray-200 px-3 py-2 rounded-xl hover:bg-gray-50 flex-shrink-0">{tokCopied ? '✓ Copié' : 'Copier'}</button>
+              <button onClick={async () => { if (!confirmRegen) { setConfirmRegen(true); return } setConfirmRegen(false); setWsToken(null); const d = await fetch('/api/workspaces/token', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: ws.id }) }).then((r) => r.json()); setWsToken(d.capture || d.jarvis ? { capture: d.capture, jarvis: d.jarvis } : null) }} className={`text-xs font-semibold px-3 py-2 rounded-xl flex-shrink-0 ${confirmRegen ? 'bg-red-500 text-white' : 'text-red-500 border border-red-200 hover:bg-red-50'}`}>{confirmRegen ? 'Confirmer' : 'Régénérer'}</button>
             </div>
             <p className="text-[11px] text-gray-400 mt-1">Le client colle ce jeton + l'URL Prospector dans les réglages de l'extension. « Régénérer » <strong>révoque l'ancien jeton de CE client uniquement</strong> (les autres ne sont pas touchés) — il devra remettre le nouveau.</p>
           </div>

@@ -1,6 +1,9 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    // ES2020 requis par les littéraux BigInt de lib/prospector/money.ts : l'arithmétique
+    // d'autorité budgétaire est entière, et BigInt n'existe pas avant ES2020. Node 18+
+    // (Vercel) et tous les navigateurs visés le supportent.
+    "target": "es2020",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,

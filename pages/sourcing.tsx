@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../types/prospector'
 import { PromptDialog } from '../components/Dialog'
-import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, takeWriteRejections, rejectionLabel, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { PersonHit } from '../lib/prospector/capabilities'
 
@@ -96,6 +96,7 @@ export default function SourcingPage() {
   const [sigRunning, setSigRunning] = useState(false)
   const [sigHits, setSigHits] = useState<SignalHit[]>([])
   const [sigMode, setSigMode] = useState('')
+  const [sigPasses, setSigPasses] = useState(1)
   const [sigError, setSigError] = useState<string | null>(null)
   const [sigImported, setSigImported] = useState<Set<string>>(new Set())
   // Critères structurés de la recherche par signal
@@ -191,9 +192,13 @@ export default function SourcingPage() {
           ? { types: Array.from(sigTypes), sector: sigSector, location: sigLocation, months: sigMonths, keywords: sigKeywords }
           : { thesis: q }),
       })
-      const d = await res.json()
+      // Un timeout de la fonction renvoie du HTML, pas du JSON : sans ce garde-fou
+      // l'utilisateur voyait « Unexpected token '<' » au lieu du vrai problème.
+      const raw = await res.text()
+      let d: any = null
+      try { d = JSON.parse(raw) } catch { throw new Error(res.ok ? 'Réponse illisible du serveur' : `Le serveur a coupé (HTTP ${res.status}) — recherche trop longue, réduis la période ou les critères.`) }
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
-      setSigHits(d.hits || []); setSigMode(d.mode || ''); setSigBuilt(d.thesis || '')
+      setSigHits(d.hits || []); setSigMode(d.mode || ''); setSigBuilt(d.thesis || ''); setSigPasses(d.passes || 1)
       // Plus de données de démonstration : une erreur est une erreur, on l'affiche.
       if (d.error) setSigError(d.error)
     } catch (e: any) {
@@ -201,9 +206,25 @@ export default function SourcingPage() {
     } finally { setSigRunning(false); setSigDone(true) }
   }
 
+  // Résultat de la vérification data.gouv, obtenue AU MOMENT de l'import.
+  // Refus d'écriture remontés par la couche de persistance : ils DOIVENT être
+  // affichés, sinon l'utilisateur croit avoir importé.
+  const [writeRejected, setWriteRejected] = useState<string | null>(null)
+  const reportRejections = () => {
+    const r = takeWriteRejections()
+    setWriteRejected(r.length ? `${r.length} enregistrement(s) refusé(s) — ${rejectionLabel(r[0].reason)}. Rien n'a été écrasé.` : null)
+  }
+  const [sigCheck, setSigCheck] = useState<Record<string, { verified: boolean; siren?: string }>>({})
+  const [sigBusy, setSigBusy] = useState<string | null>(null)
+
   const importSignal = async (h: SignalHit) => {
-    await importSignalToPipeline(h)
-    setSigImported((s) => new Set(s).add(h.company))
+    setSigBusy(h.company)
+    try {
+      const r: any = await importSignalToPipeline(h)
+      reportRejections()
+      setSigCheck((c) => ({ ...c, [h.company]: { verified: !!r?.verified, siren: r?.siren } }))
+      setSigImported((s) => new Set(s).add(h.company))
+    } finally { setSigBusy(null) }
   }
 
   const router = useRouter()
@@ -214,6 +235,7 @@ export default function SourcingPage() {
     setSignalListOpen(false)
     const ids: string[] = []
     for (const h of sigHits) { const r = await importSignalToPipeline(h); if (r?.id) ids.push(r.id) }
+    reportRejections()
     setSigImported((s) => { const n = new Set(s); sigHits.forEach((h) => n.add(h.company)); return n })
     await createList(name, ids, 'signaux Exa/Claude')
     setSignalListMsg(`Liste « ${name} » créée depuis les signaux.`); setTimeout(() => setSignalListMsg(null), 4000)
@@ -239,6 +261,7 @@ export default function SourcingPage() {
 
   const importOne = async (c: SourcedCompany) => {
     await importCompaniesToPipeline([c])
+    reportRejections()
     setImported((s) => new Set(s).add(c.id))
   }
   const importAll = async () => {
@@ -463,47 +486,63 @@ export default function SourcingPage() {
                 {sigMode === 'exa+claude'
                   ? '⚡ Capteur Exa → cerveau Claude'
                   : '⚡ Claude web seul (ajoute EXA_API_KEY pour un capteur plus frais et un meilleur ciblage des sources)'}
+                {sigPasses > 1 && ` · ${sigPasses} passes (une par mois) pour couvrir la période`}
               </p>
             )}
           </div>
 
+          {writeRejected && (
+            <div className="card p-4 max-w-3xl border-l-4 border-red-500">
+              <p className="text-xs text-red-600 font-semibold">⚠️ {writeRejected}</p>
+            </div>
+          )}
+
           {sigHits.length > 0 && (
             <div className="card p-5 max-w-3xl">
               <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
-                <h2 className="text-sm font-semibold text-gray-700">Entreprises détectées ({sigHits.filter((h) => h.verified).length} vérifiées)</h2>
+                <h2 className="text-sm font-semibold text-gray-700">Entreprises détectées ({sigHits.length})</h2>
                 <button onClick={makeSignalList} className="text-xs font-semibold text-indigo-600 border border-indigo-200 bg-indigo-50/50 px-2.5 py-1 rounded-lg hover:bg-indigo-50">+ Créer une liste depuis ces signaux</button>
               </div>
-              <p className="text-xs text-gray-400 mb-4">Chaque entreprise citée par l'agent est réconciliée sur un SIREN réel. Les non-vérifiées sont à contrôler manuellement (lien de recherche).</p>
+              <p className="text-xs text-gray-400 mb-4">Chaque résultat cite sa source et sa date — cliquez sur « Source » pour contrôler. La vérification SIREN (data.gouv) se déclenche <b>à l&apos;import</b>, uniquement sur les entreprises que vous retenez. Le bouton corbeille écarte un résultat hors cible.</p>
               <div className="space-y-2">
                 {sigHits.map((h) => (
                   <div key={h.company} className="p-3 rounded-xl border border-gray-100">
                     <div className="flex items-center gap-2 flex-wrap mb-1.5">
                       <span className="text-sm font-medium text-gray-800">{h.company}</span>
                       <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${SIG_STYLE[h.signalType]}`}>{h.signalType}</span>
-                      {h.verified
-                        ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">✓ existe (SIREN {h.siren})</span>
-                        : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">non vérifiée</span>}
+                      {sigCheck[h.company] && (sigCheck[h.company].verified
+                        ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">✓ SIREN {sigCheck[h.company].siren}</span>
+                        : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">SIREN introuvable</span>)}
                       {h.city && <span className="text-xs text-gray-400">{h.city}</span>}
                       {/* Écarter un résultat non pertinent (hors cible, doublon, faux positif). */}
                       <button onClick={() => setSigHits((hs) => hs.filter((x) => x.company !== h.company))} title="Écarter ce résultat" className="ml-auto text-gray-300 hover:text-red-500 flex-shrink-0">
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                       </button>
                     </div>
-                    <p className="text-xs text-gray-500 mb-2">📌 {h.detail}</p>
+                    <p className="text-xs text-gray-500 mb-1.5">📌 {h.detail}</p>
+                    {/* Traçabilité : ce que la source dit réellement (aucun champ inventé). */}
+                    {(h.date || h.amount || h.sourceName || h.role) && (
+                      <div className="flex items-center gap-2 flex-wrap mb-2 text-[11px] text-gray-400">
+                        {h.date && <span>🗓 {h.date}</span>}
+                        {h.amount && <span className="font-medium text-gray-500">💰 {h.amount}</span>}
+                        {h.role && <span>👤 {h.role}</span>}
+                        {h.sourceName && <span>📰 {h.sourceName}</span>}
+                      </div>
+                    )}
                     <div className="bg-indigo-50/40 border border-indigo-100 rounded-lg p-2.5 mb-2">
                       <p className="text-xs text-gray-700 italic">« {h.icebreaker} »</p>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <button onClick={() => copyIce(h)} className="text-xs font-medium text-gray-500 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition-colors">{copied === h.company ? '✓ Copié' : 'Copier l\'accroche'}</button>
                       {h.sourceUrl && <a href={h.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-indigo-600 hover:underline">Source</a>}
-                      {!h.verified && <a href={`https://www.google.com/search?q=${encodeURIComponent(h.company + ' ' + (h.city || ''))}`} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-amber-600 hover:underline">Vérifier</a>}
+                      <a href={`https://www.google.com/search?q=${encodeURIComponent(h.company + ' ' + (h.city || ''))}`} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-gray-400 hover:underline">Recouper</a>
                       {sigImported.has(h.company) ? (
                         // Point de repère : une entreprise importée devient un COMPTE
                         // dans Pipeline → Comptes (pas dans « Entreprises sourcées »,
                         // qui liste les résultats de la recherche par critères).
                         <a href={`/pipeline?tab=comptes&q=${encodeURIComponent(h.company)}`} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto bg-emerald-50 text-emerald-600 hover:bg-emerald-100">✓ Dans Pipeline → voir le compte</a>
                       ) : (
-                        <button onClick={() => importSignal(h)} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto transition-opacity gradient-brand text-white hover:opacity-90">+ Importer</button>
+                        <button onClick={() => importSignal(h)} disabled={sigBusy === h.company} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto transition-opacity gradient-brand text-white hover:opacity-90 disabled:opacity-50">{sigBusy === h.company ? 'Vérification…' : '+ Importer'}</button>
                       )}
                     </div>
                   </div>

@@ -1,13 +1,33 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { listWorkspaces, createWorkspace, updateWorkspace, deleteWorkspace, setClientPassword } from '../../../lib/supabase/workspaces'
 import { isAdminRequest } from '../../../lib/auth/guard'
+import { adminWorkspaceView } from '../../../lib/prospector/workspaceView'
 
-// GET → liste · POST création · PATCH maj · DELETE suppr · (mutations = admin only)
+// Route d'ADMINISTRATION des espaces clients. Toutes méthodes confondues.
+//
+// ⚠️ DÉFAUT CORRIGÉ (lot SEC-0). Le branchement `GET` précédait `isAdminRequest`,
+// et le middleware n'exige qu'une session VALIDE — pas une session admin. Un
+// client authentifié obtenait donc la liste de tous les espaces : identifiants,
+// noms, plans, emails clients, statuts, permissions. L'EXISTENCE même d'un autre
+// client est une information qu'un client ne doit pas pouvoir obtenir.
+//
+// Aucune vue client n'a été ajoutée en remplacement : le seul consommateur de
+// cette route est `pages/admin.tsx`. Le client obtient son propre espace par
+// `/api/auth/me` et son option de sélecteur par `/api/workspaces/active` —
+// tous deux déjà bornés à son espace.
+//
+// GET → liste · POST création · PATCH maj · DELETE suppr — ADMIN pour tout.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method === 'GET') {
-    return res.status(200).json({ workspaces: await listWorkspaces() })
-  }
+  // Le garde vient AVANT tout branchement de méthode : c'est la forme qui ne
+  // peut pas se retrouver contournée par l'ajout d'une méthode future.
   if (!(await isAdminRequest(req))) return res.status(403).json({ error: 'forbidden' })
+  if (req.method === 'GET') {
+    // Projection EXPLICITE. Une ligne de base ne part jamais telle quelle vers
+    // le navigateur : les colonnes que SEC-1 et MT-1 ajouteront (credential,
+    // budget) ne peuvent pas se publier ici sans qu'on l'écrive.
+    const list = await listWorkspaces()
+    return res.status(200).json({ workspaces: list.map(adminWorkspaceView) })
+  }
   if (req.method === 'POST') {
     const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
     const name = String(body?.name || '').trim()

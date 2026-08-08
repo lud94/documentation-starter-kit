@@ -1,23 +1,41 @@
-/* Prospector — Jarvis flottant (Phase 2), bulle DÉPLAÇABLE.
-   Injecte une bulle + un mini-chat sur toutes les pages web. L'utilisateur donne
-   une directive (« explique Redsen et crée les contacts », « charge cette personne »).
-   La directive + l'URL/titre de la page partent vers /api/jarvis/agent (jeton INGEST).
-   Aucune action sur LinkedIn : Jarvis ne pilote que Prospector. */
+/* Prospector — Jarvis flottant, bulle DÉPLAÇABLE.
+   INJECTÉ À LA DEMANDE par le popup (chrome.scripting sur l'onglet actif), plus
+   jamais automatiquement sur tout Internet.
+
+   ── CE QUE CE SCRIPT NE CONNAÎT PLUS (lot SEC-EXT-0) ────────────────────────
+   Il lisait `chrome.storage.local['token']` et appelait l'API lui-même : le
+   credential vivait donc dans un script injecté dans le document d'une page
+   arbitraire. Il ne connaît désormais NI le jeton, NI l'origine Prospector, NI
+   l'action à exécuter. Il envoie une intention au service worker, qui seul
+   détient le credential, et reçoit en retour du texte à afficher.
+
+   Le confirmationId qu'il manipule est un identifiant opaque : il ne permet
+   d'exécuter que l'action déjà décidée et stockée PAR LE SERVEUR. */
 (function () {
   if (window.__prospectorJarvis) return
   window.__prospectorJarvis = true
 
-  let base = '', token = '', pending = null
-  chrome.storage.local.get(['base', 'token', 'brand'], (s) => {
-    base = (s.base || '').replace(/\/$/, ''); token = s.token || ''
-    if (base && location.href.indexOf(base) === 0) { host.remove(); return } // pas sur l'app elle-même
-    if (s.brand) { const el = root.getElementById('brand'); if (el) el.textContent = s.brand } // white-label
-  })
+  /* ⚠️ AUCUNE VARIABLE GLOBALE D'AUTORITÉ (lot SEC-EXT-0.1). Un `pendingId`
+     partagé faisait que le bouton d'une proposition A, cliqué APRÈS qu'une
+     proposition B l'ait écrasé, confirmait B — l'utilisateur croyait valider ce
+     qu'il avait sous les yeux. Chaque bloc capture désormais SON identifiant
+     dans sa propre closure.
+
+     La marque ne vient plus du storage : depuis SEC-EXT-0.1 il est restreint
+     aux contextes de confiance, et le content script n'y a plus accès. */
+  chrome.runtime.sendMessage({ type: 'ui.brand' }).then((r) => {
+    if (r && r.brand) { const el = root.getElementById('brand'); if (el) el.textContent = r.brand }
+  }).catch(() => {})
 
   const host = document.createElement('div')
   host.id = 'prospector-jarvis-host'
   document.documentElement.appendChild(host)
-  const root = host.attachShadow({ mode: 'open' })
+  // ⚠️ RACINE FERMÉE. En `mode: 'open'`, la page atteignait l'interface par
+  // `document.getElementById('prospector-jarvis-host').shadowRoot` : elle
+  // pouvait lire la conversation, réécrire la directive, et déclencher
+  // « Confirmer » par `button.click()`. En `closed`, `host.shadowRoot` vaut
+  // `null` pour la page — la référence ne vit que dans cette closure.
+  const root = host.attachShadow({ mode: 'closed' })
   root.innerHTML = `
     <style>
       :host { all: initial; }
@@ -83,35 +101,60 @@
 
   function add(text, cls) { const d = document.createElement('div'); d.className = 'm ' + cls; d.textContent = text; msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight; return d }
 
-  async function call(payload) {
-    const r = await fetch(`${base}/api/jarvis/agent`, {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-ingest-token': token },
-      body: JSON.stringify(Object.assign({ token, url: location.href, title: document.title }, payload)),
+  /* Aucun `fetch` ici, aucun credential, aucune origine : le service worker
+     est le seul à savoir où et avec quoi appeler. */
+  function ask(message) {
+    return chrome.runtime.sendMessage({
+      type: 'jarvis.ask', message,
+      pageContext: { url: location.href, title: document.title },
     })
-    return r.json()
+  }
+  function confirmAction(confirmationId) {
+    return chrome.runtime.sendMessage({ type: 'jarvis.confirm', confirmationId })
+  }
+  function cancelAction(confirmationId) {
+    return chrome.runtime.sendMessage({ type: 'jarvis.cancel', confirmationId })
   }
 
-  async function send() {
+  /* ⚠️ GESTE HUMAIN EXIGÉ. `isTrusted` est faux pour tout événement fabriqué
+     par un script — `button.click()` comme `dispatchEvent(new MouseEvent(…))`.
+     La racine fermée met déjà l'interface hors de portée de la page ; ceci en
+     est la seconde ligne, pour les actions qui déclenchent une écriture. */
+  const human = (e) => !e || e.isTrusted === true
+
+  async function send(e) {
+    if (!human(e)) return
     const text = $('in').value.trim(); if (!text) return
-    if (!base || !token) { add('Configure d\'abord l\'URL + le jeton dans le popup de l\'extension.', 'ja'); return }
     $('in').value = ''; add(text, 'me')
     const wait = add('…', 'ja')
     try {
-      const d = await call({ message: text })
+      const d = (await ask(text)) || {}
       wait.remove()
+      if (d.error) { add(d.error, 'ja'); return }
       if (d.reply) add(d.reply, 'ja')
       if (d.result) add(d.result, 'ja')
-      if (d.needsConfirm && d.action) {
-        pending = d.action
+      // Le serveur ne renvoie plus l'action, seulement son identifiant.
+      if (d.needsConfirm && d.confirmationId) {
+        // Capturé ICI, immuable pour ce bloc : une proposition ultérieure ne
+        // peut plus détourner ces deux boutons.
+        const confirmationId = d.confirmationId
         const box = add('', 'ja'); const act = document.createElement('div'); act.className = 'act'
         const ok = document.createElement('button'); ok.textContent = 'Confirmer'
         const no = document.createElement('button'); no.textContent = 'Annuler'
-        ok.onclick = async () => { act.remove(); const w2 = add('…', 'ja'); const r = await call({ message: text, confirm: true, action: pending }); w2.remove(); add(r.reply || 'Fait.', 'ja') }
-        no.onclick = () => { act.remove(); add('Annulé.', 'ja') }
+        ok.addEventListener('click', async (ev) => {
+          if (!human(ev)) return
+          act.remove(); const w2 = add('…', 'ja')
+          const r = (await confirmAction(confirmationId)) || {}
+          w2.remove(); add(r.error || r.reply || 'Fait.', 'ja')
+        })
+        no.addEventListener('click', async (ev) => {
+          if (!human(ev)) return
+          act.remove(); await cancelAction(confirmationId); add('Annulé.', 'ja')
+        })
         act.appendChild(ok); act.appendChild(no); box.appendChild(act)
       }
-    } catch (e) { wait.remove(); add('Erreur réseau : ' + e.message, 'ja') }
+    } catch (e2) { wait.remove(); add('Prospector est injoignable.', 'ja') }
   }
-  $('snd').onclick = send
-  $('in').addEventListener('keydown', (e) => { if (e.key === 'Enter') send() })
+  $('snd').addEventListener('click', send)
+  $('in').addEventListener('keydown', (e) => { if (e.key === 'Enter' && human(e)) send(e) })
 })()

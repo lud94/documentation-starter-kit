@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Aucun secret n'est requis : `next build` fonctionne sans variables Supabase
+# (lib/supabase/client.ts renvoie null quand elles sont absentes) et les tests
+# unitaires n'ouvrent aucune connexion.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Le runtime Node réellement configuré côté Vercel n'a pas pu être vérifié
+        # (aucun accès au projet). On teste donc les deux versions plausibles plutôt
+        # que d'en figer une au jugé. À réduire à une seule ligne une fois le
+        # runtime Vercel constaté.
+        node: ['20', '22']
+    name: verify (node ${{ matrix.node }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Vérification des types
+        run: npm run typecheck
+
+      - name: Garde-fou des écritures Supabase
+        run: npm run check:mutations
+
+      - name: Garde-fou de la passerelle Anthropic
+        run: npm run check:gateway
+
+      - name: Contexte tenant (MT-0)
+        run: npm run check:tenant
+
+      - name: Isolation des espaces clients (SEC-0)
+        run: npm run check:workspace
+
+      - name: Origine de l'extension (SEC-EXT-0.1)
+        run: npm run check:extension
+
+      - name: Tests unitaires
+        run: npm test
+
+      - name: Construction
+        run: npm run build

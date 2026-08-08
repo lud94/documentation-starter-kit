@@ -7,13 +7,54 @@ export const MANAGED_KEYS = [
   'ANTHROPIC_API_KEY', 'EXA_API_KEY', 'PERPLEXITY_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY',
   'PAPPERS_API_KEY', 'UNIPILE_DSN', 'UNIPILE_API_KEY', 'UNIPILE_ACCOUNT_ID', 'SIGNALS_MODEL',
   'APP_EMAIL', 'APP_PASSWORD', 'APP_TOTP_SECRET', 'APP_MFA_ENABLED', 'PII_MASKING',
-  'APP_RESET_TOKEN', 'APP_RESET_EXP', 'INGEST_TOKEN', 'ANTHROPIC_BUDGET',
+  // `APP_RESET_TOKEN` (jeton PORTEUR en clair) n'est plus jamais écrit ni lu
+  // pour valider — voir lib/prospector/auth.ts. Il reste déclaré ici pour une
+  // seule raison : `setKeys` ignore les clés non gérées, et il faut pouvoir
+  // ÉCRASER l'ancien artefact là où il traîne encore.
+  'APP_RESET_TOKEN', 'APP_RESET_TOKEN_HASH', 'APP_RESET_EXP', 'INGEST_TOKEN', 'ANTHROPIC_BUDGET',
   // Modèles par tâche (surcharge des défauts économiques) — maîtrise des coûts.
   'JARVIS_MODEL', 'PLAN_MODEL', 'ENRICH_MODEL', 'WRITE_MODEL',
   // Canal mobile Telegram (Jarvis nomade).
   'TELEGRAM_BOT_TOKEN', 'TELEGRAM_WEBHOOK_SECRET', 'TELEGRAM_BOT_NAME',
 ] as const
 export type ManagedKey = typeof MANAGED_KEYS[number]
+
+/**
+ * CE NOM PEUT-IL VENIR DE LA BASE ? — frontière d'autorité (lot 0C.0.3).
+ *
+ * ── LE DÉFAUT FERMÉ ─────────────────────────────────────────────────────────
+ * `MANAGED_KEYS` ne filtrait que l'ÉCRITURE. `hydrateKeystore()` chargeait
+ * TOUTES les lignes de `prospector_settings` dans le magasin mémoire, sans
+ * regarder cette liste — et `getKey` sert ensuite ce magasin AVANT
+ * `process.env`. Autrement dit : l'application refusait d'écrire un nom non
+ * géré, mais acceptait de le LIRE s'il apparaissait en base.
+ *
+ * Insérer une ligne suffisait donc à créer une autorité que le code n'avait
+ * jamais prévue. Trois valeurs étaient concernées, toutes critiques en
+ * INTÉGRITÉ et toutes supposées venir de l'environnement seul :
+ *
+ *   • `EXTENSION_ORIGINS`   — l'allowlist CORS de l'extension. Une ligne en
+ *                             base élargissait les origines autorisées ;
+ *   • `AI_BUDGET_RESERVATION` et `AI_BUDGET_OBSERVE_LIMIT` — le mode et le
+ *                             plafond du garde budgétaire.
+ *
+ * (`APP_SESSION_SECRET` relevait de la même classe ; il a été traité à la
+ * source en 0C.0.1 — `wstoken.ts` ne consulte plus ce magasin du tout.)
+ *
+ * ── LA RÈGLE ────────────────────────────────────────────────────────────────
+ * DB-CAPABLE = présent dans `MANAGED_KEYS`. Tout le reste est ENV-ONLY : une
+ * ligne de base portant ce nom est IGNORÉE, silencieusement et par principe.
+ * « Ajouter une ligne en base » n'est pas « ajouter une configuration
+ * autorisée » — et c'est le code, pas la base, qui décide ce qui fait autorité.
+ *
+ * ⚠️ UNE SEULE NOMENCLATURE, utilisée par la LECTURE comme par l'ÉCRITURE.
+ * Deux listes finiraient par diverger, et la divergence rouvrirait exactement
+ * ce trou. Ajouter un nom ici, c'est ouvrir un chemin depuis la base : cela se
+ * décide en revue, jamais pour faire passer un test.
+ */
+export function isManagedKey(name: string): name is ManagedKey {
+  return (MANAGED_KEYS as readonly string[]).includes(name)
+}
 
 // Persiste sur le globalThis pour survivre au hot-reload de Next en dev.
 const g = globalThis as any
@@ -31,7 +72,10 @@ export async function hydrateKeystore(): Promise<void> {
     try {
       const { loadAllSettings } = await import('../supabase/settings')
       const rows = await loadAllSettings()
-      for (const [k, v] of Object.entries(rows)) if (v) store.set(k, v)
+      // ⚠️ FILTRE D'AUTORITÉ (lot 0C.0.3) : seuls les noms DB-capables entrent
+      // en mémoire. Une ligne hors nomenclature est ignorée — ni chargée, ni
+      // signalée, ni journalisée : sa valeur ne doit apparaître nulle part.
+      for (const [k, v] of Object.entries(rows)) if (v && isManagedKey(k)) store.set(k, v)
     } catch { /* Supabase absent → on garde la mémoire */ }
   })()
   return g.__prospectorHydrated
@@ -54,7 +98,7 @@ export function keySource(name: string): 'app' | 'env' | null {
 export async function setKeys(patch: Record<string, string>): Promise<void> {
   const writes: Promise<void>[] = []
   for (const [k, v] of Object.entries(patch)) {
-    if (!MANAGED_KEYS.includes(k as ManagedKey)) continue
+    if (!isManagedKey(k)) continue        // même nomenclature qu'à l'hydratation
     const val = (v || '').trim()
     if (val) store.set(k, val)
     else store.delete(k) // valeur vide → efface la clé saisie (retombe sur l'env)

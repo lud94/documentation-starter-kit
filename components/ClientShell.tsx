@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { useRouter } from 'next/router'
+import EnvironmentBanner from './EnvironmentBanner'
 
 const icon = (d: string) => (
   <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -18,6 +19,7 @@ export default function ClientShell({ children }: { children: React.ReactNode })
 
   return (
     <div className="min-h-screen flex flex-col">
+      <EnvironmentBanner />
       <header className="bg-white border-b border-gray-100 sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-8">

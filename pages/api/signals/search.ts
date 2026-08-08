@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { searchSignals, buildThesis, SIGNAL_TYPES, type SignalQuery } from '../../../lib/prospector/signals'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
+import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
@@ -29,11 +30,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     keywords: String(body.keywords || ''),
   } : { thesis: str(req.query.thesis).trim(), months: 6 }
 
+  // MT-0 — espace client obligatoire avant tout appel LLM. Fail closed.
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
+
   const thesis = buildThesis(q)
   if (!thesis || thesis.length < 5) return res.status(400).json({ error: 'Précise au moins un type de signal ou une thèse.' })
 
   try {
-    res.status(200).json(await searchSignals(thesis, 8, q))
+    res.status(200).json(await searchSignals(tenant, thesis, 25, q))
   } catch (e: any) {
     res.status(502).json({ error: e?.message || 'Erreur agent signaux' })
   }

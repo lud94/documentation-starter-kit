@@ -175,14 +175,18 @@ export interface SourcedCompany {
 // Recherche par SIGNAL : entreprise détectée via une annonce/actu, avec icebreaker.
 export interface SignalHit {
   company: string
-  siren?: string          // réconcilié sur data.gouv (undefined si non trouvé)
+  siren?: string          // rempli SEULEMENT à l'import (vérification data.gouv)
   signalType: 'recrutement' | 'levée' | 'actu' | 'autre'
   detail: string          // "recrute un Head of Sales (cybersécurité)"
   icebreaker: string      // accroche prête à l'emploi
   sourceUrl?: string
+  sourceName?: string     // média/site d'où vient le signal (jugement de fiabilité)
+  date?: string           // date du signal (fraîcheur)
+  amount?: string         // montant de la levée si applicable
+  role?: string           // poste ouvert si recrutement
   sector?: string
   city?: string
-  verified: boolean       // true si réconcilié à un SIREN (existe vraiment)
+  verified: boolean       // true seulement après vérification data.gouv (à l'import)
 }
 
 // Étape 3 : contact résolu (Pappers dirigeants / Unipile LinkedIn personas).

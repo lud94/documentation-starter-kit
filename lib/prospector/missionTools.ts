@@ -5,7 +5,8 @@
 import type { Mission, MissionStep, Lead, SourcedCompany, Sequence } from '../../types/prospector'
 import { fetchCompanies, fetchCompanyDetail } from './datagouv'
 import { enrichCompanyWeb } from './identify'
-import { upsertLead } from '../supabase/leads'
+import type { TenantContext } from './tenant'
+import { upsertLeadChecked, type UpsertResult } from '../supabase/leads'
 import { listItems, upsertItem } from '../supabase/store'
 
 const newId = () => `ld_${Math.random().toString(36).slice(2, 10)}`
@@ -24,7 +25,28 @@ function accountFrom(c: SourcedCompany): Lead {
 }
 
 // Exécute UNE étape et renvoie une preuve lisible + le contexte mis à jour.
-export async function runStep(step: MissionStep, mission: Mission, ws: string): Promise<{ result: string; context: Record<string, any> }> {
+
+// Une étape de mission qui n'a pas pu écrire doit ÉCHOUER, pas se déclarer réussie :
+// pages/api/missions/run.ts marque alors l'étape et la mission en « failed » et
+// journalise le motif. Un compteur silencieusement plus bas ferait croire à un
+// succès partiel inexpliqué.
+class MissionWriteError extends Error {
+  constructor(r: UpsertResult, what: string) {
+    const detail = r.reason === 'workspace_conflict'
+      ? "l'identifiant appartient à un autre espace de travail"
+      : r.reason === 'contention' ? 'écriture concurrente en cours'
+      : r.reason === 'env_blocked' ? "écritures suspendues (incohérence d'environnement)"
+      : 'erreur de persistance'
+    super(`${what} impossible : ${detail}. Aucune donnée écrite pour cette étape.`)
+  }
+}
+
+async function writeLead(lead: Parameters<typeof upsertLeadChecked>[0], ws: string, what: string) {
+  const r = await upsertLeadChecked(lead, ws)
+  if (!r.ok) throw new MissionWriteError(r, what)
+}
+
+export async function runStep(tenant: TenantContext, step: MissionStep, mission: Mission, ws: string): Promise<{ result: string; context: Record<string, any> }> {
   const ctx = { ...mission.context }
   const p = step.params || {}
 
@@ -51,7 +73,7 @@ export async function runStep(step: MissionStep, mission: Mission, ws: string): 
       const accounts: Record<string, string> = {} // siren/nom → id du compte
       for (const c of companies) {
         const lead = accountFrom(c)
-        await upsertLead(lead, ws)
+        await writeLead(lead, ws, `Import du compte « ${lead.company} »`)
         accountIds.push(lead.id)
         accounts[lead.siren || lead.company] = lead.id
       }
@@ -76,7 +98,7 @@ export async function runStep(step: MissionStep, mission: Mission, ws: string): 
             score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
             siren: c.id, naf: c.naf || undefined, city: c.city || undefined, effectif: c.effectif || undefined,
           }
-          await upsertLead(contact, ws)
+          await writeLead(contact, ws, `Ajout du dirigeant « ${d.name} »`)
           contactIds.push(contact.id); added++
         }
       }
@@ -90,7 +112,7 @@ export async function runStep(step: MissionStep, mission: Mission, ws: string): 
       const n = Math.min(Number(p.limit) || 5, MAX_ENRICH, companies.length)
       let ok = 0
       for (const c of companies.slice(0, n)) {
-        const r = await enrichCompanyWeb(c.name, c.city, /^\d{9}$/.test(c.id) ? c.id : undefined)
+        const r = await enrichCompanyWeb(tenant, c.name, c.city, /^\d{9}$/.test(c.id) ? c.id : undefined)
         if (r.website || r.summary) {
           const id = ctx.accounts?.[c.id] || ctx.accounts?.[c.name]
           if (id) {
@@ -99,7 +121,7 @@ export async function runStep(step: MissionStep, mission: Mission, ws: string): 
             if (r.website) lead.website = r.website
             if (r.summary) lead.summary = r.summary
             if (r.ca) lead.ca = r.ca
-            await upsertLead(lead, ws)
+            await writeLead(lead, ws, `Enrichissement de « ${lead.company} »`)
           }
           ok++
         }

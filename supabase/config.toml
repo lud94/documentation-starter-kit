@@ -1,0 +1,47 @@
+# Configuration Supabase CLI — développement local uniquement.
+#
+# ⚠️ AUCUNE référence de projet distant ici. Le rattachement au projet Supabase
+# se fait par `supabase link --project-ref <ref>`, qui écrit dans supabase/.temp/
+# (ignoré par git). Aucun identifiant de projet, aucune URL, aucun secret ne doit
+# apparaître dans ce fichier versionné.
+
+[db]
+# Doit correspondre à la version PostgreSQL du projet distant.
+# À CONFIRMER lors du lot A3b : non vérifiable sans accès au projet.
+major_version = 17
+
+[db.pooler]
+enabled = false
+
+# API REST (PostgREST) — rendue explicite : c'est par elle que passent le code livré
+# (lib/supabase/*.ts via supabase-js) et donc tous les tests d'intégration.
+[api]
+enabled = true
+
+# ⚠️ AUTH ACTIVÉ POUR L'INSTANCE LOCALE UNIQUEMENT — et pas pour s'en servir.
+#
+# La plateforme n'utilise ni Auth, ni Storage, ni Realtime : elle n'accède à
+# Supabase que côté serveur, avec la clé de service. `enabled = false` était donc
+# le reflet honnête de cet usage.
+#
+# MAIS ce fichier ne configure QUE `supabase start` en local ; il n'a aucun effet
+# sur les projets distants. Et le CLI 2.111.0 dérive les clés `anon` et
+# `service_role` des ARTEFACTS D'AUTH : sans la pile d'auth, `supabase status -o env`
+# n'émet ni `ANON_KEY` ni `SERVICE_ROLE_KEY` (vérifié dans le binaire du CLI :
+# la sortie lit `authArtifacts.anonKey` / `authArtifacts.serviceRoleKey`).
+# Sans ces clés, supabase-js ne peut pas s'authentifier et AUCUN test d'intégration
+# ne peut tourner — c'est la cause exacte de l'échec du premier run.
+#
+# On active donc la pile d'auth locale pour obtenir les clés, pas pour utiliser
+# l'authentification. Aucun test ne crée d'utilisateur ni n'appelle GoTrue.
+[auth]
+enabled = true
+
+[storage]
+enabled = false
+
+[realtime]
+enabled = false
+
+[studio]
+enabled = true

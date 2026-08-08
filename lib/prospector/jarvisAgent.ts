@@ -2,10 +2,11 @@
 // WhatsApp plus tard). Le canal ne fait que transporter du texte : toute la
 // compréhension et l'exécution vivent ici, côté serveur, dans l'espace du client.
 import { callClaude, parseJson, cacheKey } from './llm'
+import type { TenantContext } from './tenant'
 import { getKey } from './keystore'
 import { lookupByName, fetchCompanyDetail, fetchCompanies } from './datagouv'
 import { identifyLead, enrichCompanyWeb } from './identify'
-import { upsertLead, listLeads } from '../supabase/leads'
+import { upsertLeadChecked, listLeads, type UpsertResult } from '../supabase/leads'
 import { listItems, upsertItem } from '../supabase/store'
 import type { Lead, Sequence } from '../../types/prospector'
 
@@ -46,11 +47,11 @@ Si rien de pertinent, action=null et réponds directement dans "reply".`
 export interface PlanResult { reply: string; action: any | null }
 
 // 1) COMPRENDRE — modèle économique (classification), aucun effet de bord.
-export async function planJarvis(message: string, ctx: { url?: string; title?: string; channel?: string } = {}): Promise<PlanResult> {
+export async function planJarvis(tenant: TenantContext, message: string, ctx: { url?: string; title?: string; channel?: string } = {}): Promise<PlanResult> {
   if (!getKey('ANTHROPIC_API_KEY')) return { reply: 'Clé Anthropic non configurée (Admin → Connexions).', action: null }
   const page = ctx.url || ctx.title ? `Page: ${(ctx.title || '').slice(0, 200)} (${(ctx.url || '').slice(0, 200)})\n` : ''
   const r = await callClaude({
-    task: 'classify', agent: `Jarvis ${ctx.channel || 'web'}`, system: SYSTEM,
+    tenant, task: 'classify', agent: `Jarvis ${ctx.channel || 'web'}`, system: SYSTEM,
     messages: [{ role: 'user', content: `${page}Directive: ${message}` }],
   })
   if (r.blocked) return { reply: r.error || 'Budget IA épuisé.', action: null }
@@ -71,8 +72,8 @@ async function accountLeadFrom(company: string): Promise<Lead> {
   }
 }
 
-async function personOrAccountLead(name: string, url: string): Promise<Lead> {
-  const id = await identifyLead({ name, url })
+async function personOrAccountLead(tenant: TenantContext, name: string, url: string): Promise<Lead> {
+  const id = await identifyLead(tenant, { name, url })
   const isPerson = id.kind === 'person'
   const [firstName, ...rest] = String(name || '').split(/\s+/)
   return {
@@ -93,7 +94,23 @@ async function findExisting(ws: string, q: string): Promise<Lead[]> {
 }
 
 // 2) EXÉCUTER — dans l'espace `ws`. Renvoie un texte lisible (canal-agnostique).
-export async function executeJarvis(action: any, ws: string, ctxUrl = ''): Promise<string> {
+
+// Un refus d'écriture ne doit JAMAIS être annoncé comme un succès. Ce message est
+// rendu tel quel à l'utilisateur, sur les trois canaux (web, extension, Telegram).
+function writeFailure(r: UpsertResult, what: string): string {
+  switch (r.reason) {
+    case 'workspace_conflict':
+      return `❌ ${what} : refusé. Cet identifiant appartient déjà à un autre espace de travail.`
+    case 'contention':
+      return `⚠️ ${what} : écriture concurrente en cours, réessaie dans un instant.`
+    case 'env_blocked':
+      return `⚠️ ${what} : écritures suspendues (incohérence de configuration d'environnement). Rien n'a été enregistré.`
+    default:
+      return `❌ ${what} : échec d'enregistrement. Rien n'a été enregistré.`
+  }
+}
+
+export async function executeJarvis(tenant: TenantContext, action: any, ws: string, ctxUrl = ''): Promise<string> {
   if (!action?.type) return 'Rien à exécuter.'
 
   switch (action.type) {
@@ -117,17 +134,21 @@ export async function executeJarvis(action: any, ws: string, ctxUrl = ''): Promi
         return `${list.length} entreprise(s) trouvée(s) :\n${lines.join('\n')}${list.length > 10 ? `\n… +${list.length - 10} autres` : ''}\n\nDis-moi « importe-les » pour les ajouter au pipe.`
       }
       let n = 0
+      let refused = 0
       for (const c of list) {
-        await upsertLead({
+        const r = await upsertLeadChecked({
           id: newId(), kind: 'account', firstName: '', lastName: '', title: '', company: c.name,
           score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
           siren: /^\d{9}$/.test(c.id) ? c.id : undefined, active: true,
           naf: c.naf || undefined, city: c.city || undefined, dirigeant: c.dirigeant || undefined,
           effectif: c.effectif || undefined, website: c.website || undefined,
         }, ws)
-        n++
+        if (r.ok) n++; else refused++
       }
-      return `✅ ${n} compte(s) importé(s) dans le pipe :\n${lines.join('\n')}${list.length > 10 ? `\n… +${list.length - 10} autres` : ''}`
+      // On annonce ce qui a été enregistré, jamais ce qui a été tenté.
+      if (n === 0) return writeFailure({ ok: false, reason: 'db_error' }, `Import de ${list.length} compte(s)`)
+      const note = refused ? `\n⚠️ ${refused} refusé(s) — rien n'a été écrasé.` : ''
+      return `✅ ${n} compte(s) importé(s) dans le pipe :\n${lines.join('\n')}${list.length > 10 ? `\n… +${list.length - 10} autres` : ''}${note}`
     }
 
     // Recherche web sur une PERSONNE (poste, actualité) — coûte des tokens.
@@ -135,7 +156,7 @@ export async function executeJarvis(action: any, ws: string, ctxUrl = ''): Promi
       const who = [action.name, action.company].filter(Boolean).join(' · ')
       if (!action.name) return 'Précise le nom de la personne.'
       const r = await callClaude({
-        task: 'extract', agent: 'Jarvis · actualité personne',
+        tenant, task: 'extract', agent: 'Jarvis · actualité personne',
         system: `Tu es analyste de veille commerciale B2B (France). Trouve ce que LinkedIn NE dit PAS :
 presse économique/sectorielle, communiqués, levées, nominations, interviews, podcasts, conférences, site officiel.
 N'utilise PAS LinkedIn ni les réseaux sociaux comme source.
@@ -160,7 +181,7 @@ Français, 4 phrases maximum, ton factuel.`,
       const question = String(action.question || '').trim()
       if (!question) return 'Précise ta question.'
       const r = await callClaude({
-        task: 'extract', agent: 'Jarvis · recherche web',
+        tenant, task: 'extract', agent: 'Jarvis · recherche web',
         system: `Tu es analyste de marché B2B pour une agence de prospection française.
 Tu réponds UNIQUEMENT à des questions utiles à la prospection : marchés, secteurs, concurrents,
 acteurs, tendances, appels d'offres, actualité économique, organisation d'une entreprise.
@@ -222,7 +243,7 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
     case 'explain_company': {
       const v = await lookupByName(action.company)
       if (!v.found) return `Je n'ai pas trouvé « ${action.company} » sur data.gouv.`
-      const web = await enrichCompanyWeb(v.name || action.company, v.city, v.siren)
+      const web = await enrichCompanyWeb(tenant, v.name || action.company, v.city, v.siren)
       return [
         `${v.name} — SIREN ${v.siren}${v.active === false ? ' (radiée)' : ' (active)'}`,
         [v.naf && `NAF ${v.naf}`, v.city, v.effectif && `${v.effectif} sal.`, v.dirigeant && `dir. ${v.dirigeant}`].filter(Boolean).join(' · '),
@@ -233,27 +254,36 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
 
     case 'add_company': {
       const acc = await accountLeadFrom(action.company)
-      await upsertLead(acc, ws)
+      const saved = await upsertLeadChecked(acc, ws)
+      // Si le compte n'a pas été enregistré, on ne crée AUCUN contact rattaché :
+      // ils pointeraient vers un compte inexistant.
+      if (!saved.ok) return writeFailure(saved, `Ajout du compte « ${acc.company} »`)
       let extra = ''
       if (action.withContacts && acc.siren) {
         const detail = await fetchCompanyDetail(acc.siren)
         const dirs = detail.dirigeants.filter((d) => d.type === 'physique')
+        let okCount = 0
         for (const d of dirs) {
           const [firstName, ...rest] = d.name.split(/\s+/)
-          await upsertLead({
+          const c = await upsertLeadChecked({
             id: newId(), kind: 'contact', firstName, lastName: rest.join(' '), title: 'Dirigeant', persona: 'Founder/CEO',
             company: acc.company, score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
             siren: acc.siren, naf: acc.naf, city: acc.city, effectif: acc.effectif, website: acc.website,
           }, ws)
+          if (c.ok) okCount++
         }
-        extra = ` + ${dirs.length} dirigeant(s) en contacts`
+        // On annonce le nombre RÉELLEMENT enregistré, pas le nombre tenté.
+        extra = okCount === dirs.length
+          ? ` + ${okCount} dirigeant(s) en contacts`
+          : ` + ${okCount}/${dirs.length} dirigeant(s) en contacts (le reste a été refusé)`
       }
       return `✅ Compte « ${acc.company} » ajouté${extra}.`
     }
 
     case 'add_person': {
-      const lead = await personOrAccountLead(action.name, action.url || ctxUrl)
-      await upsertLead(lead, ws)
+      const lead = await personOrAccountLead(tenant, action.name, action.url || ctxUrl)
+      const saved = await upsertLeadChecked(lead, ws)
+      if (!saved.ok) return writeFailure(saved, `Ajout de « ${action.name} »`)
       return `✅ ${isAccount(lead) ? 'Compte' : 'Contact'} « ${action.name} » ajouté.`
     }
 
@@ -261,7 +291,11 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
       const q = action.name || action.company || ''
       const hits = await findExisting(ws, q)
       let target = hits[0]
-      if (!target) { target = action.company ? await accountLeadFrom(action.company) : await personOrAccountLead(action.name, ctxUrl); await upsertLead(target, ws) }
+      if (!target) {
+        target = action.company ? await accountLeadFrom(action.company) : await personOrAccountLead(tenant, action.name, ctxUrl)
+        const created = await upsertLeadChecked(target, ws)
+        if (!created.ok) return writeFailure(created, `Création de « ${q} »`)
+      }
       const lists = await listItems<any>('list', ws)
       let list = lists.find((l) => (l.name || '').toLowerCase() === String(action.listName || '').toLowerCase())
       if (!list) list = { id: `ls_${Math.random().toString(36).slice(2, 9)}`, name: action.listName || 'Liste', leadIds: [], source: 'Jarvis', createdAt: Date.now() }
@@ -278,7 +312,11 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
       const seqs = await listItems<Sequence>('sequence', ws)
       const seq = seqs.find((s) => (s.name || '').toLowerCase().includes(String(action.sequenceName || '').toLowerCase()))
       if (!seq) return `Séquence « ${action.sequenceName} » introuvable.`
-      if (!isAccount(target)) { target.stage = 'in_sequence'; await upsertLead(target, ws) }
+      if (!isAccount(target)) {
+        target.stage = 'in_sequence'
+        const moved = await upsertLeadChecked(target, ws)
+        if (!moved.ok) return writeFailure(moved, `Enrôlement de « ${target.firstName} ${target.lastName} »`)
+      }
       seq.leadIds = Array.from(new Set([...(seq.leadIds || []), target.id]))
       seq.enrolled = seq.leadIds.length
       await upsertItem('sequence', seq.id, seq, ws)
@@ -292,7 +330,8 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
       const valid = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
       if (!valid.includes(action.status)) return `Statut invalide.`
       target.status = action.status
-      await upsertLead(target, ws)
+      const updated = await upsertLeadChecked(target, ws)
+      if (!updated.ok) return writeFailure(updated, `Changement de statut de « ${target.firstName || target.company} »`)
       return `✅ ${target.firstName || target.company} → statut « ${action.status} ».`
     }
 
