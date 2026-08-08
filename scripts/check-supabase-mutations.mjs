@@ -39,6 +39,14 @@ const ALLOWED = new Set([
   // autre `.rpc()` financière ailleurs est une violation, pas une variante.
   'lib/supabase/aiBudget.ts',
 
+  // Lot SEC-SECRETS-0C.1 — SEUL module autorisé à appeler les RPC du coffre
+  // `prospector_platform_secret_*`. Il applique `writeAllowed()` avant chaque
+  // mutation et ne transporte que des enveloppes scellées : il n'importe ni
+  // lib/secrets/crypto, ni le trousseau, donc aucun clair ne peut y transiter.
+  // Toute autre `.rpc()` sur ce coffre ailleurs est une violation, pas une
+  // variante — elle contournerait la vérification de relecture.
+  'lib/supabase/platformSecrets.ts',
+
   // Sonde de PERMISSIONS (C2a-1e). Elle appelle les RPC financières
   // DÉLIBÉRÉMENT sans privilège, pour prouver qu'elles sont refusées. Passer par
   // un module de lib/supabase/ lui ferait perdre son objet : ces modules
