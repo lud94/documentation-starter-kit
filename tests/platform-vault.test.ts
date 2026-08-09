@@ -32,6 +32,14 @@ let DB: Map<string, Row>
 let RELECTURE_MUETTE = false
 /** Permet de simuler une base injoignable en lecture. */
 let LECTURE_CASSEE = false
+/**
+ * Mode de lecture simulé — c'est le cœur du correctif 0C.1.1.
+ *
+ * `absent` n'est PAS un mode : il se produit naturellement quand la base
+ * simulée, joignable, ne contient pas la ligne. Les trois autres sont des
+ * incertitudes, et le test vérifie qu'aucune ne se déguise en absence.
+ */
+let MODE_LECTURE: 'normal' | 'storage_error' | 'storage_unconfigured' | 'invalid_row' = 'normal'
 
 const ETAT_INITIAL: Record<string, string> = {
   admin_totp_secret: 'staged',
@@ -69,11 +77,16 @@ vi.mock('../lib/supabase/platformSecrets', async (orig) => {
   const reel = await (orig() as Promise<any>)
   return {
     ...reel,
-    readPlatformSecretRow: async (name: string) => {
-      if (LECTURE_CASSEE || RELECTURE_MUETTE) return null
+    readPlatformSecret: async (name: string) => {
+      if (MODE_LECTURE !== 'normal') return { kind: 'error', reason: MODE_LECTURE }
+      if (LECTURE_CASSEE) return { kind: 'error', reason: 'storage_error' }
+      if (RELECTURE_MUETTE) return { kind: 'absent' }
       const r = DB.get(name)
-      if (!r) return null
-      return { secretName: r.secret_name, envelope: r.envelope, kid: r.kid, secretVersion: r.secret_version, status: r.status }
+      if (!r) return { kind: 'absent' }
+      return {
+        kind: 'found',
+        row: { secretName: r.secret_name, envelope: r.envelope, kid: r.kid, secretVersion: r.secret_version, status: r.status },
+      }
     },
     referencedPlatformKidsRaw: async () => {
       if (LECTURE_CASSEE) return { complete: false }
@@ -141,6 +154,7 @@ beforeEach(() => {
   DB = new Map()
   RELECTURE_MUETTE = false
   LECTURE_CASSEE = false
+  MODE_LECTURE = 'normal'
   process.env.PROSPECTOR_SECRET_KEYRING = TROUSSEAU
   process.env.APP_ENV = 'development'
   delete process.env.VERCEL_ENV
@@ -199,7 +213,7 @@ describe('C. Sceau TOTP — staged n\'authentifie personne', () => {
   it('un sceau seulement posé n\'est PAS lisible comme autorité', async () => {
     const w = await stageAdminTotpSecret(GRAINE_TOTP)
     expect(w).toMatchObject({ ok: true, outcome: 'created', version: 1 })
-    expect(await platformSecretStatus('admin_totp_secret')).toBe('staged')
+    expect(await platformSecretStatus('admin_totp_secret')).toMatchObject({ kind: 'present', status: 'staged' })
     expect(await readAdminTotpSecret()).toEqual({ ok: false, reason: 'wrong_state' })
   })
 
@@ -228,7 +242,7 @@ describe('C. Sceau TOTP — staged n\'authentifie personne', () => {
 describe('D. Webhook Telegram — le fournisseur détient la vérité', () => {
   it('naît pending_provider, JAMAIS active', async () => {
     expect((await putTelegramWebhookPending(SECRET_WEBHOOK)).ok).toBe(true)
-    expect(await platformSecretStatus('telegram_webhook_secret')).toBe('pending_provider')
+    expect(await platformSecretStatus('telegram_webhook_secret')).toMatchObject({ kind: 'present', status: 'pending_provider' })
   })
 
   it('est lisible DÈS pending_provider — un entrant authentique ne doit pas être rejeté', async () => {
@@ -248,7 +262,7 @@ describe('D. Webhook Telegram — le fournisseur détient la vérité', () => {
 describe('E. Jeton de bot — aucune promotion n\'existe', () => {
   it('est actif dès sa pose et lisible immédiatement', async () => {
     expect((await putTelegramBotToken(JETON_BOT)).ok).toBe(true)
-    expect(await platformSecretStatus('telegram_bot_token')).toBe('active')
+    expect(await platformSecretStatus('telegram_bot_token')).toMatchObject({ kind: 'present', status: 'active' })
     expect(await readTelegramBotToken()).toMatchObject({ ok: true, value: JETON_BOT })
   })
 
@@ -296,12 +310,12 @@ describe('G. Remplacement — la version ne redescend jamais à 1', () => {
     await stageAdminTotpSecret(GRAINE_TOTP)
     await revokeAdminTotpSecret(1)
     expect((await replacePlatformSecretValue('admin_totp_secret', 'GRAINE-2', 2)).ok).toBe(true)
-    expect(await platformSecretStatus('admin_totp_secret')).toBe('staged')  // repasse par la preuve
+    expect(await platformSecretStatus('admin_totp_secret')).toMatchObject({ kind: 'present', status: 'staged' })  // repasse par la preuve
 
     await putTelegramWebhookPending(SECRET_WEBHOOK)
     await revokeTelegramWebhook(1)
     expect((await replacePlatformSecretValue('telegram_webhook_secret', 'W2', 2)).ok).toBe(true)
-    expect(await platformSecretStatus('telegram_webhook_secret')).toBe('pending_provider')
+    expect(await platformSecretStatus('telegram_webhook_secret')).toMatchObject({ kind: 'present', status: 'pending_provider' })
 
     await putTelegramBotToken(JETON_BOT)
     await revokeTelegramBotToken(1)
@@ -383,7 +397,7 @@ describe('J. Fail-closed sur la configuration', () => {
     delete process.env.PROSPECTOR_SECRET_KEYRING
     expect(await readTelegramBotToken()).toEqual({ ok: false, reason: 'unreadable' })
     // L'état, lui, reste consultable sans déchiffrer.
-    expect(await platformSecretStatus('telegram_bot_token')).toBe('active')
+    expect(await platformSecretStatus('telegram_bot_token')).toMatchObject({ kind: 'present', status: 'active' })
   })
 
   it('un clair vide n\'est pas un secret', async () => {
@@ -398,8 +412,8 @@ describe('J. Fail-closed sur la configuration', () => {
   it('un secret absent est absent — aucun repli sur l\'ancien emplacement', async () => {
     process.env.APP_TOTP_SECRET = 'valeur-heritee-qui-ne-doit-pas-servir'
     process.env.TELEGRAM_BOT_TOKEN = 'jeton-herite-qui-ne-doit-pas-servir'
-    expect(await readAdminTotpSecret()).toEqual({ ok: false, reason: 'absent' })
-    expect(await readTelegramBotToken()).toEqual({ ok: false, reason: 'absent' })
+    expect(await readAdminTotpSecret()).toEqual({ ok: false, reason: 'not_configured' })
+    expect(await readTelegramBotToken()).toEqual({ ok: false, reason: 'not_configured' })
     delete process.env.APP_TOTP_SECRET
     delete process.env.TELEGRAM_BOT_TOKEN
   })
@@ -408,21 +422,21 @@ describe('J. Fail-closed sur la configuration', () => {
 describe('K. Adoption du TOTP hérité — étroite par construction', () => {
   it('rend le sceau hérité ACTIF sans passer par une nouvelle preuve', async () => {
     expect(await adoptLegacyAdminTotpSecret(GRAINE_TOTP)).toMatchObject({ ok: true, outcome: 'adopted', version: 1 })
-    expect(await platformSecretStatus('admin_totp_secret')).toBe('active')
+    expect(await platformSecretStatus('admin_totp_secret')).toMatchObject({ kind: 'present', status: 'active' })
     expect(await readAdminTotpSecret()).toMatchObject({ ok: true, value: GRAINE_TOTP })
   })
 
   it('n\'écrase jamais une génération existante', async () => {
     await stageAdminTotpSecret(GRAINE_TOTP)
     expect(await adoptLegacyAdminTotpSecret('AUTRE')).toEqual({ ok: false, outcome: 'exists' })
-    expect(await platformSecretStatus('admin_totp_secret')).toBe('staged')
+    expect(await platformSecretStatus('admin_totp_secret')).toMatchObject({ kind: 'present', status: 'staged' })
   })
 
   it('ne peut pas ressusciter une pierre tombale', async () => {
     await stageAdminTotpSecret(GRAINE_TOTP)
     await revokeAdminTotpSecret(1)
     expect(await adoptLegacyAdminTotpSecret(GRAINE_TOTP)).toEqual({ ok: false, outcome: 'exists' })
-    expect(await platformSecretStatus('admin_totp_secret')).toBe('revoked')
+    expect(await platformSecretStatus('admin_totp_secret')).toMatchObject({ kind: 'present', status: 'revoked' })
   })
 
   it('n\'offre aucun chemin d\'adoption pour les secrets Telegram', async () => {
@@ -467,5 +481,90 @@ describe('L. Séparation des couches', () => {
     const src = code('lib/secrets/platformVault.ts')
     expect(src).toMatch(/import \{ sealSecret, openSecret/)
     expect(src).toMatch(/export function platformSecretContext/)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('M. 0C.1.1 — une base injoignable n\'est pas un secret absent', () => {
+  it('`platformSecretStatus` distingue absence réelle, présence et incertitude', async () => {
+    // Absence réelle : la base a répondu, il n'y a pas de ligne.
+    expect(await platformSecretStatus('admin_totp_secret')).toEqual({ kind: 'absent' })
+
+    await putTelegramBotToken(JETON_BOT)
+    expect(await platformSecretStatus('telegram_bot_token'))
+      .toEqual({ kind: 'present', status: 'active', version: 1, kid: 'k1' })
+
+    await revokeTelegramBotToken(1)
+    expect(await platformSecretStatus('telegram_bot_token'))
+      .toEqual({ kind: 'present', status: 'revoked', version: 2, kid: null })
+
+    // Les trois incertitudes. AUCUNE ne rend `absent`.
+    for (const mode of ['storage_error', 'storage_unconfigured', 'invalid_row'] as const) {
+      MODE_LECTURE = mode
+      const r = await platformSecretStatus('telegram_bot_token')
+      expect(r, mode).toEqual({ kind: 'error', reason: mode })
+      expect(r.kind, mode).not.toBe('absent')
+    }
+  })
+
+  it('aucun `status === "active"` ne peut être écrit à partir d\'une incertitude', async () => {
+    // La forme même du type l'interdit : sur incertitude il n'y a PAS de champ
+    // `status`. Un appelant qui l'ignorerait lirait `undefined`, jamais un état
+    // plausible — et le compilateur le refuse (discriminant textuel, cf. l'ADR
+    // dans l'adaptateur : `strict:false` ne rétrécit pas sur un booléen).
+    MODE_LECTURE = 'storage_error'
+    const r: any = await platformSecretStatus('admin_totp_secret')
+    expect(r.status).toBeUndefined()
+    expect(r.state).toBeUndefined()
+    expect(Object.keys(r).sort()).toEqual(['kind', 'reason'])
+  })
+
+  it('lecture de secret : absence réelle ⇒ not_configured, incertitude ⇒ storage_error', async () => {
+    expect(await readAdminTotpSecret()).toEqual({ ok: false, reason: 'not_configured' })
+    expect(await readTelegramWebhookSecret()).toEqual({ ok: false, reason: 'not_configured' })
+    expect(await readTelegramBotToken()).toEqual({ ok: false, reason: 'not_configured' })
+
+    for (const mode of ['storage_error', 'storage_unconfigured', 'invalid_row'] as const) {
+      MODE_LECTURE = mode
+      expect(await readAdminTotpSecret(), mode).toEqual({ ok: false, reason: 'storage_error' })
+      expect(await readTelegramWebhookSecret(), mode).toEqual({ ok: false, reason: 'storage_error' })
+      expect(await readTelegramBotToken(), mode).toEqual({ ok: false, reason: 'storage_error' })
+    }
+  })
+
+  it('une erreur de base n\'est JAMAIS présentée comme « pas encore configuré »', async () => {
+    // C'est la distinction qui compte pour une surface d'installation : proposer
+    // de poser un secret sur une base injoignable écraserait peut-être une
+    // génération vivante qu'on n'a simplement pas pu lire.
+    await stageAdminTotpSecret(GRAINE_TOTP)
+    MODE_LECTURE = 'storage_error'
+    const r = await readAdminTotpSecret()
+    expect(r).toEqual({ ok: false, reason: 'storage_error' })
+    expect(r.ok === false && r.reason).not.toBe('not_configured')
+  })
+
+  it('les états d\'autorité restent inchangés : active seul, staged jamais', async () => {
+    await stageAdminTotpSecret(GRAINE_TOTP)
+    expect(await readAdminTotpSecret()).toEqual({ ok: false, reason: 'wrong_state' })
+    await promoteAdminTotpSecret(1)
+    expect(await readAdminTotpSecret()).toMatchObject({ ok: true, value: GRAINE_TOTP })
+    await revokeAdminTotpSecret(1)
+    expect(await readAdminTotpSecret()).toEqual({ ok: false, reason: 'revoked' })
+  })
+
+  it('une écriture dont la relecture est incertaine échoue — jamais ok', async () => {
+    for (const mode of ['storage_error', 'storage_unconfigured', 'invalid_row'] as const) {
+      DB = new Map()
+      MODE_LECTURE = 'normal'
+      MODE_LECTURE = mode
+      const w = await stageAdminTotpSecret(GRAINE_TOTP)
+      expect(w, mode).toMatchObject({ ok: false, outcome: 'verify_failed' })
+    }
+  })
+
+  it('inventaire : incertitude ⇒ complete:false ; lecture réussie vide ⇒ complete:true', async () => {
+    expect(await referencedPlatformKids()).toEqual({ complete: true, referencedKids: [] })
+    LECTURE_CASSEE = true
+    expect(await referencedPlatformKids()).toEqual({ complete: false })
   })
 })

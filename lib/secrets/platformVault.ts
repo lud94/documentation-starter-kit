@@ -21,10 +21,11 @@ import type { KidInventory } from './keyring'
 import { SecretCryptoError } from './errors'
 import {
   PLATFORM_SECRET_NAMES, isPlatformSecretName,
-  readPlatformSecretRow, referencedPlatformKidsRaw,
+  readPlatformSecret, referencedPlatformKidsRaw,
   createPlatformSecret, replacePlatformSecret, promotePlatformSecret,
   revokePlatformSecret, rewrapPlatformSecret, adoptLegacyTotpEnvelope,
   type PlatformSecretName, type PlatformSecretStatus, type PlatformSecretOutcome,
+  type PlatformSecretReadError,
 } from '../supabase/platformSecrets'
 
 export { PLATFORM_SECRET_NAMES, isPlatformSecretName }
@@ -66,10 +67,20 @@ export type VaultWrite =
   | { ok: true; outcome: Exclude<PlatformSecretOutcome, 'stale' | 'denied'>; version: number }
   | { ok: false; outcome: PlatformSecretOutcome | 'verify_failed'; version?: number }
 
-/** Issue d'une lecture. `absent` et `unreadable` ne sont PAS le même fait. */
+/**
+ * Issue d'une lecture. QUATRE échecs distincts, et la distinction porte.
+ *
+ * `not_configured` — la base a répondu : ce secret n'existe pas. Un appelant peut
+ *                    légitimement proposer de le poser.
+ * `storage_error`  — on ne sait pas s'il existe. Un appelant ne doit RIEN
+ *                    conclure, et surtout pas proposer d'en poser un nouveau : il
+ *                    écraserait peut-être une génération vivante.
+ * `revoked` / `wrong_state` — il existe, mais ne fait pas autorité ici.
+ * `unreadable`     — il existe et on ne sait pas l'ouvrir (clef, AAD, trousseau).
+ */
 export type VaultRead =
   | { ok: true; value: string; version: number; status: PlatformSecretStatus }
-  | { ok: false; reason: 'absent' | 'revoked' | 'wrong_state' | 'unreadable' }
+  | { ok: false; reason: 'not_configured' | 'storage_error' | 'revoked' | 'wrong_state' | 'unreadable' }
 
 function keyring() {
   // Charge à l'usage, jamais à l'import : une instance mal configurée doit
@@ -124,7 +135,10 @@ async function ecrireEtVerifier(
   const outcome = await appliquer(envelope)
   if (!succes.includes(outcome)) return { ok: false, outcome }
 
-  const relue = await readPlatformSecretRow(name)
+  // Toute lecture douteuse est un échec de vérification : une écriture qu'on ne
+  // peut pas relire n'est pas une écriture réussie, quelle qu'en soit la cause.
+  const lecture = await readPlatformSecret(name)
+  const relue = lecture.kind === 'found' ? lecture.row : null
   if (!relue || relue.secretVersion !== versionAttendue || !relue.envelope) {
     return { ok: false, outcome: 'verify_failed', version: relue?.secretVersion }
   }
@@ -141,8 +155,13 @@ async function lire(
   name: PlatformSecretName,
   etatsAcceptes: readonly PlatformSecretStatus[],
 ): Promise<VaultRead> {
-  const row = await readPlatformSecretRow(name)
-  if (!row) return { ok: false, reason: 'absent' }
+  const lecture = await readPlatformSecret(name)
+  // ⚠️ Une base injoignable N'EST PAS un secret absent. Les deux refusent la
+  // lecture, mais ne disent pas la même chose à l'appelant — et c'est sur cette
+  // différence qu'une surface décide de proposer, ou non, d'en poser un nouveau.
+  if (lecture.kind === 'error') return { ok: false, reason: 'storage_error' }
+  if (lecture.kind === 'absent') return { ok: false, reason: 'not_configured' }
+  const row = lecture.row
   if (row.status === 'revoked') return { ok: false, reason: 'revoked' }
   if (!etatsAcceptes.includes(row.status)) return { ok: false, reason: 'wrong_state' }
   if (!row.envelope) return { ok: false, reason: 'unreadable' }
@@ -164,9 +183,16 @@ async function lire(
  * trousseau ni d'ouvrir une enveloppe pour répondre à une question booléenne —
  * et un chemin qui ne déchiffre pas est un chemin qui ne peut pas fuiter.
  */
-export async function platformSecretStatus(name: PlatformSecretName): Promise<PlatformSecretStatus | 'absent'> {
-  const row = await readPlatformSecretRow(name)
-  return row ? row.status : 'absent'
+export type PlatformSecretStatusResult =
+  | { kind: 'absent' }
+  | { kind: 'present'; status: PlatformSecretStatus; version: number; kid: string | null }
+  | { kind: 'error'; reason: PlatformSecretReadError }
+
+export async function platformSecretStatus(name: PlatformSecretName): Promise<PlatformSecretStatusResult> {
+  const lecture = await readPlatformSecret(name)
+  if (lecture.kind !== 'found') return lecture
+  const { row } = lecture
+  return { kind: 'present', status: row.status, version: row.secretVersion, kid: row.kid }
 }
 
 /**
@@ -200,7 +226,8 @@ export async function promoteAdminTotpSecret(expectedVersion: number): Promise<V
   if (outcome !== 'promoted') return { ok: false, outcome }
   // Rien n'a été scellé : on vérifie l'ÉTAT, pas la lisibilité — la valeur est
   // exactement celle qui était déjà là, et elle a été ouverte pour être prouvée.
-  const row = await readPlatformSecretRow('admin_totp_secret')
+  const lecture = await readPlatformSecret('admin_totp_secret')
+  const row = lecture.kind === 'found' ? lecture.row : null
   if (!row || row.status !== 'active' || row.secretVersion !== expectedVersion) {
     return { ok: false, outcome: 'verify_failed', version: row?.secretVersion }
   }
@@ -231,7 +258,8 @@ export function putTelegramWebhookPending(secret: string): Promise<VaultWrite> {
 export async function confirmTelegramWebhookActive(expectedVersion: number): Promise<VaultWrite> {
   const outcome = await promotePlatformSecret('telegram_webhook_secret', expectedVersion)
   if (outcome !== 'promoted') return { ok: false, outcome }
-  const row = await readPlatformSecretRow('telegram_webhook_secret')
+  const lecture = await readPlatformSecret('telegram_webhook_secret')
+  const row = lecture.kind === 'found' ? lecture.row : null
   if (!row || row.status !== 'active' || row.secretVersion !== expectedVersion) {
     return { ok: false, outcome: 'verify_failed', version: row?.secretVersion }
   }
@@ -285,7 +313,8 @@ async function tombstone(name: PlatformSecretName, expectedVersion: number): Pro
   if (!Number.isInteger(expectedVersion) || expectedVersion < 1) return { ok: false, outcome: 'denied' }
   const outcome = await revokePlatformSecret(name, expectedVersion)
   if (outcome !== 'revoked') return { ok: false, outcome }
-  const row = await readPlatformSecretRow(name)
+  const lecture = await readPlatformSecret(name)
+  const row = lecture.kind === 'found' ? lecture.row : null
   if (!row || row.status !== 'revoked' || row.envelope !== null || row.kid !== null) {
     return { ok: false, outcome: 'verify_failed', version: row?.secretVersion }
   }
@@ -322,7 +351,8 @@ export function replacePlatformSecretValue(
  * légitimes à chaque rotation, ce qui pousserait à ne plus jamais tourner.
  */
 export async function rewrapPlatformSecretValue(name: PlatformSecretName): Promise<VaultWrite> {
-  const row = await readPlatformSecretRow(name)
+  const lecture = await readPlatformSecret(name)
+  const row = lecture.kind === 'found' ? lecture.row : null
   if (!row || row.status === 'revoked' || !row.envelope || !row.kid) {
     return { ok: false, outcome: 'denied' }
   }

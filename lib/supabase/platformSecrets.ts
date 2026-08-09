@@ -101,20 +101,69 @@ function ligne(row: any): PlatformSecretRow | null {
   }
 }
 
-/** Lit une ligne. `null` = absente, illisible, ou incohérente — jamais « vide ». */
-export async function readPlatformSecretRow(name: PlatformSecretName): Promise<PlatformSecretRow | null> {
-  if (!isPlatformSecretName(name)) return null
+/**
+ * Résultat d'une lecture — L'INCERTITUDE N'EST PAS UNE ABSENCE.
+ *
+ * ── LE DÉFAUT FERMÉ ICI (0C.1.1) ────────────────────────────────────────────
+ * La version précédente rendait `null` dans QUATRE situations distinctes :
+ * requête réussie sans ligne, Supabase non configuré, erreur de transport ou de
+ * permission, et ligne structurellement invalide. Trois d'entre elles signifient
+ * « je ne sais pas » ; une seule signifie « il n'y a rien ». Les confondre suffit
+ * à transformer une base injoignable en « ce secret n'existe pas » — et donc,
+ * pour un futur `mfaEnabled()` écrit comme `status === 'active'`, à désactiver
+ * le second facteur d'authentification pendant une panne réseau.
+ *
+ * La distinction est faite ICI, dans l'adaptateur, et non dans la couche
+ * au-dessus : c'est le seul endroit qui SAIT laquelle des quatre situations
+ * s'est produite. La reconstruire plus haut serait deviner.
+ *
+ * ── POURQUOI UN DISCRIMINANT TEXTUEL, ET NON UN `ok` BOOLÉEN ────────────────
+ * Ce dépôt compile avec `"strict": false` (tsconfig.json), donc sans
+ * `strictNullChecks`. Dans ce mode, TypeScript NE RÉTRÉCIT PAS une union sur
+ * `if (!res.ok)` : le compilateur laisse passer un accès à la mauvaise branche.
+ * Vérifié plutôt que supposé — `r.ok === false` et `s.kind === 'error'`
+ * rétrécissent, `!r.ok` non.
+ *
+ * Un `ok` booléen ferait donc reposer sur la discipline de l'appelant exactement
+ * la distinction que ce correctif existe pour rendre obligatoire. Avec trois
+ * `kind` textuels, oublier le cas `error` est une ERREUR DE COMPILATION, pas une
+ * omission silencieuse — et `absent` devient un état qu'il faut nommer pour
+ * l'atteindre.
+ */
+export type PlatformSecretReadResult =
+  | { kind: 'found'; row: PlatformSecretRow }
+  /** Requête réussie, base joignable, aucune ligne. Le SEUL cas d'absence. */
+  | { kind: 'absent' }
+  | { kind: 'error'; reason: PlatformSecretReadError }
+
+/**
+ * `storage_unconfigured` — aucun Supabase câblé : on n'a même pas demandé.
+ * `storage_error`        — transport, requête ou permission : la base n'a pas répondu.
+ * `invalid_row`          — une ligne existe mais ne respecte pas le contrat ;
+ *                          la traiter comme une absence effacerait un secret réel
+ *                          des inventaires de rotation.
+ */
+export type PlatformSecretReadError = 'storage_unconfigured' | 'storage_error' | 'invalid_row'
+
+/** Lit une ligne. Aucune des quatre issues n'est confondue avec une autre. */
+export async function readPlatformSecret(name: PlatformSecretName): Promise<PlatformSecretReadResult> {
+  if (!isPlatformSecretName(name)) return { kind: 'error', reason: 'invalid_row' }
   const sb = supabase()
-  if (!sb) return null
+  if (!sb) return { kind: 'error', reason: 'storage_unconfigured' }
   try {
     const { data, error } = await sb.from(TABLE)
       .select('secret_name, envelope, kid, secret_version, status')
       .eq('secret_name', name)
       .maybeSingle()
-    if (error || !data) return null
-    return ligne(data)
+    // ⚠️ L'ORDRE COMPTE. `error` d'abord : une erreur accompagnée d'un `data`
+    // nul ressemble trait pour trait à une absence, et c'est précisément la
+    // confusion qu'on ferme.
+    if (error) return { kind: 'error', reason: 'storage_error' }
+    if (!data) return { kind: 'absent' }             // le SEUL cas d'absence
+    const row = ligne(data)
+    return row ? { kind: 'found', row } : { kind: 'error', reason: 'invalid_row' }
   } catch {
-    return null
+    return { kind: 'error', reason: 'storage_error' }
   }
 }
 
