@@ -126,12 +126,22 @@ beforeAll(() => {
 })
 
 /**
- * ⚠️ LE NETTOYAGE PASSE PAR LA RÉVOCATION, PAS PAR UN DELETE.
- * `service_role` n'a pas le droit de supprimer — c'est précisément ce que ce lot
- * garantit. Un `delete` ici échouerait silencieusement et laisserait les cas
- * s'empiler. On révoque donc jusqu'à la pierre tombale, en suivant la version.
+ * RÉVOQUE LES GÉNÉRATIONS VIVANTES. NE REMET RIEN À L'ÉTAT VIERGE.
+ *
+ * ⚠️ CE HELPER S'APPELAIT `purge()`, ET CE NOM MENTAIT — au point de produire
+ * deux faux négatifs sur la vraie pile (0C.1.2). `service_role` n'a pas le droit
+ * de SUPPRIMER : c'est exactement la garantie que ce lot établit. Ce qui reste
+ * après son passage n'est donc pas une table vide, mais une table de PIERRES
+ * TOMBALES — des lignes qui AFFIRMENT l'absence, portent une version, et
+ * interdisent toute adoption héritée.
+ *
+ * Conséquence pour qui écrit un cas ici : ne JAMAIS assimiler « après nettoyage »
+ * à « aucune ligne ». Seul `supabase db reset` rend le magasin vierge, et cela
+ * n'arrive qu'UNE fois, avant la suite entière. Un test qui exige l'absence
+ * d'une ligne doit donc s'exécuter avant que quiconque ait créé ce secret — et
+ * le dire par une précondition explicite, pas par confiance dans l'ordre.
  */
-async function purge() {
+async function revokeLiveSecrets() {
   for (const nom of NOMS) {
     for (let i = 0; i < 5; i++) {
       const { data } = await sb.from(TABLE).select('secret_version, status').eq('secret_name', nom).maybeSingle()
@@ -140,8 +150,8 @@ async function purge() {
     }
   }
 }
-beforeEach(purge)
-afterAll(purge)
+beforeEach(revokeLiveSecrets)
+afterAll(revokeLiveSecrets)
 
 async function etat(nom: string) {
   const { data } = await sb.from(TABLE).select('secret_name, envelope, kid, secret_version, status')
@@ -161,6 +171,42 @@ async function poser(nom: string, e = env()): Promise<number> {
   expect(data).toBe('replaced')
   return courant.secret_version + 1
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ⚠️ CE BLOC DOIT RESTER LE PREMIER DU FICHIER.
+//
+// C'est le SEUL moment où le magasin est vierge : `supabase db reset` précède la
+// suite, et rien ne peut le reproduire ensuite — `service_role` n'a pas le droit
+// de supprimer, donc la moindre création laisse une pierre tombale définitive.
+// L'adoption héritée n'ayant de sens qu'en l'absence TOTALE de ligne, elle ne
+// peut être éprouvée qu'ici.
+//
+// La précondition ci-dessous n'est pas décorative : elle rend le fichier ROUGE si
+// un jour un cas est déclaré au-dessus et touche `admin_totp_secret`. Sans elle,
+// le test se contenterait de `exists` et passerait pour une preuve — c'est
+// exactement le faux négatif que 0C.1.2 corrige.
+//
+// Vitest exécute les cas dans l'ordre de déclaration : ni `sequence.shuffle`, ni
+// `.concurrent` ne sont utilisés ici, et `fileParallelism` est désactivé.
+describe('0. MAGASIN VIERGE — adoption du sceau TOTP hérité', () => {
+  it('adopte un sceau hérité, ACTIF d\'emblée, et une seule fois', async () => {
+    // PRÉCONDITION EXPLICITE. Pas « on suppose » : on constate.
+    expect(await etat('admin_totp_secret'),
+      'le magasin n\'est pas vierge : un cas déclaré plus haut a touché admin_totp_secret').toBeFalsy()
+
+    expect((await sb.rpc('prospector_platform_secret_adopt_legacy_totp',
+      { p_envelope: env() })).data).toBe('adopted')
+
+    // ACTIF d'emblée, et c'est délibéré : le téléphone de l'administrateur génère
+    // déjà des codes valides. Migrer un secret n'est pas le faire tourner.
+    expect(await etat('admin_totp_secret')).toMatchObject({ status: 'active', secret_version: 1 })
+
+    // Rejouée, l'adoption n'écrase rien.
+    expect((await sb.rpc('prospector_platform_secret_adopt_legacy_totp',
+      { p_envelope: env('k2') })).data).toBe('exists')
+    expect(await etat('admin_totp_secret')).toMatchObject({ status: 'active', secret_version: 1, kid: 'k1' })
+  })
+})
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('A. Le schéma refuse ce que l\'application ne doit jamais écrire', () => {
@@ -210,29 +256,44 @@ describe('B. Privilèges — EXÉCUTÉS, pas lus dans le SQL', () => {
 
   // ⚠️ Les trois cas suivants sont le cœur du lot. La baseline accorde ALL sur
   // les tables nouvelles à service_role ; sans REVOKE explicite, ils PASSERAIENT.
+  // ⚠️ CES TROIS CAS PROUVENT L'INVARIANCE, PAS L'ABSENCE (0C.1.2).
+  //
+  // L'ancienne rédaction exigeait `expect(etat(...)).toBeFalsy()` — c'est-à-dire
+  // « aucune ligne ». Elle a échoué sur la vraie pile, et elle avait tort :
+  // `revokeLiveSecrets()` laisse des pierres tombales, donc une ligne PEUT
+  // légitimement préexister. Surtout, l'absence n'est pas ce qu'on cherche à
+  // établir. Ce qui compte est qu'une opération interdite NE CHANGE RIEN, que la
+  // ligne visée soit absente, vivante ou déjà tombale. On photographie donc
+  // l'état avant, et on exige l'égalité après.
   it('service_role ne peut PAS insérer en direct', async () => {
+    const avant = await etat('telegram_bot_token')
     // Colonnes VALIDES et charge utile complète : si l'insertion échoue, ce ne
     // peut être ni la forme ni le schéma — seulement le privilège.
     const { error } = await sb.from(TABLE).insert({
       secret_name: 'telegram_bot_token', envelope: env(), secret_version: 1, status: 'active',
     })
     refusPermission(error, 'INSERT direct par service_role')
-    expect(await etat('telegram_bot_token')).toBeFalsy()
+    expect(await etat('telegram_bot_token')).toEqual(avant)
   })
 
   it('service_role ne peut PAS mettre à jour en direct', async () => {
     const v = await poser('admin_totp_secret')
+    const avant = await etat('admin_totp_secret')
     const { error } = await sb.from(TABLE).update({ status: 'active' }).eq('secret_name', 'admin_totp_secret')
     refusPermission(error, 'UPDATE direct par service_role')
-    // L'état n'a pas bougé : un sceau non prouvé n'est pas devenu l'autorité.
-    expect(await etat('admin_totp_secret')).toMatchObject({ status: 'staged', secret_version: v })
+    // Rien n'a bougé — et en particulier un sceau non prouvé n'est pas devenu
+    // l'autorité, ce que l'égalité stricte couvre mieux qu'un `toMatchObject`.
+    expect(await etat('admin_totp_secret')).toEqual(avant)
+    expect(avant).toMatchObject({ status: 'staged', secret_version: v })
   })
 
   it('service_role ne peut PAS supprimer en direct', async () => {
     await poser('telegram_bot_token')
+    const avant = await etat('telegram_bot_token')
     const { error } = await sb.from(TABLE).delete().eq('secret_name', 'telegram_bot_token')
     refusPermission(error, 'DELETE direct par service_role')
-    expect(await etat('telegram_bot_token')).toBeTruthy()
+    expect(await etat('telegram_bot_token')).toEqual(avant)
+    expect(avant).toBeTruthy()
   })
 
   it('les fonctions internes ne sont exécutables par personne', async () => {
@@ -312,12 +373,27 @@ describe('C. Machine à états — imposée par la base', () => {
       { p_name: 'telegram_bot_token', p_expected_version: v + 1, p_old_kid: 'k2', p_envelope: env('k3') })).data).toBe('stale')
   })
 
-  it('l\'adoption héritée ne vise que le TOTP, et seulement en son absence', async () => {
-    expect((await sb.rpc('prospector_platform_secret_adopt_legacy_totp', { p_envelope: env() })).data).toBe('adopted')
-    expect(await etat('admin_totp_secret')).toMatchObject({ status: 'active', secret_version: 1 })
-    expect((await sb.rpc('prospector_platform_secret_adopt_legacy_totp', { p_envelope: env('k2') })).data).toBe('exists')
-    // Aucun paramètre de nom n'existe : aucun secret Telegram ne peut emprunter
-    // ce chemin pour devenir actif sans confirmation.
+  it('UNE PIERRE TOMBALE N\'EST PAS UN SECRET JAMAIS CONFIGURÉ', async () => {
+    // L'invariant que le faux négatif de 0C.1.1 a mis au jour, désormais éprouvé
+    // pour lui-même. Un sceau TOTP révoqué l'a été DÉLIBÉRÉMENT ; permettre à
+    // l'adoption héritée de le ressusciter rendrait la révocation réversible par
+    // le chemin le plus discret du coffre — celui qui écrit `active` d'emblée,
+    // sans aucune preuve.
+    const v = await poser('admin_totp_secret')
+    expect((await sb.rpc('prospector_platform_secret_revoke',
+      { p_name: 'admin_totp_secret', p_expected_version: v })).data).toBe('revoked')
+    const tombe = await etat('admin_totp_secret')
+    expect(tombe).toMatchObject({ status: 'revoked', envelope: null, kid: null })
+
+    expect((await sb.rpc('prospector_platform_secret_adopt_legacy_totp',
+      { p_envelope: env('k2') })).data).toBe('exists')
+    // Et la tombe n'a pas bougé d'un octet.
+    expect(await etat('admin_totp_secret')).toEqual(tombe)
+  })
+
+  it('l\'adoption n\'accepte AUCUN paramètre de nom', async () => {
+    // Aucun secret Telegram ne peut emprunter ce chemin pour devenir actif sans
+    // la confirmation de son fournisseur : la signature ne le permet pas.
     refusExecution((await sb.rpc('prospector_platform_secret_adopt_legacy_totp',
       { p_name: 'telegram_webhook_secret', p_envelope: env() })).error,
       'adoption avec un p_name — cette signature n\'existe pas')
