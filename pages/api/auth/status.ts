@@ -1,18 +1,33 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { isSetup, localSetupAllowed, mfaEnabled } from '../../../lib/prospector/auth'
+import { isSetup, localSetupAllowed } from '../../../lib/prospector/auth'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
+import { platformSecretStatus } from '../../../lib/secrets/platformVault'
 
 /**
- * État public du portail : un compte existe-t-il, la MFA est-elle active, et le
- * setup local est-il ouvert ?
+ * Etat public du portail :
+ * - compte administrateur configure ?
+ * - MFA active ?
+ * - setup local autorise ?
  *
- * `setupAllowed` existe pour que l'interface cesse de proposer « Créez votre
- * compte » là où cette opération est désormais refusée — proposer une action
- * impossible n'est pas une sécurité, c'est une impasse pour l'opérateur.
- * Ce booléen ne divulgue rien : il décrit une politique de déploiement, pas un
- * secret, et la route de setup refuse de toute façon par elle-même.
+ * Le statut MFA vient uniquement du Vault.
+ * Aucun dechiffrement du secret TOTP n'est necessaire ici.
  */
 export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
   await hydrateKeystore()
-  res.status(200).json({ setup: isSetup(), mfa: mfaEnabled(), setupAllowed: localSetupAllowed() })
+
+  const mfaStatus = await platformSecretStatus('admin_totp_secret')
+
+  if (mfaStatus.kind === 'error') {
+    return res.status(503).json({ error: 'auth_unavailable' })
+  }
+
+  const mfa =
+    mfaStatus.kind === 'present' &&
+    mfaStatus.status === 'active'
+
+  return res.status(200).json({
+    setup: isSetup(),
+    mfa,
+    setupAllowed: localSetupAllowed(),
+  })
 }

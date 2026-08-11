@@ -46,6 +46,124 @@ const budgetLeft = vi.fn(async () => ({ anthropic: 20, spent: 3 }))
 const generateSecret = vi.fn(() => 'SECRETTOTPDETESTAAAAAAAAAAAAAAAA')
 const anthropicPost = vi.fn(async () => ({ ok: true, status: 200, data: { content: [] }, text: '' }))
 
+
+type FakeTotpState = 'absent' | 'staged' | 'active' | 'revoked'
+let fakeTotpState: FakeTotpState = 'absent'
+let fakeTotpVersion = 0
+let fakeTotpValue = ''
+
+const platformSecretStatus = vi.fn(async (name: string) => {
+  if (name !== 'admin_totp_secret' || fakeTotpState === 'absent') {
+    return { kind: 'absent' as const }
+  }
+
+  return {
+    kind: 'present' as const,
+    status: fakeTotpState,
+    version: fakeTotpVersion,
+    kid: 'test-kid',
+  }
+})
+
+const stageAdminTotpSecret = vi.fn(async (value: string) => {
+  if (fakeTotpState !== 'absent') {
+    return { ok: false as const, outcome: 'exists' as const }
+  }
+
+  fakeTotpValue = value
+  fakeTotpVersion = 1
+  fakeTotpState = 'staged'
+
+  return {
+    ok: true as const,
+    outcome: 'created' as const,
+    version: fakeTotpVersion,
+  }
+})
+
+const replacePlatformSecretValue = vi.fn(async (
+  _name: string,
+  value: string,
+  expectedVersion: number,
+) => {
+  if (fakeTotpState !== 'revoked' || expectedVersion !== fakeTotpVersion) {
+    return { ok: false as const, outcome: 'stale' as const }
+  }
+
+  fakeTotpValue = value
+  fakeTotpVersion += 1
+  fakeTotpState = 'staged'
+
+  return {
+    ok: true as const,
+    outcome: 'replaced' as const,
+    version: fakeTotpVersion,
+  }
+})
+
+const readStagedAdminTotpSecret = vi.fn(async () => {
+  if (fakeTotpState === 'staged') {
+    return {
+      ok: true as const,
+      value: fakeTotpValue,
+      version: fakeTotpVersion,
+      status: 'staged' as const,
+    }
+  }
+
+  return {
+    ok: false as const,
+    reason:
+      fakeTotpState === 'absent'
+        ? 'not_configured'
+        : fakeTotpState === 'revoked'
+          ? 'revoked'
+          : 'wrong_state',
+  }
+})
+
+const promoteAdminTotpSecret = vi.fn(async (expectedVersion: number) => {
+  if (fakeTotpState !== 'staged' || expectedVersion !== fakeTotpVersion) {
+    return { ok: false as const, outcome: 'stale' as const }
+  }
+
+  fakeTotpState = 'active'
+
+  return {
+    ok: true as const,
+    outcome: 'promoted' as const,
+    version: fakeTotpVersion,
+  }
+})
+
+const revokeAdminTotpSecret = vi.fn(async (expectedVersion: number) => {
+  if (
+    (fakeTotpState !== 'staged' && fakeTotpState !== 'active') ||
+    expectedVersion !== fakeTotpVersion
+  ) {
+    return { ok: false as const, outcome: 'stale' as const }
+  }
+
+  fakeTotpState = 'revoked'
+  fakeTotpVersion += 1
+  fakeTotpValue = ''
+
+  return {
+    ok: true as const,
+    outcome: 'revoked' as const,
+    version: fakeTotpVersion,
+  }
+})
+
+vi.mock('../lib/secrets/platformVault', () => ({
+  platformSecretStatus: (...a: any[]) => (platformSecretStatus as any)(...a),
+  stageAdminTotpSecret: (...a: any[]) => (stageAdminTotpSecret as any)(...a),
+  replacePlatformSecretValue: (...a: any[]) => (replacePlatformSecretValue as any)(...a),
+  readStagedAdminTotpSecret: (...a: any[]) => (readStagedAdminTotpSecret as any)(...a),
+  promoteAdminTotpSecret: (...a: any[]) => (promoteAdminTotpSecret as any)(...a),
+  revokeAdminTotpSecret: (...a: any[]) => (revokeAdminTotpSecret as any)(...a),
+}))
+
 const KEYS: Record<string, string> = {}
 vi.mock('../lib/prospector/keystore', () => ({
   hydrateKeystore: async () => {},
@@ -128,6 +246,9 @@ beforeEach(() => {
   process.env.APP_ENV = 'development'
   process.env.APP_BASE_URL = 'https://app.prospector-test.invalid'
   for (const k of Object.keys(KEYS)) delete KEYS[k]
+  fakeTotpState = 'absent'
+  fakeTotpVersion = 0
+  fakeTotpValue = ''
   vi.clearAllMocks()
   fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, result: { username: 'bot' }, url: 'https://unipile.invalid/lien' }) }))
   vi.stubGlobal('fetch', fetchSpy)
@@ -170,7 +291,8 @@ describe('§18 — une session CLIENT est refusée sur les huit surfaces privil�
     // ⚠️ La garde doit précéder la GÉNÉRATION : un secret produit puis jeté
     // aurait tout de même été produit, et `stageTotpSecret` l'aurait écrit.
     expect(generateSecret).not.toHaveBeenCalled()
-    expect(stageTotpSecret).not.toHaveBeenCalled()
+    expect(platformSecretStatus).not.toHaveBeenCalled()
+    expect(stageAdminTotpSecret).not.toHaveBeenCalled()
     expect(JSON.stringify(res.body)).not.toMatch(/secret|otpauth/i)
   })
 
@@ -179,14 +301,16 @@ describe('§18 — une session CLIENT est refusée sur les huit surfaces privil�
     const res = mockRes()
     await mfaEnable(await req('POST', (await client())!, { code: '123456' }), res)
     expect(res.statusCode).toBe(403)
-    expect(enableMfa).not.toHaveBeenCalled()
+    expect(readStagedAdminTotpSecret).not.toHaveBeenCalled()
+    expect(promoteAdminTotpSecret).not.toHaveBeenCalled()
   })
 
   it('C — MFA disable : le second facteur de l\'admin est intact', async () => {
     const res = mockRes()
     await mfaDisable(await req('POST', (await client())!), res)
     expect(res.statusCode).toBe(403)
-    expect(disableMfa).not.toHaveBeenCalled()
+    expect(platformSecretStatus).not.toHaveBeenCalled()
+    expect(revokeAdminTotpSecret).not.toHaveBeenCalled()
   })
 
   it('D — diagnose : EXACTEMENT ZÉRO appel fournisseur', async () => {
@@ -242,23 +366,32 @@ describe('§18 — une session CLIENT est refusée sur les huit surfaces privil�
 
 // ══ §18 I — L'ADMINISTRATEUR GARDE SES CAPACITÉS ═══════════════════════════
 describe('§18 I — le comportement administrateur reste fonctionnel', () => {
-  it('MFA : setup → enable → disable', async () => {
+  it('MFA : setup -> enable -> disable', async () => {
     const s = mockRes()
     await mfaSetup(await req('POST', (await admin())!), s)
+
     expect(s.statusCode).toBe(200)
     expect(s.body.secret).toBeTruthy()
-    expect(stageTotpSecret).toHaveBeenCalledTimes(1)
+    expect(stageAdminTotpSecret).toHaveBeenCalledTimes(1)
+    expect(fakeTotpState).toBe('staged')
 
-    KEYS.APP_TOTP_SECRET = 'SECRETENATTENTE'
     const e = mockRes()
-    await mfaEnable(await req('POST', (await admin())!, { code: '123456' }), e)
+    await mfaEnable(
+      await req('POST', (await admin())!, { code: '123456' }),
+      e,
+    )
+
     expect(e.statusCode).toBe(200)
-    expect(enableMfa).toHaveBeenCalledTimes(1)
+    expect(readStagedAdminTotpSecret).toHaveBeenCalledTimes(1)
+    expect(promoteAdminTotpSecret).toHaveBeenCalledTimes(1)
+    expect(fakeTotpState).toBe('active')
 
     const d = mockRes()
     await mfaDisable(await req('POST', (await admin())!), d)
+
     expect(d.statusCode).toBe(200)
-    expect(disableMfa).toHaveBeenCalledTimes(1)
+    expect(revokeAdminTotpSecret).toHaveBeenCalledTimes(1)
+    expect(fakeTotpState).toBe('revoked')
   })
 
   it('usage et anonymize répondent à l\'administrateur', async () => {

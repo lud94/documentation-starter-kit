@@ -45,6 +45,16 @@ vi.mock('../lib/supabase/workspaces', () => ({
   listWorkspaces: async () => Object.values(WORKSPACES),
 }))
 
+
+// Le login interroge d?sormais le coffre MFA.
+// Dans cette suite historique, l'?tat nominal est : aucune MFA configur?e.
+vi.mock('../lib/secrets/platformVault', () => ({
+  readAdminTotpSecret: async () => ({
+    ok: false,
+    reason: 'not_configured',
+  }),
+}))
+
 import { createSessionToken, readSession, verifySessionToken, SESSION_COOKIE } from '../lib/auth/session'
 import { checkCredentials, isSetup, setCredentials, resetPassword, getEmail } from '../lib/prospector/auth'
 // SEC-AUTH-0.1 : l'autorité de réinitialisation a quitté le keystore pour une

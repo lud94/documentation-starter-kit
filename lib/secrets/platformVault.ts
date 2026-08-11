@@ -243,6 +243,17 @@ export function readAdminTotpSecret(): Promise<VaultRead> {
   return lire('admin_totp_secret', ['active'])
 }
 
+/**
+ * Rend le sceau UNIQUEMENT pendant l'enrolement MFA.
+ *
+ * Distinct de readAdminTotpSecret() :
+ * un secret staged sert seulement a verifier le premier code,
+ * jamais a authentifier une connexion administrateur.
+ */
+export function readStagedAdminTotpSecret(): Promise<VaultRead> {
+  return lire('admin_totp_secret', ['staged'])
+}
+
 // ── Secret de webhook Telegram ──────────────────────────────────────────────
 // pending_provider → active → revoked. C'est le FOURNISSEUR qui détient la
 // vérité : tant que Telegram n'a pas accepté le `setWebhook`, la base ne doit pas
