@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // Garde-fou CI — l'origine de l'extension est déclarée DEUX fois (lots SEC-EXT-0.1 / 0.1b).
 //
 // POURQUOI. `extension/config.js` décide où le service worker envoie le
