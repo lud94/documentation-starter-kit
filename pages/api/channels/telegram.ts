@@ -3,6 +3,7 @@ import {
   readTelegramBotToken,
   readTelegramWebhookSecret,
 } from '../../../lib/secrets/platformVault'
+import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { planJarvis, executeJarvis, isWrite } from '../../../lib/prospector/jarvisAgent'
 import { redeemPairingCode, resolveChannelWs, unlinkChannel } from '../../../lib/prospector/pairing'
 import { tenantFromVerifiedWorkspace } from '../../../lib/prospector/tenant'
@@ -204,6 +205,8 @@ const secret = secretRead.value
     // Jamais le secret ni l'en-tête reçu dans un journal.
     return res.status(401).json({ error: 'unauthorized' })
   }
+
+  await hydrateKeystore()
 
   const u = typeof req.body === 'string' ? safeParse(req.body) : req.body
   // ⚠️ Serverless : on TRAITE D'ABORD, on répond ENSUITE. Répondre avant gèlerait
