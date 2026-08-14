@@ -58,6 +58,15 @@ vi.mock('../lib/prospector/keystore', () => ({
   keySource: () => 'app',
   MANAGED_KEYS: [],
 }))
+vi.mock('../lib/secrets/platformVault', () => ({
+  platformSecretStatus: async (name: string) => {
+    if (name === 'telegram_bot_token') {
+      return { kind: 'absent' as const }
+    }
+
+    return { kind: 'absent' as const }
+  },
+}))
 // La passerelle LLM n'est pas le sujet : on l'immobilise pour que le refus
 // tenant soit la SEULE raison possible d'un 403.
 vi.mock('../lib/prospector/jarvisAgent', () => ({

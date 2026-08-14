@@ -410,11 +410,28 @@ function CanauxTab() {
   useEffect(() => { load() }, [])
 
   const saveToken = async () => {
-    if (!token.trim()) return
-    setBusy(true)
-    await fetch('/api/config/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ TELEGRAM_BOT_TOKEN: token.trim() }) })
-    setToken(''); await load(); setBusy(false); setMsg('Jeton enregistré. Branche maintenant le webhook.')
+  if (!token.trim()) return
+  setBusy(true)
+
+  const res = await fetch('/api/channels/telegram-config', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token: token.trim() }),
+  })
+
+  const d = await res.json()
+
+  if (!res.ok) {
+    setBusy(false)
+    setMsg(`❌ ${d.error || 'Impossible d’enregistrer le jeton.'}`)
+    return
   }
+
+  setToken('')
+  await load()
+  setBusy(false)
+  setMsg('Jeton enregistré dans le coffre. Branche maintenant le webhook.')
+}
   const setupWebhook = async () => {
     setBusy(true)
     const d = await fetch('/api/channels/telegram-setup', { method: 'POST' }).then((r) => r.json())
@@ -516,7 +533,8 @@ function CanauxTab() {
           onConfirm={async () => {
             setResetOpen(false); setBusy(true)
             for (const l of links) await fetch('/api/channels/pair', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: l.id }) })
-            await fetch('/api/config/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ TELEGRAM_BOT_TOKEN: '', TELEGRAM_WEBHOOK_SECRET: '', TELEGRAM_BOT_NAME: '' }) })
+            await fetch('/api/channels/telegram-config', { method: 'DELETE' })
+            await fetch('/api/config/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ TELEGRAM_BOT_NAME: '' }) })
             setCode(null); await load(); setBusy(false); setMsg('Bot réinitialisé.')
           }}
           onCancel={() => setResetOpen(false)}

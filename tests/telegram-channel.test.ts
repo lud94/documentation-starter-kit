@@ -78,6 +78,33 @@ vi.mock('../lib/prospector/keystore', () => ({
   getKey: (n: string) => KEYS[n] || '',
   setKeys: async () => {}, hasKey: () => true, keySource: () => 'app', MANAGED_KEYS: [],
 }))
+vi.mock('../lib/secrets/platformVault', () => ({
+  readTelegramBotToken: async () =>
+    KEYS.TELEGRAM_BOT_TOKEN
+      ? {
+          ok: true as const,
+          value: KEYS.TELEGRAM_BOT_TOKEN,
+          version: 1,
+          status: 'active' as const,
+        }
+      : {
+          ok: false as const,
+          reason: 'not_configured' as const,
+        },
+
+  readTelegramWebhookSecret: async () =>
+    KEYS.TELEGRAM_WEBHOOK_SECRET
+      ? {
+          ok: true as const,
+          value: KEYS.TELEGRAM_WEBHOOK_SECRET,
+          version: 1,
+          status: 'active' as const,
+        }
+      : {
+          ok: false as const,
+          reason: 'not_configured' as const,
+        },
+}))
 
 const planJarvis = vi.fn()
 const executeJarvis = vi.fn()

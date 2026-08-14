@@ -1,5 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
+import {
+  readTelegramBotToken,
+  readTelegramWebhookSecret,
+} from '../../../lib/secrets/platformVault'
 import { planJarvis, executeJarvis, isWrite } from '../../../lib/prospector/jarvisAgent'
 import { redeemPairingCode, resolveChannelWs, unlinkChannel } from '../../../lib/prospector/pairing'
 import { tenantFromVerifiedWorkspace } from '../../../lib/prospector/tenant'
@@ -159,7 +162,10 @@ async function handleUpdate(u: any, token: string): Promise<void> {
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
-  await hydrateKeystore()
+  const [tokenRead, secretRead] = await Promise.all([
+  readTelegramBotToken(),
+  readTelegramWebhookSecret(),
+])
 
   // ── PORTE D'ENTRÉE EXTERNE : FERMÉE PAR DÉFAUT (lot SEC-TG) ───────────────
   //
@@ -172,9 +178,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   //
   // Les deux réglages sont désormais EXIGÉS, et le refus précède l'analyse du
   // corps, la résolution du canal et toute mutation.
-  const token = getKey('TELEGRAM_BOT_TOKEN')
-  const secret = getKey('TELEGRAM_WEBHOOK_SECRET')
-  if (!token || !secret) return res.status(200).json({ ok: true }) // canal non configuré : rien n'est traité
+const vaultUnavailable =
+  (!tokenRead.ok &&
+    'reason' in tokenRead &&
+    (tokenRead.reason === 'storage_error' || tokenRead.reason === 'unreadable')) ||
+  (!secretRead.ok &&
+    'reason' in secretRead &&
+    (secretRead.reason === 'storage_error' || secretRead.reason === 'unreadable'))
+
+if (vaultUnavailable) {
+  return res.status(503).json({ error: 'temporarily_unavailable' })
+}
+
+if (!tokenRead.ok || !secretRead.ok) {
+  return res.status(200).json({ ok: true })
+}
+
+const token = tokenRead.value
+const secret = secretRead.value
 
   // Comparaison de longueur constante : un `!==` sur des chaînes peut, en
   // théorie, se mesurer. Le coût est nul, l'argument n'a pas à être discuté.

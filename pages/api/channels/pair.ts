@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
+import { platformSecretStatus } from '../../../lib/secrets/platformVault'
 import { createPairingCode, listChannelsFor, unlinkChannel } from '../../../lib/prospector/pairing'
 
 // Appairage d'un canal mobile à l'espace courant (session requise).
@@ -16,15 +17,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   await hydrateKeystore()
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
 
-  if (req.method === 'GET') {
-    return res.status(200).json({
-      channels: await listChannelsFor(ws),
-      telegramReady: !!getKey('TELEGRAM_BOT_TOKEN'),
-      botName: getKey('TELEGRAM_BOT_NAME') || '',
-    })
+if (req.method === 'GET') {
+  const telegram = await platformSecretStatus('telegram_bot_token')
+
+  if (telegram.kind === 'error') {
+    return res.status(503).json({ error: 'Vault Telegram indisponible.' })
   }
-  if (req.method === 'POST') {
-    if (!getKey('TELEGRAM_BOT_TOKEN')) return res.status(200).json({ error: 'Bot Telegram non configuré (Admin → Connexions → TELEGRAM_BOT_TOKEN).' })
+
+  return res.status(200).json({
+    channels: await listChannelsFor(ws),
+    telegramReady: telegram.kind === 'present' && telegram.status === 'active',
+    botName: getKey('TELEGRAM_BOT_NAME') || '',
+  })
+}
+if (req.method === 'POST') {
+const telegram = await platformSecretStatus('telegram_bot_token')
+
+if (telegram.kind === 'error') {
+  return res.status(503).json({ error: 'Vault Telegram indisponible.' })
+}
+
+if (telegram.kind !== 'present' || telegram.status !== 'active') {
+  return res.status(200).json({ error: 'Bot Telegram non configuré.' })
+}
     // `createPairingCode` rend `null` quand le titre d'espace est disputé par
     // une génération concurrente, ou après cinq collisions de code. Un refus,
     // jamais un code silencieusement écrasé.

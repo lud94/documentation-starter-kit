@@ -1,6 +1,14 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { isAdminRequest } from '../../../lib/auth/guard'
-import { hydrateKeystore, getKey, setKeys } from '../../../lib/prospector/keystore'
+import { setKeys } from '../../../lib/prospector/keystore'
+import {
+  readTelegramBotToken,
+  platformSecretStatus,
+  putTelegramWebhookPending,
+  replacePlatformSecretValue,
+  readTelegramWebhookSecret,
+  confirmTelegramWebhookActive,
+} from '../../../lib/secrets/platformVault'
 import { appBaseUrl } from '../../../lib/auth/baseUrl'
 
 // Branche le webhook Telegram sur cette instance, en un clic (admin uniquement).
@@ -27,10 +35,19 @@ import { appBaseUrl } from '../../../lib/auth/baseUrl'
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
   if (!(await isAdminRequest(req))) return res.status(403).json({ error: 'forbidden' })
-  await hydrateKeystore()
+  const tokenRead = await readTelegramBotToken()
 
-  const token = getKey('TELEGRAM_BOT_TOKEN')
-  if (!token) return res.status(200).json({ error: 'Renseigne TELEGRAM_BOT_TOKEN dans Connexions.' })
+if (!tokenRead.ok) {
+  const reason = 'reason' in tokenRead ? tokenRead.reason : 'unreadable'
+
+  if (reason === 'not_configured' || reason === 'revoked') {
+    return res.status(200).json({ error: 'Renseigne le jeton Telegram dans Canaux mobiles.' })
+  }
+
+  return res.status(503).json({ error: 'Vault Telegram indisponible.' })
+}
+
+const token = tokenRead.value
 
   // ⚠️ L'URL vient de la CONFIGURATION, jamais de la requête. Vérifiée AVANT de
   // produire quoi que ce soit : sans origine sûre, on n'engendre pas de secret
@@ -39,20 +56,60 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!base) return res.status(200).json({ error: 'APP_BASE_URL absente ou invalide : impossible de déclarer un webhook.' })
   const url = `${base}/api/channels/telegram`
 
-  let secret = getKey('TELEGRAM_WEBHOOK_SECRET')
-  if (!secret) {
-    // 32 octets d'un générateur CRYPTOGRAPHIQUE. `Math.random()` n'en est pas un.
-    secret = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-      .map((b) => b.toString(16).padStart(2, '0')).join('')
-    // ⚠️ DETTE CONNUE, NON TRAITÉE ICI : `setKeys` ne rend aucun accusé de
-    // persistance durable (elle écrit la mémoire, puis tente Supabase en
-    // absorbant l'échec). Ce secret peut donc n'exister que dans l'instance
-    // courante alors que Telegram, lui, l'a bien enregistré — et une autre
-    // instance rejetterait les mises à jour. Corriger cela demande de refondre
-    // l'acquittement d'écriture du keystore : c'est SEC-SECRETS-0C, et je ne
-    // prétends pas le résoudre dans ce lot.
-    await setKeys({ TELEGRAM_WEBHOOK_SECRET: secret })
+  const webhookState = await platformSecretStatus('telegram_webhook_secret')
+
+if (webhookState.kind === 'error') {
+  return res.status(503).json({ error: 'Vault Telegram indisponible.' })
+}
+
+let secret: string
+let webhookVersion: number
+let webhookNeedsConfirmation = false
+
+if (
+  webhookState.kind === 'absent' ||
+  (webhookState.kind === 'present' && webhookState.status === 'revoked')
+) {
+  const generated = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+
+  const written = webhookState.kind === 'absent'
+    ? await putTelegramWebhookPending(generated)
+    : await replacePlatformSecretValue(
+        'telegram_webhook_secret',
+        generated,
+        webhookState.version,
+      )
+
+  if (!written.ok) {
+    if (written.outcome === 'stale' || written.outcome === 'exists') {
+      return res.status(409).json({
+        error: 'La configuration Telegram a changé entre-temps. Réessaie.',
+      })
+    }
+
+    return res.status(503).json({
+      error: 'Impossible d’enregistrer le secret webhook.',
+    })
   }
+
+  secret = generated
+  webhookVersion = written.version
+  webhookNeedsConfirmation = true
+} else {
+  const current = await readTelegramWebhookSecret()
+
+  if (!current.ok) {
+    return res.status(503).json({
+      error: 'Secret webhook Telegram illisible.',
+    })
+  }
+
+  secret = current.value
+  webhookVersion = current.version
+  webhookNeedsConfirmation = current.status === 'pending_provider'
+}
 
   try {
     const r = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
@@ -63,6 +120,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // réfléchir l'URL déclarée, voire des fragments de la requête. On n'en
     // relaie rien.
     if (!r.ok) return res.status(200).json({ error: 'setWebhook a échoué.' })
+if (webhookNeedsConfirmation) {
+  const confirmed = await confirmTelegramWebhookActive(webhookVersion)
+
+  if (!confirmed.ok) {
+    if (confirmed.outcome === 'stale') {
+      return res.status(409).json({
+        error: 'La configuration Telegram a changé entre-temps. Réessaie.',
+      })
+    }
+
+    return res.status(503).json({
+      error: 'Webhook accepté par Telegram mais confirmation Vault impossible.',
+    })
+  }
+}
 
     // Récupère le nom du bot pour l'afficher dans l'app.
     try {

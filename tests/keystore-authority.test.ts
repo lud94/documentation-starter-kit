@@ -125,7 +125,7 @@ describe('2 — APP_SESSION_SECRET : doublement hors de portée de la base', () 
 
 // ══ 3 — les valeurs réellement DB-capables ne sont pas cassées ═════════════
 describe('3 — non-régression : une valeur DB-capable est bien hydratée', () => {
-  it('PII_MASKING, ANTHROPIC_BUDGET, JARVIS_MODEL et les secrets legacy passent', async () => {
+  it('les clés DB-capables passent mais TELEGRAM_BOT_TOKEN legacy est ignoré', async () => {
     await hydraterAvec({
       PII_MASKING: '0',
       ANTHROPIC_BUDGET: '42',
@@ -137,7 +137,7 @@ describe('3 — non-régression : une valeur DB-capable est bien hydratée', () 
     expect(getKey('PII_MASKING')).toBe('0')
     expect(getKey('ANTHROPIC_BUDGET')).toBe('42')
     expect(getKey('JARVIS_MODEL')).toBe('claude-modele-de-test')
-    expect(getKey('TELEGRAM_BOT_TOKEN')).toBe('jeton-telegram-de-test')
+    expect(getKey('TELEGRAM_BOT_TOKEN')).toBeUndefined()
     expect(getKey('APP_TOTP_SECRET')).toBe('SEEDTOTPDETESTAAAAAAAAAAAAAAAAAA')
     expect(hasKey('APP_PASSWORD')).toBe(true)
     expect(keySource('PII_MASKING')).toBe('app')

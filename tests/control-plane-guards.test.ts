@@ -52,7 +52,68 @@ let fakeTotpState: FakeTotpState = 'absent'
 let fakeTotpVersion = 0
 let fakeTotpValue = ''
 
+let fakeTelegramBotToken = ''
+let fakeTelegramWebhookValue = ''
+
+const readTelegramBotToken = vi.fn(async () =>
+  fakeTelegramBotToken
+    ? {
+        ok: true as const,
+        value: fakeTelegramBotToken,
+        version: 1,
+        status: 'active' as const,
+      }
+    : {
+        ok: false as const,
+        reason: 'not_configured' as const,
+      }
+)
+
+const readTelegramWebhookSecret = vi.fn(async () =>
+  fakeTelegramWebhookValue
+    ? {
+        ok: true as const,
+        value: fakeTelegramWebhookValue,
+        version: 1,
+        status: 'active' as const,
+      }
+    : {
+        ok: false as const,
+        reason: 'not_configured' as const,
+      }
+)
+
+const putTelegramWebhookPending = vi.fn(async (value: string) => {
+  fakeTelegramWebhookValue = value
+
+  return {
+    ok: true as const,
+    outcome: 'created' as const,
+    version: 1,
+  }
+})
+
+const confirmTelegramWebhookActive = vi.fn(async (_expectedVersion: number) => ({
+  ok: true as const,
+  outcome: 'promoted' as const,
+  version: 1,
+}))
+
+
 const platformSecretStatus = vi.fn(async (name: string) => {
+  if (name === 'telegram_webhook_secret') {
+    if (!fakeTelegramWebhookValue) {
+      return { kind: 'absent' as const }
+    }
+
+    return {
+      kind: 'present' as const,
+      status: 'active' as const,
+      version: 1,
+      kid: 'test-kid',
+    }
+  }
+
   if (name !== 'admin_totp_secret' || fakeTotpState === 'absent') {
     return { kind: 'absent' as const }
   }
@@ -157,11 +218,17 @@ const revokeAdminTotpSecret = vi.fn(async (expectedVersion: number) => {
 
 vi.mock('../lib/secrets/platformVault', () => ({
   platformSecretStatus: (...a: any[]) => (platformSecretStatus as any)(...a),
+
   stageAdminTotpSecret: (...a: any[]) => (stageAdminTotpSecret as any)(...a),
   replacePlatformSecretValue: (...a: any[]) => (replacePlatformSecretValue as any)(...a),
   readStagedAdminTotpSecret: (...a: any[]) => (readStagedAdminTotpSecret as any)(...a),
   promoteAdminTotpSecret: (...a: any[]) => (promoteAdminTotpSecret as any)(...a),
   revokeAdminTotpSecret: (...a: any[]) => (revokeAdminTotpSecret as any)(...a),
+
+  readTelegramBotToken: (...a: any[]) => (readTelegramBotToken as any)(...a),
+  readTelegramWebhookSecret: (...a: any[]) => (readTelegramWebhookSecret as any)(...a),
+  putTelegramWebhookPending: (...a: any[]) => (putTelegramWebhookPending as any)(...a),
+  confirmTelegramWebhookActive: (...a: any[]) => (confirmTelegramWebhookActive as any)(...a),
 }))
 
 const KEYS: Record<string, string> = {}
@@ -249,6 +316,8 @@ beforeEach(() => {
   fakeTotpState = 'absent'
   fakeTotpVersion = 0
   fakeTotpValue = ''
+  fakeTelegramBotToken = ''
+  fakeTelegramWebhookValue = ''
   vi.clearAllMocks()
   fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, result: { username: 'bot' }, url: 'https://unipile.invalid/lien' }) }))
   vi.stubGlobal('fetch', fetchSpy)
@@ -355,7 +424,7 @@ describe('§18 — une session CLIENT est refusée sur les huit surfaces privil�
   })
 
   it('H — telegram-setup : ni secret, ni écriture, ni setWebhook', async () => {
-    KEYS.TELEGRAM_BOT_TOKEN = '123:jeton-de-test'
+    fakeTelegramBotToken = '123:jeton-de-test'
     const res = mockRes()
     await telegramSetup(await req('POST', (await client())!), res)
     expect(res.statusCode).toBe(403)
@@ -431,7 +500,7 @@ describe('§19 — Host, Origin et X-Forwarded-* ne construisent AUCUNE URL sort
   })
 
   it('telegram : l\'URL déclarée à Telegram vient d\'APP_BASE_URL', async () => {
-    KEYS.TELEGRAM_BOT_TOKEN = '123:jeton-de-test'
+    fakeTelegramBotToken = '123:jeton-de-test'
     const res = mockRes()
     await telegramSetup(await req('POST', (await admin())!), res)
     expect(res.statusCode).toBe(200)
@@ -446,7 +515,7 @@ describe('§19 — Host, Origin et X-Forwarded-* ne construisent AUCUNE URL sort
     delete process.env.APP_BASE_URL
     KEYS.UNIPILE_DSN = 'api-x.unipile.invalid'
     KEYS.UNIPILE_API_KEY = 'clef-unipile-de-test'
-    KEYS.TELEGRAM_BOT_TOKEN = '123:jeton-de-test'
+    fakeTelegramBotToken = '123:jeton-de-test'
 
     const u = mockRes()
     await unipileConnect(await req('GET', (await admin())!, {}, { provider: 'linkedin' }), u)
@@ -524,7 +593,7 @@ describe('§20 — aucun corps d\'erreur de tiers ne ressort, ni en réponse ni 
   })
 
   it('telegram : la description d\'erreur de Telegram n\'est pas relayée', async () => {
-    KEYS.TELEGRAM_BOT_TOKEN = '123:jeton-de-test'
+    fakeTelegramBotToken = '123:jeton-de-test'
     fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: false, description: POISON }) }))
     vi.stubGlobal('fetch', fetchSpy)
     const { res, journal } = await sansFuite(async () => {
@@ -556,14 +625,15 @@ describe('§20 — aucun corps d\'erreur de tiers ne ressort, ni en réponse ni 
 // ══ §14 — LE SECRET DU WEBHOOK EST CRYPTOGRAPHIQUE ═════════════════════════
 describe('§14 — TELEGRAM_WEBHOOK_SECRET vient d\'un CSPRNG', () => {
   it('32 octets hexadécimaux, et jamais deux fois le même', async () => {
-    KEYS.TELEGRAM_BOT_TOKEN = '123:jeton-de-test'
+    fakeTelegramBotToken = '123:jeton-de-test'
     const vus = new Set<string>()
     for (let i = 0; i < 20; i++) {
-      setKeys.mockClear()
+      fakeTelegramWebhookValue = ''
+      putTelegramWebhookPending.mockClear()
       const res = mockRes()
       await telegramSetup(await req('POST', (await admin())!), res)
       expect(res.statusCode).toBe(200)
-      const ecrit = (setKeys.mock.calls[0] as any)[0].TELEGRAM_WEBHOOK_SECRET
+      const ecrit = (putTelegramWebhookPending.mock.calls[0] as any)[0]
       // ⚠️ `Math.random().toString(36)` ne peut PAS produire cette forme :
       // il rendait ~20 caractères de l'alphabet base-36, sans borne de longueur
       // garantie — et surtout sans propriété cryptographique.
@@ -574,8 +644,8 @@ describe('§14 — TELEGRAM_WEBHOOK_SECRET vient d\'un CSPRNG', () => {
   })
 
   it('un secret déjà présent n\'est pas régénéré', async () => {
-    KEYS.TELEGRAM_BOT_TOKEN = '123:jeton-de-test'
-    KEYS.TELEGRAM_WEBHOOK_SECRET = 'a'.repeat(64)
+    fakeTelegramBotToken = '123:jeton-de-test'
+    fakeTelegramWebhookValue = 'a'.repeat(64)
     const res = mockRes()
     await telegramSetup(await req('POST', (await admin())!), res)
     const envoye = JSON.parse((fetchSpy.mock.calls[0] as any)[1].body)
