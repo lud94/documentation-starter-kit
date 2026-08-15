@@ -6,7 +6,13 @@ import type { TenantContext } from './tenant'
 import { getKey } from './keystore'
 import { lookupByName, fetchCompanyDetail, fetchCompanies } from './datagouv'
 import { identifyLead, enrichCompanyWeb } from './identify'
-import { upsertLeadChecked, listLeads, type UpsertResult } from '../supabase/leads'
+import { resolveLeadEntity, entityLabel } from './entityResolver'
+import {
+  upsertLeadChecked,
+  listLeads,
+  listLeadsStrict,
+  type UpsertResult,
+} from '../supabase/leads'
 import { listItems, upsertItem } from '../supabase/store'
 import type { Lead, Sequence } from '../../types/prospector'
 
@@ -54,8 +60,102 @@ export async function planJarvis(tenant: TenantContext, message: string, ctx: { 
     tenant, task: 'classify', agent: `Jarvis ${ctx.channel || 'web'}`, system: SYSTEM,
     messages: [{ role: 'user', content: `${page}Directive: ${message}` }],
   })
-  if (r.blocked) return { reply: r.error || 'Budget IA épuisé.', action: null }
-  return (parseJson<PlanResult>(r.text)) || { reply: r.text.trim() || '…', action: null }
+if (r.blocked) {
+  return {
+    reply: r.error || 'Budget IA épuisé.',
+    action: null,
+  }
+}
+
+const plan =
+  parseJson<PlanResult>(r.text) || {
+    reply: r.text.trim() || '…',
+    action: null,
+  }
+
+if (!plan.action) {
+  return plan
+}
+
+// ENTITY-01B — les mutations visant un lead sont résolues côté serveur
+// AVANT de produire la demande de confirmation.
+if (
+  plan.action.type === 'set_status' ||
+  plan.action.type === 'add_note'
+) {
+  const query = String(plan.action.name || '').trim()
+
+  const target = await resolveExistingTarget(
+    tenant.id,
+    query,
+  )
+
+  if (target.kind === 'storage_error') {
+    return {
+      reply:
+        'Je ne peux pas lire le pipeline pour le moment. Rien ne sera modifié.',
+      action: null,
+    }
+  }
+
+  if (target.kind === 'not_found') {
+    return {
+      reply: `Lead « ${query} » introuvable dans ce pipeline.`,
+      action: null,
+    }
+  }
+
+  if (target.kind === 'ambiguous') {
+    return {
+      reply:
+        `J’ai trouvé plusieurs correspondances proches :\n` +
+        target.leads
+          .slice(0, 5)
+          .map(
+            (lead, index) =>
+              `${index + 1}. ${entityLabel(lead)}`,
+          )
+          .join('\n') +
+        `\nPrécise laquelle tu veux utiliser.`,
+      action: null,
+    }
+  }
+
+  const lead = target.lead
+  const label = entityLabel(lead)
+
+  const action = {
+    ...plan.action,
+
+    // Autorité métier réelle.
+    leadId: lead.id,
+
+    // Le texte devient seulement informatif.
+    name:
+      `${lead.firstName || ''} ${lead.lastName || ''}`.trim() ||
+      lead.company,
+  }
+
+  const probable = target.kind === 'probable'
+
+  if (action.type === 'set_status') {
+    return {
+      reply: probable
+        ? `J’ai trouvé un lead proche : ${label}. Confirme qu’il s’agit bien de cette personne et que je dois passer son statut à « ${action.status} ».`
+        : `Je vais passer ${label} en statut « ${action.status} ».`,
+      action,
+    }
+  }
+
+  return {
+    reply: probable
+      ? `J’ai trouvé un lead proche : ${label}. Confirme qu’il s’agit bien de cette personne et que je dois créer cette note/tâche.`
+      : `Je vais créer cette note/tâche pour ${label}.`,
+    action,
+  }
+}
+
+return plan
 }
 
 // Les actions de LECTURE s'exécutent sans confirmation ; les ÉCRITURES en demandent une.
@@ -91,6 +191,97 @@ async function findExisting(ws: string, q: string): Promise<Lead[]> {
   const needle = (q || '').toLowerCase().trim()
   if (!needle) return []
   return all.filter((l) => `${l.firstName} ${l.lastName} ${l.company}`.toLowerCase().includes(needle))
+}
+type ExistingTarget =
+  | { kind: 'exact'; lead: Lead }
+  | { kind: 'probable'; lead: Lead }
+  | { kind: 'ambiguous'; leads: Lead[] }
+  | { kind: 'not_found' }
+  | { kind: 'storage_error' }
+
+async function resolveExistingTarget(
+  ws: string,
+  query: string,
+): Promise<ExistingTarget> {
+  const read = await listLeadsStrict(ws)
+
+  if (!read.ok) {
+    return { kind: 'storage_error' }
+  }
+
+  const resolved = resolveLeadEntity(
+    read.leads,
+    query,
+    'any',
+  )
+
+  if (resolved.kind === 'exact') {
+    return {
+      kind: 'exact',
+      lead: resolved.candidate.lead,
+    }
+  }
+
+  if (resolved.kind === 'probable') {
+    return {
+      kind: 'probable',
+      lead: resolved.candidate.lead,
+    }
+  }
+
+  if (resolved.kind === 'ambiguous') {
+    return {
+      kind: 'ambiguous',
+      leads: resolved.candidates.map(
+        (candidate) => candidate.lead,
+      ),
+    }
+  }
+
+  return { kind: 'not_found' }
+}
+
+async function targetForExecution(
+  ws: string,
+  action: any,
+): Promise<
+  | { ok: true; lead: Lead | null }
+  | { ok: false }
+> {
+  const read = await listLeadsStrict(ws)
+
+  if (!read.ok) {
+    return { ok: false }
+  }
+
+  // Une action déjà résolue doit s'exécuter par ID, jamais en refaisant
+  // confiance au texte généré par le LLM.
+  if (action?.leadId) {
+    return {
+      ok: true,
+      lead:
+        read.leads.find(
+          (lead) => lead.id === action.leadId,
+        ) || null,
+    }
+  }
+
+  // Compatibilité temporaire avec les anciens appels :
+  // on accepte uniquement une correspondance EXACTE normalisée.
+  // Jamais de fuzzy mutation sans confirmation préalable.
+  const resolved = resolveLeadEntity(
+    read.leads,
+    String(action?.name || ''),
+    'any',
+  )
+
+  return {
+    ok: true,
+    lead:
+      resolved.kind === 'exact'
+        ? resolved.candidate.lead
+        : null,
+  }
 }
 
 // 2) EXÉCUTER — dans l'espace `ws`. Renvoie un texte lisible (canal-agnostique).
@@ -324,9 +515,18 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
     }
 
     case 'set_status': {
-      const hits = await findExisting(ws, action.name || '')
-      const target = hits.find((l) => !isAccount(l)) || hits[0]
-      if (!target) return `Lead « ${action.name} » introuvable.`
+const resolvedTarget =
+  await targetForExecution(ws, action)
+
+if (!resolvedTarget.ok) {
+  return '⚠️ Impossible de vérifier le pipeline pour le moment. Rien n’a été modifié.'
+}
+
+const target = resolvedTarget.lead
+
+if (!target) {
+  return `Lead « ${action.name} » introuvable.`
+}
       const valid = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
       if (!valid.includes(action.status)) return `Statut invalide.`
       target.status = action.status
@@ -336,8 +536,17 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
     }
 
     case 'add_note': {
-      const hits = await findExisting(ws, action.name || '')
-      const target = hits[0]
+      const resolvedTarget =
+  await targetForExecution(ws, action)
+
+if (!resolvedTarget.ok) {
+  return '⚠️ Impossible de vérifier le pipeline pour le moment. Rien n’a été créé.'
+}
+
+const target = resolvedTarget.lead
+if (!target) {
+  return `Lead « ${action.name} » introuvable. Rien n’a été créé.`
+}
       const t = {
         id: `tk_${Math.random().toString(36).slice(2, 9)}`,
         title: String(action.text || 'Note').slice(0, 200), due: "Aujourd'hui", done: false,

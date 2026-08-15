@@ -19,6 +19,51 @@ export async function listLeads(ws: string): Promise<Lead[]> {
     return data.map((r: any) => r.data as Lead)
   } catch { return [] }
 }
+// Lecture STRICTE des leads.
+//
+// Contrairement à listLeads(), cette primitive distingue :
+// - workspace réellement vide ;
+// - erreur / indisponibilité de la base.
+//
+// Une résolution d'identité ne doit jamais transformer une panne de stockage
+// en faux message "Lead introuvable".
+export type StrictLeadsRead =
+  | { ok: true; leads: Lead[] }
+  | { ok: false }
+
+export async function listLeadsStrict(
+  ws: string,
+): Promise<StrictLeadsRead> {
+  const sb = supabase()
+
+  if (!sb) {
+    return {
+      ok: true,
+      leads: Array.from(mem.values())
+        .filter((r) => r.ws === ws)
+        .map((r) => r.lead),
+    }
+  }
+
+  try {
+    const { data, error } = await sb
+      .from(TABLE)
+      .select('data')
+      .eq('workspace_id', ws)
+      .order('created_at', { ascending: false })
+
+    if (error || !data) {
+      return { ok: false }
+    }
+
+    return {
+      ok: true,
+      leads: data.map((r: any) => r.data as Lead),
+    }
+  } catch {
+    return { ok: false }
+  }
+}
 
 // Motif d'échec d'écriture. Distingue le CONFLIT MÉTIER (l'identifiant appartient
 // à un autre espace) de l'incident TECHNIQUE — les deux appellent des réponses
