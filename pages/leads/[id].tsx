@@ -89,6 +89,28 @@ export default function LeadDetailPage() {
   const reload = () => { if (typeof id === 'string') { getLeadDetail(id).then(setD); loadLeadSeqs() } }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
 
+// Une mutation confirmée depuis Jarvis doit être visible immédiatement
+// sur la fiche ouverte, sans refresh manuel.
+useEffect(() => {
+  const onJarvisLeadChange = () => {
+    if (typeof id === 'string') {
+      getLeadDetail(id).then(setD)
+    }
+  }
+
+  window.addEventListener(
+    'prospector:leads-changed',
+    onJarvisLeadChange,
+  )
+
+  return () => {
+    window.removeEventListener(
+      'prospector:leads-changed',
+      onJarvisLeadChange,
+    )
+  }
+}, [id])
+
   useEffect(() => { getSequences().then(setSequences) }, [])
   useEffect(() => { if (typeof id === 'string') getLeadThread(id).then(setThread) }, [id])
 

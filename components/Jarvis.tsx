@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { invalidateLeads } from '../lib/prospector/capabilities'
 
 // Panneau Jarvis in-app (⌘K). Adaptateur mince : il affiche, le serveur décide et
 // exécute — MÊME cerveau que l'extension et Telegram (mêmes capacités partout).
@@ -83,6 +84,11 @@ export default function Jarvis({ open, onClose }: { open: boolean; onClose: () =
     try {
       // Le navigateur ne renvoie QUE le nonce.
       const d = await call({ confirmationId })
+
+if (d.done) {
+  invalidateLeads()
+  window.dispatchEvent(new Event('prospector:leads-changed'))
+}
 
       setMsgs((m) =>
         m.map((x, i) =>

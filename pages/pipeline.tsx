@@ -335,6 +335,26 @@ export default function PipelinePage() {
     return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus) }
   }, [])
 
+// Une mutation confirmée depuis Jarvis doit être visible immédiatement
+// sans attendre un refresh manuel ou un changement d'onglet.
+useEffect(() => {
+  const onJarvisLeadChange = () => {
+    refresh(true)
+  }
+
+  window.addEventListener(
+    'prospector:leads-changed',
+    onJarvisLeadChange,
+  )
+
+  return () => {
+    window.removeEventListener(
+      'prospector:leads-changed',
+      onJarvisLeadChange,
+    )
+  }
+}, [])
+
   const toggle = (set: Set<string>, setter: (s: Set<string>) => void, v: string) => {
     const n = new Set(set); n.has(v) ? n.delete(v) : n.add(v); setter(n)
   }
