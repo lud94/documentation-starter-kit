@@ -218,7 +218,7 @@ export default function LeadDetailPage() {
               <h1 className="text-xl font-bold text-gray-900">{lead.firstName} {lead.lastName}</h1>
               {d.premium && <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">👑 Premium</span>}
               {d.openProfile && <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">Open Profile</span>}
-              <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${BAND_STYLE[scoring.band]}`}>{scoring.band === 'HOT' ? 'Chaud 🔥' : scoring.band === 'WARM' ? 'Tiède' : 'Froid'}</span>
+              <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${BAND_STYLE[scoring.band]}`}>{scoring.band === 'HOT' ? 'Priorité IA : Forte 🔥' : scoring.band === 'WARM' ? 'Priorité IA : Moyenne' : 'Priorité IA : Faible'}</span>
               <span className="text-xs font-medium px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: stageMeta.color }}>{stageMeta.label}</span>
             </div>
             <p className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
