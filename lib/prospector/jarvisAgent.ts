@@ -7,6 +7,7 @@ import { getKey } from './keystore'
 import { lookupByName, fetchCompanyDetail, fetchCompanies } from './datagouv'
 import { identifyLead, enrichCompanyWeb } from './identify'
 import { resolveLeadEntity, entityLabel } from './entityResolver'
+import { resolveTimeExpression } from './timeResolver'
 import {
   upsertLeadChecked,
   listLeads,
@@ -136,23 +137,37 @@ if (
       lead.company,
   }
 
+// JARVIS-TIME-01 — la date est calculée côté serveur à partir de
+// la directive originale, jamais confiée à l'interprétation du LLM.
+if (action.type === 'add_note') {
+  const time = resolveTimeExpression(message)
+
+  action.due = time.due
+  action.dueDate = time.dueDate
+  action.dueTime = time.dueTime
+  action.timeZone = time.timeZone
+}
+
   const probable = target.kind === 'probable'
 
-  if (action.type === 'set_status') {
-    return {
-      reply: probable
-        ? `J’ai trouvé un lead proche : ${label}. Confirme qu’il s’agit bien de cette personne et que je dois passer son statut à « ${action.status} ».`
-        : `Je vais passer ${label} en statut « ${action.status} ».`,
-      action,
-    }
-  }
-
+if (action.type === 'set_status') {
   return {
     reply: probable
-      ? `J’ai trouvé un lead proche : ${label}. Confirme qu’il s’agit bien de cette personne et que je dois créer cette note/tâche.`
-      : `Je vais créer cette note/tâche pour ${label}.`,
+      ? `J’ai trouvé un lead proche : ${label}. Confirme qu’il s’agit bien de cette personne et que je dois passer son statut à « ${action.status} ».`
+      : `Je vais passer ${label} en statut « ${action.status} ».`,
     action,
   }
+}
+
+const dueLabel =
+  action.due ? ` pour ${action.due}` : ''
+
+return {
+  reply: probable
+    ? `J’ai trouvé un lead proche : ${label}. Confirme qu’il s’agit bien de cette personne et que je dois créer cette note/tâche${dueLabel}.`
+    : `Je vais créer cette note/tâche pour ${label}${dueLabel}.`,
+  action,
+}
 }
 
 return plan
@@ -547,11 +562,28 @@ const target = resolvedTarget.lead
 if (!target) {
   return `Lead « ${action.name} » introuvable. Rien n’a été créé.`
 }
-      const t = {
-        id: `tk_${Math.random().toString(36).slice(2, 9)}`,
-        title: String(action.text || 'Note').slice(0, 200), due: "Aujourd'hui", done: false,
-        leadId: target?.id, leadName: target ? `${target.firstName} ${target.lastName}`.trim() || target.company : undefined,
-      }
+ const t = {
+  id: `tk_${Math.random().toString(36).slice(2, 9)}`,
+  title: String(action.text || 'Note').slice(0, 200),
+  due: String(action.due || "Aujourd'hui"),
+  dueDate:
+    typeof action.dueDate === 'string'
+      ? action.dueDate
+      : undefined,
+  dueTime:
+    typeof action.dueTime === 'string'
+      ? action.dueTime
+      : null,
+  timeZone:
+    typeof action.timeZone === 'string'
+      ? action.timeZone
+      : undefined,
+  done: false,
+  leadId: target.id,
+  leadName:
+    `${target.firstName} ${target.lastName}`.trim() ||
+    target.company,
+}
       await upsertItem('task', t.id, t, ws)
       return `✅ Note/tâche créée${target ? ` pour ${t.leadName}` : ''}.`
     }

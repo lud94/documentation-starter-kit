@@ -375,6 +375,59 @@ describe('JARVIS-ENTITY-01B — note/tâche liée au lead résolu', () => {
     expect(task.leadName).toBe('Severine GABAY')
   })
 
+it('lundi prochain à 14h30 → échéance structurée réellement persistée', async () => {
+  vi.useFakeTimers()
+
+  try {
+    // Lundi 17 août 2026 à 10h00 à Paris.
+    vi.setSystemTime(
+      new Date('2026-08-17T08:00:00.000Z'),
+    )
+
+    llmPlan({
+      type: 'add_note',
+      name: 'Severine GABAY',
+      text: 'Relancer Severine',
+    })
+
+    const plan = await planJarvis(
+      tenant,
+      'Rappelle-moi lundi prochain à 14h30 de relancer Severine GABAY',
+      { channel: 'app' },
+    )
+
+    expect(plan.action.leadId).toBe('ld_g1z77zvy')
+    expect(plan.action.due).toBe('Lun. 24/08 · 14h30')
+    expect(plan.action.dueDate).toBe('2026-08-24')
+    expect(plan.action.dueTime).toBe('14:30')
+    expect(plan.action.timeZone).toBe('Europe/Paris')
+
+    // La confirmation doit annoncer l'échéance avant écriture.
+    expect(plan.reply).toContain(
+      'Lun. 24/08 · 14h30',
+    )
+
+    const result = await executeJarvis(
+      tenant,
+      plan.action,
+      'admin',
+    )
+
+    expect(result).toContain('Note/tâche créée')
+    expect(upsertItem).toHaveBeenCalledTimes(1)
+
+    const task = upsertItem.mock.calls[0][2]
+
+    expect(task.leadId).toBe('ld_g1z77zvy')
+    expect(task.due).toBe('Lun. 24/08 · 14h30')
+    expect(task.dueDate).toBe('2026-08-24')
+    expect(task.dueTime).toBe('14:30')
+    expect(task.timeZone).toBe('Europe/Paris')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
   it('lead disparu avant confirmation → aucune tâche orpheline', async () => {
     leads = []
 
