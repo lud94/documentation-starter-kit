@@ -825,10 +825,47 @@ export function getWorkspaces(): Promise<Workspace[]> {
 }
 
 // ── Notifications ──
-export interface Notification { id: string; type: 'reply' | 'meeting' | 'task' | 'system'; text: string; when: string; unread: boolean; href?: string }
-const NOTIFS: Notification[] = []
-export function getNotifications(): Promise<Notification[]> { return delay([...NOTIFS]) }
-export function markNotificationsRead(): Promise<Notification[]> { NOTIFS.forEach((n) => (n.unread = false)); return delay([...NOTIFS]) }
+export interface Notification {
+  id: string
+  type: 'reply' | 'meeting' | 'task' | 'system'
+  text: string
+  when: string
+  unread: boolean
+  href?: string
+  createdAt?: number
+  taskId?: string
+  leadId?: string
+}
+
+export async function getNotifications(): Promise<Notification[]> {
+  return storeList<Notification>('notification')
+}
+
+export async function markNotificationsRead(): Promise<Notification[]> {
+  const notifications = await getNotifications()
+
+  const updated = notifications.map((notification) => ({
+    ...notification,
+    unread: false,
+  }))
+
+  for (const notification of updated) {
+    if (
+      notifications.find(
+        (current) =>
+          current.id === notification.id &&
+          current.unread,
+      )
+    ) {
+      await storeSave(
+        'notification',
+        notification,
+      )
+    }
+  }
+
+  return updated
+}
 
 // ── Listes (export CSV paramétrable + déploiement en séquence) ─────────────────
 export interface LeadList { id: string; name: string; leadIds: string[]; source?: string; createdAt: number }

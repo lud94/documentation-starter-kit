@@ -94,7 +94,64 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     fetch('/api/auth/me').then((r) => r.json()).then((d) => { setEmail(d.email); setRole(d.role || 'admin'); setPerms(d.permissions || null); setWsName(d.workspaceName || null) }).catch(() => {})
   }, [])
-  useEffect(() => { getNotifications().then(setNotifs) }, [])
+  useEffect(() => {
+  let cancelled = false
+
+  const refreshNotifications = () => {
+    getNotifications()
+      .then((items) => {
+        if (!cancelled) {
+          setNotifs(items)
+        }
+      })
+      .catch(() => {})
+  }
+
+  // Chargement initial.
+  refreshNotifications()
+
+  // Les rappels sont produits côté serveur :
+  // la cloche vérifie régulièrement les nouveautés.
+  const timer = window.setInterval(
+    refreshNotifications,
+    15_000,
+  )
+
+  // Retour sur l'onglet / l'application :
+  // synchronisation immédiate sans attendre le prochain polling.
+  const onFocus = () => {
+    refreshNotifications()
+  }
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'visible') {
+      refreshNotifications()
+    }
+  }
+
+  window.addEventListener('focus', onFocus)
+
+  document.addEventListener(
+    'visibilitychange',
+    onVisibilityChange,
+  )
+
+  return () => {
+    cancelled = true
+
+    window.clearInterval(timer)
+
+    window.removeEventListener(
+      'focus',
+      onFocus,
+    )
+
+    document.removeEventListener(
+      'visibilitychange',
+      onVisibilityChange,
+    )
+  }
+}, [])
   // Raccourci ⌘K / Ctrl+K → ouvre Jarvis.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setJarvisOpen((v) => !v) } }

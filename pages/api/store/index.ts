@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { listItems, upsertItem, deleteItem } from '../../../lib/supabase/store'
 import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 
-const KINDS = ['sequence', 'task', 'thread', 'list', 'mission'] // whitelist
+const KINDS = ['sequence', 'task', 'thread', 'list', 'mission', 'notification'] // whitelist
 
 const str = (v: any) => (Array.isArray(v) ? v[0] : v) || ''
 
