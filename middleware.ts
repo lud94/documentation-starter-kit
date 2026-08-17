@@ -5,7 +5,7 @@ import { verifySessionToken, SESSION_COOKIE } from './lib/auth/session'
 // Routes publiques (pas de session requise).
 // Routes publiques : le webhook Telegram et l'agent d'extension sont appelés depuis
 // l'extérieur (pas de session) — ils ont leur propre garde (secret / jeton).
-const PUBLIC = ['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/setup', '/api/auth/status', '/api/auth/reset-request', '/api/auth/reset', '/api/ingest/lead', '/api/jarvis/agent', '/api/channels/telegram', '/api/version']
+const PUBLIC = ['/login', '/api/auth/login', '/api/auth/logout', '/api/auth/setup', '/api/auth/status', '/api/auth/reset-request', '/api/auth/reset', '/api/ingest/lead', '/api/jarvis/agent', '/api/channels/telegram', '/api/version', '/api/reminders/run']
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
