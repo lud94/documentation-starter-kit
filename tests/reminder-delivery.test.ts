@@ -85,6 +85,7 @@ describe(
           href: '/leads/ld_g1z77zvy',
           taskId: 'tk_123',
           leadId: 'ld_g1z77zvy',
+          priority: 'normal',
         })
       },
     )

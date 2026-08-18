@@ -25,6 +25,7 @@ export interface ReminderTask {
   reminderSentAt?: string | null
   leadId?: string
   leadName?: string
+  priority?: 'normal' | 'important'
 }
 
 export type ReminderReason =

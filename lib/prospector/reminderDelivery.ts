@@ -24,6 +24,7 @@ export interface StoredReminderNotification {
   href: string
   taskId: string
   leadId?: string
+  priority: 'normal' | 'important'
 }
 
 export function reminderNotificationId(
@@ -59,6 +60,7 @@ export function buildReminderNotification(
 
     taskId: ctx.task.id,
     leadId: ctx.task.leadId,
+    priority: ctx.task.priority === 'important' ? 'important' : 'normal',
   }
 }
 

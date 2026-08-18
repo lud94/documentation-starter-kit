@@ -28,7 +28,7 @@ function nextReminderPopup(items: Notification[]) {
 
   const seen = new Set(persisted)
   const candidate = items.find((item) => {
-    if (!item.unread || item.type !== 'task' || !item.id.startsWith('reminder_')) return false
+    if (!item.unread || item.type !== 'task' || item.priority !== 'important' || !item.id.startsWith('reminder_')) return false
     const signature = reminderPopupSignature(item)
     return !seen.has(signature) && !SHOWN_REMINDER_POPUPS.has(signature)
   })

@@ -8,6 +8,7 @@ import { lookupByName, fetchCompanyDetail, fetchCompanies } from './datagouv'
 import { identifyLead, enrichCompanyWeb } from './identify'
 import { resolveLeadEntity, entityLabel } from './entityResolver'
 import { resolveTimeExpression } from './timeResolver'
+import { resolveReminderPriority } from './reminderPriority'
 import {
   upsertLeadChecked,
   listLeads,
@@ -146,6 +147,7 @@ if (action.type === 'add_note') {
   action.dueDate = time.dueDate
   action.dueTime = time.dueTime
   action.timeZone = time.timeZone
+  action.priority = resolveReminderPriority(message)
 }
 
   const probable = target.kind === 'probable'
@@ -578,6 +580,10 @@ if (!target) {
     typeof action.timeZone === 'string'
       ? action.timeZone
       : undefined,
+  priority:
+    action.priority === 'important'
+      ? 'important'
+      : 'normal',
   done: false,
   leadId: target.id,
   leadName:

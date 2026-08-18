@@ -835,6 +835,7 @@ export interface Notification {
   createdAt?: number
   taskId?: string
   leadId?: string
+  priority?: 'normal' | 'important'
 }
 
 export async function getNotifications(): Promise<Notification[]> {
