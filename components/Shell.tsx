@@ -9,6 +9,45 @@ import { getNotifications, markNotificationsRead } from '../lib/prospector/capab
 import type { Notification } from '../lib/prospector/capabilities'
 import { invalidateLeads } from '../lib/prospector/capabilities'
 
+import ReminderPopup from './ReminderPopup'
+
+const REMINDER_POPUP_STORAGE_KEY = 'prospector:reminder-popup-seen-v1'
+const SHOWN_REMINDER_POPUPS = new Set<string>()
+
+function reminderPopupSignature(notification: Notification) {
+  return notification.id + '|' + notification.when
+}
+
+function nextReminderPopup(items: Notification[]) {
+  let persisted: string[] = []
+  try {
+    const raw = window.localStorage.getItem(REMINDER_POPUP_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    if (Array.isArray(parsed)) persisted = parsed.filter((value: unknown): value is string => typeof value === 'string')
+  } catch {}
+
+  const seen = new Set(persisted)
+  const candidate = items.find((item) => {
+    if (!item.unread || item.type !== 'task' || !item.id.startsWith('reminder_')) return false
+    const signature = reminderPopupSignature(item)
+    return !seen.has(signature) && !SHOWN_REMINDER_POPUPS.has(signature)
+  })
+
+  if (!candidate) return null
+
+  const signature = reminderPopupSignature(candidate)
+  SHOWN_REMINDER_POPUPS.add(signature)
+
+  try {
+    window.localStorage.setItem(
+      REMINDER_POPUP_STORAGE_KEY,
+      JSON.stringify([...seen, signature].slice(-100)),
+    )
+  } catch {}
+
+  return candidate
+}
+
 const NOTIF_ICON: Record<Notification['type'], string> = {
   reply: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.9 9.9 0 01-4-.8L3 20l.8-3.2A7.9 7.9 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z',
   meeting: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z',
@@ -70,6 +109,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [wsName, setWsName] = useState<string | null>(null)
   const [notifs, setNotifs] = useState<Notification[]>([])
   const [notifOpen, setNotifOpen] = useState(false)
+  const [activeReminder, setActiveReminder] = useState<Notification | null>(null)
   const now = useClock()
 
   // Sélecteur d'espace
@@ -102,6 +142,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       .then((items) => {
         if (!cancelled) {
           setNotifs(items)
+          setActiveReminder((current) => current || nextReminderPopup(items))
         }
       })
       .catch(() => {})
@@ -369,6 +410,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
       {modal && modal !== 'sourcing' && <CreateLeadModal mode={modal} onClose={() => setModal(null)} />}
       <Jarvis open={jarvisOpen} onClose={() => setJarvisOpen(false)} />
+      {activeReminder && <ReminderPopup notification={activeReminder} onDismiss={() => setActiveReminder(null)} />}
       </div>
     </div>
   )
