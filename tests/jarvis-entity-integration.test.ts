@@ -428,6 +428,54 @@ it('lundi prochain à 14h30 → échéance structurée réellement persistée', 
   }
 })
 
+  it('rappelle-moi → récupère le rappel si le premier classifieur refuse à tort', async () => {
+    vi.useFakeTimers()
+
+    try {
+      vi.setSystemTime(
+        new Date('2026-08-18T09:00:00.000Z'),
+      )
+
+      callClaude.mockResolvedValueOnce({
+        blocked: false,
+        text: JSON.stringify({
+          reply: 'Je ne peux pas programmer de rappels — ce n’est pas une fonction de Prospector.',
+          action: null,
+        }),
+      })
+
+      callClaude.mockResolvedValueOnce({
+        blocked: false,
+        text: JSON.stringify({
+          reply: 'Je vais créer ce rappel.',
+          action: {
+            type: 'add_note',
+            name: 'Severine GABAY',
+            text: 'Relancer Severine GABAY',
+          },
+        }),
+      })
+
+      const plan = await planJarvis(
+        tenant,
+        "Rappelle-moi aujourd'hui à 11h45 de relancer Severine GABAY",
+        { channel: 'app' },
+      )
+
+      expect(callClaude).toHaveBeenCalledTimes(2)
+      expect(plan.action).not.toBeNull()
+      expect(plan.action.type).toBe('add_note')
+      expect(plan.action.leadId).toBe('ld_g1z77zvy')
+      expect(plan.action.dueDate).toBe('2026-08-18')
+      expect(plan.action.dueTime).toBe('11:45')
+      expect(plan.action.timeZone).toBe('Europe/Paris')
+      expect(plan.action.priority).toBe('normal')
+      expect(plan.reply).toContain('11h45')
+      expect(plan.reply).not.toContain('ne peux pas programmer')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('lead disparu avant confirmation → aucune tâche orpheline', async () => {
     leads = []
 

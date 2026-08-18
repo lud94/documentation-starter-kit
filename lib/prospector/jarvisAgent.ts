@@ -48,10 +48,37 @@ ACTION (au plus une) :
 - { "type":"add_to_sequence", "company"|"name":"...", "sequenceName":"..." } → enrôler dans une séquence EXISTANTE.
 - { "type":"set_status", "name":"...", "status":"chaud"|"tiede"|"froid"|"converti"|"perdu" } → changer le statut d'un lead.
 - { "type":"add_note", "name":"...", "text":"..." } → créer une tâche/rappel rattaché à un lead.
+  IMPORTANT : toute directive du type « rappelle-moi », « crée/mets un rappel » ou équivalent DOIT utiliser add_note, même si elle contient une date ou une heure. Prospector sait gérer les rappels côté serveur : ne dis jamais que cette fonction n’est pas disponible.
 
 Si une page web est fournie, déduis l'entreprise/la personne de son titre et de son URL.
 Si rien de pertinent, action=null et réponds directement dans "reply".`
 
+
+const REMINDER_FALLBACK_SYSTEM = `Tu es le classifieur spécialisé des rappels de Prospector.
+Réponds UNIQUEMENT en JSON :
+{ "reply": "phrase courte en français", "action": { "type":"add_note", "name":"...", "text":"..." } | null }
+
+Si la directive demande explicitement un rappel ou demande à Jarvis de rappeler quelque chose concernant un lead, retourne TOUJOURS add_note.
+"name" = nom du lead mentionné par l'utilisateur.
+"text" = action concise à rappeler.
+Ne calcule PAS la date, l'heure ni la priorité : le serveur les calcule depuis la directive originale.
+Ne prétends jamais que Prospector ne sait pas programmer de rappel.`
+
+function looksLikeReminderDirective(message: string): boolean {
+  const normalized = message
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return (
+    /\brappelle moi\b/.test(normalized) ||
+    /\b(?:cree|creer|mets|mettre|programme|programmer)\s+(?:moi\s+)?(?:un\s+)?rappel\b/.test(normalized) ||
+    /\b(?:rappel|notification de rappel)\s+(?:pour|a|demain|aujourd hui)\b/.test(normalized)
+  )
+}
 export interface PlanResult { reply: string; action: any | null }
 
 // 1) COMPRENDRE — modèle économique (classification), aucun effet de bord.
@@ -69,11 +96,38 @@ if (r.blocked) {
   }
 }
 
-const plan =
+let plan =
   parseJson<PlanResult>(r.text) || {
     reply: r.text.trim() || '…',
     action: null,
   }
+
+if (
+  looksLikeReminderDirective(message) &&
+  plan.action?.type !== 'add_note'
+) {
+  const reminderRetry = await callClaude({
+    tenant,
+    task: 'classify',
+    agent: `Jarvis reminder ${ctx.channel || 'web'}`,
+    system: REMINDER_FALLBACK_SYSTEM,
+    messages: [
+      {
+        role: 'user',
+        content: `Directive: ${message}`,
+      },
+    ],
+  })
+
+  if (!reminderRetry.blocked) {
+    const retryPlan =
+      parseJson<PlanResult>(reminderRetry.text)
+
+    if (retryPlan?.action?.type === 'add_note') {
+      plan = retryPlan
+    }
+  }
+}
 
 if (!plan.action) {
   return plan
