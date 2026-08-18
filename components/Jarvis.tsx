@@ -88,6 +88,7 @@ export default function Jarvis({ open, onClose }: { open: boolean; onClose: () =
 if (d.done) {
   invalidateLeads()
   window.dispatchEvent(new Event('prospector:leads-changed'))
+  window.dispatchEvent(new Event('prospector:tasks-changed'))
 }
 
       setMsgs((m) =>

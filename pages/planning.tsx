@@ -19,12 +19,29 @@ export default function PlanningPage() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [title, setTitle] = useState('')
   const [due, setDue] = useState("Aujourd'hui")
+  const [priority, setPriority] = useState<Task['priority']>('normal')
 
-  useEffect(() => { getTasks().then(setTasks) }, [])
+  useEffect(() => {
+    let cancelled = false
+
+    const refreshTasks = () => {
+      getTasks().then((items) => {
+        if (!cancelled) setTasks(items)
+      })
+    }
+
+    refreshTasks()
+    window.addEventListener('prospector:tasks-changed', refreshTasks)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener('prospector:tasks-changed', refreshTasks)
+    }
+  }, [])
 
   const add = async () => {
     if (!title.trim()) return
-    await addTask({ title, due })
+    await addTask({ title, due, priority })
     setTitle(''); getTasks().then(setTasks)
   }
   const toggle = async (id: string) => setTasks(await toggleTask(id))
@@ -44,7 +61,10 @@ export default function PlanningPage() {
         {t.done && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
       </button>
       <div className="min-w-0 flex-1">
-        <p className={`text-sm font-medium ${t.done ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{t.title}</p>
+        <div className="flex items-center gap-2">
+          <p className={`text-sm font-medium ${t.done ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{t.title}</p>
+          {t.priority === 'important' && <span className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Important</span>}
+        </div>
         <p className="text-xs text-gray-400 flex items-center gap-1.5">
           {t.channel && <span className={`w-1.5 h-1.5 rounded-full ${CH_DOT[t.channel]}`} />}
           {t.leadName ? <Link href={`/leads/${t.leadId}`} className="hover:text-indigo-500">{t.leadName}</Link> : 'Général'} · {t.due}
@@ -72,6 +92,13 @@ export default function PlanningPage() {
           <label className="block text-xs font-semibold text-gray-500 mb-1.5">Échéance</label>
           <select value={due} onChange={(e) => setDue(e.target.value)} className={field}>
             <option>Aujourd'hui</option><option>Demain</option><option>Cette semaine</option><option>La semaine prochaine</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-gray-500 mb-1.5">Priorité</label>
+          <select value={priority} onChange={(e) => setPriority(e.target.value as Task['priority'])} className={field}>
+            <option value="normal">Normale</option>
+            <option value="important">Importante</option>
           </select>
         </div>
         <button onClick={add} disabled={!title.trim()} className="gradient-brand text-white text-sm font-semibold px-4 py-2 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50">Ajouter</button>

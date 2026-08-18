@@ -218,10 +218,15 @@ if (action.type === 'set_status') {
 const dueLabel =
   action.due ? ` pour ${action.due}` : ''
 
+const reminderLabel =
+  action.priority === 'important'
+    ? 'ce rappel important'
+    : 'cette note/tâche'
+
 return {
   reply: probable
-    ? `J’ai trouvé un lead proche : ${label}. Confirme qu’il s’agit bien de cette personne et que je dois créer cette note/tâche${dueLabel}.`
-    : `Je vais créer cette note/tâche pour ${label}${dueLabel}.`,
+    ? `J’ai trouvé un lead proche : ${label}. Confirme qu’il s’agit bien de cette personne et que je dois créer ${reminderLabel}${dueLabel}.`
+    : `Je vais créer ${reminderLabel} pour ${label}${dueLabel}.`,
   action,
 }
 }

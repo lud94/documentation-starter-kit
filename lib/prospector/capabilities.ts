@@ -951,14 +951,14 @@ export async function deployListToSequence(list: LeadList, sequenceId: string): 
 }
 
 // ── Planificateur de tâches / rappels ──
-export interface Task { id: string; title: string; due: string; done: boolean; leadId?: string; leadName?: string; channel?: 'linkedin' | 'email' | 'whatsapp' | null }
+export interface Task { id: string; title: string; due: string; done: boolean; leadId?: string; leadName?: string; channel?: 'linkedin' | 'email' | 'whatsapp' | null; priority?: 'normal' | 'important' }
 let TASKS: Task[] = []
 export async function getTasks(): Promise<Task[]> {
   TASKS = await storeList<Task>('task')
   return [...TASKS]
 }
-export async function addTask(input: { title: string; due: string; leadId?: string; leadName?: string; channel?: Task['channel'] }): Promise<Task> {
-  const t: Task = { id: `tk_${Math.random().toString(36).slice(2, 9)}`, title: input.title.trim() || 'Tâche', due: input.due || "Aujourd'hui", done: false, leadId: input.leadId, leadName: input.leadName, channel: input.channel ?? null }
+export async function addTask(input: { title: string; due: string; leadId?: string; leadName?: string; channel?: Task['channel']; priority?: Task['priority'] }): Promise<Task> {
+  const t: Task = { id: `tk_${Math.random().toString(36).slice(2, 9)}`, title: input.title.trim() || 'Tâche', due: input.due || "Aujourd'hui", done: false, leadId: input.leadId, leadName: input.leadName, channel: input.channel ?? null, priority: input.priority === 'important' ? 'important' : 'normal' }
   TASKS.unshift(t)
   await storeSave('task', t)
   return t
