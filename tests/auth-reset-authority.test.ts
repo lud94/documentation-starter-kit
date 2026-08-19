@@ -125,6 +125,14 @@ describe('SEC-AUTH-0.1 — le bearer de réinitialisation se consomme, il ne se 
     expect(checkCredentials('boss@smart.ai', 'second-nouveau-mdp')).toBe(false)
   })
 
+  // ⚠️ DÉLAI EXPLICITE (TEST-ROBUST-01). Ce cas n'attend rien : il CALCULE.
+  // Vingt `resetPassword` concurrents hachent chacun un mot de passe en bcrypt
+  // coût 12, puis vingt `checkCredentials` en comparent autant — une quarantaine
+  // d'opérations délibérément lentes. Seul, le cas tient dans les 5 s par défaut
+  // de Vitest ; dans la suite complète, où les fichiers se partagent le CPU, il
+  // les dépasse. Le défaut est temporel, pas fonctionnel : aucune assertion ni
+  // aucun nombre de concurrents n'est touché, et le timeout global reste à 5 s
+  // pour tous les autres cas.
   it('F — DÉFAUT : 20 consommations SIMULTANÉES → exactement UNE réussit', async () => {
     // Le cœur du lot. `check → agir → supprimer` laissait les vingt appels
     // franchir la vérification avant la première invalidation ; ils écrivaient
@@ -143,8 +151,9 @@ describe('SEC-AUTH-0.1 — le bearer de réinitialisation se consomme, il ne se 
       if (i === gagnant) continue
       expect(checkCredentials('boss@smart.ai', `mot-de-passe-concurrent-${i}`)).toBe(false)
     }
-  })
+  }, 15_000)
 
+  // Même raison qu'en F : vingt passages par la route, donc vingt hachages.
   it('F bis — 20 consommations simultanées via la ROUTE : un seul 200', async () => {
     const { token } = await demander()
     const reponses = await Promise.all(Array.from({ length: 20 }, async (_, i) => {
@@ -154,7 +163,7 @@ describe('SEC-AUTH-0.1 — le bearer de réinitialisation se consomme, il ne se 
     }))
     expect(reponses.filter((c) => c === 200)).toHaveLength(1)
     expect(reponses.filter((c) => c === 400)).toHaveLength(19)
-  })
+  }, 15_000)
 
   it('I/J — DÉFAUT : APP_RESET_TOKEN_HASH et APP_RESET_EXP en environnement n\'ont AUCUN pouvoir', async () => {
     // Le scénario : une empreinte VALIDE et une expiration future posées en
