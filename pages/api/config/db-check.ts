@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { supabase, supabaseConfigured } from '../../../lib/supabase/client'
 import { isAdminRequest } from '../../../lib/auth/guard'
+import { storageFailure } from '../../../lib/observability/safeError'
 
 // Vérifie l'existence de chaque table + colonnes clés. Dit précisément ce qui manque.
 const CHECKS: { table: string; cols: string }[] = [
@@ -27,9 +28,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const results = await Promise.all(CHECKS.map(async (c) => {
     try {
       const { error } = await sb.from(c.table).select(c.cols).limit(1)
-      return { table: c.table, ok: !error, error: error?.message || null }
+      // SEC-LOG-01 — le message Supabase peut porter un `DETAIL` contenant la
+      // ligne fautive. Un diagnostic a besoin de savoir SI ça échoue, pas de
+      // recevoir le contenu de la table qu'il vérifie.
+      return { table: c.table, ok: !error, error: error ? storageFailure(error) : null }
     } catch (e: any) {
-      return { table: c.table, ok: false, error: e?.message || 'exception' }
+      return { table: c.table, ok: false, error: storageFailure(e) }
     }
   }))
   res.status(200).json({ configured: true, results })

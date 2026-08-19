@@ -8,6 +8,7 @@ import { planJarvis, executeJarvis, isWrite } from '../../../lib/prospector/jarv
 import { redeemPairingCode, resolveChannelWs, unlinkChannel } from '../../../lib/prospector/pairing'
 import { tenantFromVerifiedWorkspace } from '../../../lib/prospector/tenant'
 import { createPendingAction, consumePendingAction } from '../../../lib/prospector/channelPending'
+import { describeError } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -217,9 +218,11 @@ const secret = secretRead.value
     // Le DÉTAIL reste côté serveur ; l'utilisateur reçoit un message générique.
     // Il révélait auparavant noms de tables, points de terminaison et traces
     // applicatives à quiconque savait provoquer une erreur.
+    // SEC-LOG-01 — le contenu du message Telegram et le corps fournisseur
+    // restent hors des journaux ; seule la nature de l'événement est conservée.
     console.error('sectg.channel_error', JSON.stringify({
       kind: u?.callback_query ? 'callback' : 'message',
-      message: String(e?.message || e).slice(0, 300),
+      ...describeError(e, { provider: 'telegram', operation: 'webhook' }),
     }))
     const chatId = u?.message?.chat?.id || u?.callback_query?.message?.chat?.id
     if (chatId) await send(token, chatId, GENERIC_ERROR)

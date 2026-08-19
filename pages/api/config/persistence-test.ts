@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { supabase, supabaseConfigured } from '../../../lib/supabase/client'
 import { canWrite, envSummary } from '../../../lib/env'
 import { isAdminRequest } from '../../../lib/auth/guard'
+import { storageFailure } from '../../../lib/observability/safeError'
 
 // Diagnostic RÉEL : teste écriture + lecture Supabase et renvoie l'erreur exacte.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -36,14 +37,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const w = await sb.from('prospector_settings').upsert({ key: '__diag__', value: 'ok', updated_at: new Date().toISOString() }, { onConflict: 'key' })
-    if (w.error) { out.error = `Écriture : ${w.error.message}`; return res.status(200).json(out) }
+    if (w.error) { out.error = `ecriture:${storageFailure(w.error)}`; return res.status(200).json(out) }
     out.writeOk = true
 
     const r = await sb.from('prospector_settings').select('value').eq('key', '__diag__').single()
-    if (r.error) { out.error = `Lecture : ${r.error.message}`; return res.status(200).json(out) }
+    // SEC-LOG-01 — code de classe, jamais le message Supabase.
+    if (r.error) { out.error = `lecture:${storageFailure(r.error)}`; return res.status(200).json(out) }
     out.readOk = r.data?.value === 'ok'
   } catch (e: any) {
-    out.error = e?.message || String(e)
+    out.error = storageFailure(e)
   }
   res.status(200).json(out)
 }

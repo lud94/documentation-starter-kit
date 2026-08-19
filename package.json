@@ -22,6 +22,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "check:tenant": "node scripts/check-tenant-context.mjs",
     "check:workspace": "node scripts/check-workspace-projection.mjs",
+    "check:error-boundary": "node scripts/check-error-boundary.mjs",
     "check:extension": "node scripts/check-extension-origin.mjs",
     "check:extension:release": "node scripts/check-extension-origin.mjs --release"
   },

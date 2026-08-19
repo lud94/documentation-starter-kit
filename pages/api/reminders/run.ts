@@ -10,6 +10,7 @@ import {
 import {
   reminderDeliver,
 } from '../../../lib/prospector/reminderDelivery'
+import { logSafeError } from '../../../lib/observability/safeError'
 
 // JARVIS-REMINDER-01D — endpoint interne du scheduler.
 //
@@ -108,14 +109,9 @@ export default async function handler(
       ...result,
     })
   } catch (error: any) {
-    console.error(
-      'reminder.sweep_error',
-      JSON.stringify({
-        message: String(
-          error?.message || error,
-        ).slice(0, 300),
-      }),
-    )
+    // SEC-LOG-01 — un balayage de rappels touche des contenus utilisateur ;
+    // son message d'erreur ne doit rien en dire.
+    logSafeError('reminder.sweep_error', error, { operation: 'sweep' })
 
     return res.status(500).json({
       error: 'reminder_sweep_failed',

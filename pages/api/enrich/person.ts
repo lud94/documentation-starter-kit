@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { callClaude, cacheKey } from '../../../lib/prospector/llm'
 import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
+import { logSafeError } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -62,7 +63,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (r.blocked) return res.status(200).json({ error: r.error })
     res.status(200).json({ profile: r.text.trim(), cached: !!r.cached })
   } catch (e: any) {
-    res.status(200).json({ error: e?.message || 'Recherche indisponible.' })
+    logSafeError('enrich.person_error', e, { operation: 'enrich_person' })
+    res.status(200).json({ error: 'Recherche indisponible.' })
   }
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

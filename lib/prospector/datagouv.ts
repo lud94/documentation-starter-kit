@@ -2,6 +2,7 @@
 // https://recherche-entreprises.api.gouv.fr — publique, gratuite, sans clé.
 // Renvoie des ENTREPRISES (pas des contacts) : SIREN, NAF, effectif, ville, dirigeant.
 // Le persona/contact et le scoring signal se font en aval (LinkedIn/Unipile + gate).
+import { ProviderError } from '../observability/safeError'
 
 import type { SourcedCompany } from '../../types/prospector'
 
@@ -222,8 +223,11 @@ export async function fetchCompanies(
     headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0 (+https://smartagency-ai.com)' },
   })
   if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`DataGouv API ${res.status} — ${body.slice(0, 150)}`)
+    // SEC-LOG-01 — le corps de réponse ne franchit pas l'erreur : cette erreur
+    // remonte jusqu'à une réponse HTTP publique (`/api/sourcing/search`).
+    throw new ProviderError({
+      code: 'provider_http', provider: 'datagouv', operation: 'search', status: res.status,
+    })
   }
   const data = await res.json()
 

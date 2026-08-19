@@ -1,4 +1,5 @@
 // Précomptage fournisseur — `POST /v1/messages/count_tokens` (lot C2a-2c).
+import { describeError } from '../observability/safeError'
 //
 // ── POURQUOI CET INSTRUMENT ──────────────────────────────────────────────────
 // L'heuristique `bodyBytes / 3` de `money.ts` a été mesurée FAUSSE sur staging :
@@ -132,7 +133,10 @@ export async function countTokens(
   try {
     payload = JSON.stringify(input)
   } catch (e: any) {
-    return { ok: false, inputTokens: 0, reason: `serialize: ${String(e?.message || e).slice(0, 120)}` }
+    // SEC-LOG-01 — `reason` finit en télémétrie (`reserve_failed:…`). Un échec
+    // de sérialisation porte sur le CORPS de la requête : son message peut donc
+    // en citer un fragment. On ne conserve que la classe.
+    return { ok: false, inputTokens: 0, reason: `serialize:${describeError(e).errorName || 'unknown'}` }
   }
 
   let r: Response

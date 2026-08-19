@@ -7,6 +7,7 @@ import {
   consumeAppPending,
   dropAppPending,
 } from '../../../lib/prospector/appPending'
+import { logSafeError } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -118,12 +119,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     })
   } catch (e: any) {
     // Le détail reste dans les logs serveur, jamais dans l'interface utilisateur.
-    console.error(
-      'secjarvisapp.chat_error',
-      JSON.stringify({
-        message: String(e?.message || e).slice(0, 300),
-      }),
-    )
+    // SEC-LOG-01 — `e.message` pouvait porter le corps d'erreur du fournisseur,
+    // donc un fragment de prompt ou de fiche. Seuls des champs autorisés partent.
+    logSafeError('secjarvisapp.chat_error', e, { provider: 'anthropic', operation: 'chat' })
 
     return res.status(200).json({
       reply: GENERIC_ERROR,

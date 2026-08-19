@@ -6,6 +6,7 @@
 // 4) Cache de résultats : on ne repaie pas deux fois la même question.
 import { getKey } from './keystore'
 import { withBuild } from '../version'
+import { ProviderError } from '../observability/safeError'
 import { recordAiUsage } from './usage'
 import { readUsageDurable } from '../supabase/pappersCache'
 import { writeAllowed } from '../env'
@@ -473,11 +474,26 @@ function serialize(body: any): { payload: string; bytes: number } {
 // Séparée pour que le chemin OFF reste littéralement le comportement historique
 // (au délai maximal près, désormais uniforme).
 async function rawPost(key: string, payload: string): Promise<GatewayResult> {
-  const r = await fetch(ANTHROPIC_ENDPOINT, {
-    method: 'POST',
-    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: payload,
-  })
+  // ⚠️ SEC-LOG-01 — le mode OFF emprunte CE chemin, et lui seul. Sans cette
+  // conversion, l'exception brute de `fetch` remontait jusqu'aux routes, qui
+  // journalisaient son message. Fermer la fuite uniquement dans le chemin
+  // comptable aurait laissé la porte ouverte là où il y a le moins de garde-fous.
+  let r: Response
+  try {
+    r = await fetch(ANTHROPIC_ENDPOINT, {
+      method: 'POST',
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: payload,
+    })
+  } catch (e: any) {
+    const name = typeof e?.name === 'string' ? e.name : ''
+    throw new ProviderError({
+      code: name === 'TimeoutError' || name === 'AbortError' ? 'provider_timeout' : 'provider_network',
+      provider: 'anthropic',
+      operation: 'messages',
+      errorName: name || undefined,
+    })
+  }
   if (!r.ok) return { ok: false, status: r.status, data: null, text: await r.text() }
   return { ok: true, status: r.status, data: await r.json(), text: '' }
 }
@@ -699,7 +715,19 @@ export async function anthropicPost(key: string, body: any, meta: GatewayMeta): 
     const outcome = transportOutcome(e)
     await closeUnresolved(id, outcome)
     done('UNRESOLVED', outcome)
-    throw e
+    // ⚠️ SEC-LOG-01 — l'exception de transport N'EST PAS RELANCÉE TELLE QUELLE.
+    // Le message d'un échec `fetch` est écrit par le runtime : il peut citer
+    // l'hôte, l'URL, et selon l'implémentation un fragment de la requête. Le
+    // relancer intact rouvrait la fuite juste en aval de l'endroit où on venait
+    // de la fermer. Seule la CLASSE de l'exception est conservée — elle suffit à
+    // distinguer un délai dépassé d'une coupure, et c'est déjà ce dont
+    // `transportOutcome` se sert pour la décision comptable.
+    throw new ProviderError({
+      code: outcome === 'timeout' ? 'provider_timeout' : 'provider_network',
+      provider: 'anthropic',
+      operation: 'messages',
+      errorName: typeof e?.name === 'string' ? e.name : undefined,
+    })
   }
 
   t.http_status = r.status
@@ -823,7 +851,16 @@ async function send(key: string, body: any, meta: GatewayMeta): Promise<SendResu
   if (attempt.ok) return { data: attempt.data }
   // Seul un 400 (requête invalide) est dégradable : un 401/429/500 n'est pas un
   // problème d'option et doit remonter tel quel.
-  if (attempt.status !== 400) throw new Error(withBuild(`Anthropic ${attempt.status} — ${attempt.text.slice(0, 150)}`))
+  // ⚠️ SEC-LOG-01 — le corps de réponse N'ENTRE PAS dans l'erreur. Il reste
+  // disponible localement (`attempt.text`) pour la dégradation du 400 ci-dessous,
+  // mais rien de ce que le fournisseur a écrit ne franchit cette frontière : une
+  // API cite volontiers le champ fautif ET sa valeur, donc un fragment de prompt.
+  if (attempt.status !== 400) {
+    throw new ProviderError({
+      code: 'provider_http', provider: 'anthropic', operation: 'messages',
+      status: attempt.status,
+    })
+  }
 
   for (let i = 0; i < 3 && !attempt.ok; i++) {
     const msg = attempt.text
@@ -857,7 +894,13 @@ async function send(key: string, body: any, meta: GatewayMeta): Promise<SendResu
     }
   }
 
-  if (!attempt.ok) throw new Error(withBuild(`Anthropic ${attempt.status} — ${attempt.text.slice(0, 150)}`))
+  if (!attempt.ok) {
+    // Dégradation épuisée : même règle, le corps reste hors du message.
+    throw new ProviderError({
+      code: 'provider_http', provider: 'anthropic', operation: 'messages',
+      status: attempt.status,
+    })
+  }
   return { data: attempt.data }
 }
 

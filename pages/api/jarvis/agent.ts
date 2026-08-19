@@ -7,6 +7,7 @@ import {
   decideCors, applyCors, readCredential, LIMITS, bounded, boundedOrReject,
   createExtensionPending, consumeExtensionPending, dropExtensionPending,
 } from '../../../lib/prospector/extensionGate'
+import { logSafeError } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -89,7 +90,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } catch (e: any) {
     // Le détail reste côté serveur : il révélait tables, points de terminaison
     // et traces applicatives à qui savait provoquer une erreur.
-    console.error('secext.agent_error', JSON.stringify({ message: String(e?.message || e).slice(0, 300) }))
+    logSafeError('secext.agent_error', e, { provider: 'anthropic', operation: 'agent' })
     return res.status(200).json({ reply: GENERIC_ERROR, action: null })
   }
 }

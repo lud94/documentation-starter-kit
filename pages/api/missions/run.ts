@@ -5,6 +5,7 @@ import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { runStep } from '../../../lib/prospector/missionTools'
 import { MISSION_TOOL_META } from '../../../types/prospector'
 import type { Mission } from '../../../types/prospector'
+import { logSafeError, PUBLIC_ERROR } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -58,7 +59,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     mission.status = mission.cursor >= mission.steps.length ? 'done' : 'running'
     if (mission.status === 'done') mission.log.push({ at: Date.now(), text: 'Mission terminée.' })
   } catch (e: any) {
-    step.status = 'failed'; step.result = e?.message || 'Échec'; step.endedAt = Date.now()
+    // SEC-LOG-01 — `step.result` est PERSISTÉ puis réaffiché dans le journal de
+    // mission : c'est une frontière durable, pas un log éphémère.
+    logSafeError('missions.step_error', e, { operation: 'mission_step' })
+    step.status = 'failed'; step.result = PUBLIC_ERROR; step.endedAt = Date.now()
     mission.status = 'failed'
     mission.log.push({ at: Date.now(), text: `Échec : ${step.result}` })
   }

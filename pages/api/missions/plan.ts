@@ -5,6 +5,7 @@ import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import { MISSION_TOOL_META } from '../../../types/prospector'
 import type { Mission, MissionStep, MissionTool } from '../../../types/prospector'
 import { MAX_COMPANIES, MAX_ENRICH } from '../../../lib/prospector/missionTools'
+import { logSafeError } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -89,7 +90,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     res.status(200).json({ mission })
   } catch (e: any) {
-    res.status(200).json({ error: 'Planification impossible : ' + (e?.message || 'erreur') })
+    logSafeError('missions.plan_error', e, { provider: 'anthropic', operation: 'plan' })
+    res.status(200).json({ error: 'Planification impossible pour le moment.' })
   }
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { unipileConfigured } from '../../../lib/prospector/unipile'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
+import { logSafeError, PUBLIC_ERROR } from '../../../lib/observability/safeError'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
@@ -25,6 +26,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     void role; void location; void sector
     return res.status(200).json({ connected: true, people })
   } catch (e: any) {
-    return res.status(200).json({ connected: true, error: e?.message, people: [] })
+    logSafeError('sourcing.people_error', e, { provider: 'unipile', operation: 'people' })
+    return res.status(200).json({ connected: true, error: PUBLIC_ERROR, people: [] })
   }
 }

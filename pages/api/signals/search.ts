@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { searchSignals, buildThesis, SIGNAL_TYPES, type SignalQuery } from '../../../lib/prospector/signals'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
+import { logSafeError } from '../../../lib/observability/safeError'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
@@ -40,7 +41,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     res.status(200).json(await searchSignals(tenant, thesis, 25, q))
   } catch (e: any) {
-    res.status(502).json({ error: e?.message || 'Erreur agent signaux' })
+    logSafeError('signals.search_error', e, { operation: 'signals_search' })
+    res.status(502).json({ error: 'Recherche de signaux indisponible pour le moment.' })
   }
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

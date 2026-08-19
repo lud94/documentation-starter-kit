@@ -2,6 +2,7 @@
 // https://exa.ai — nécessite EXA_API_KEY. Sans clé : renvoie [] (fallback amont).
 // Rôle : trouver les pages d'annonces/actu fraîches qui portent le signal,
 // et en renvoyer le CONTENU brut que Claude extraira ensuite.
+import { ProviderError } from '../observability/safeError'
 
 import { getKey } from './keystore'
 
@@ -35,7 +36,8 @@ export async function searchExa(thesis: string, numResults = 12, opts?: { domain
       contents: { text: { maxCharacters: 1200 } },
     }),
   })
-  if (!res.ok) throw new Error(`Exa ${res.status} — ${(await res.text()).slice(0, 150)}`)
+  // SEC-LOG-01 — le corps de réponse ne franchit pas l'erreur.
+  if (!res.ok) throw new ProviderError({ code: 'provider_http', provider: 'exa', operation: 'search', status: res.status })
   const data = await res.json()
   return (data.results || []).map((r: any): ExaDoc => ({
     title: r.title || '',
@@ -55,7 +57,8 @@ export async function searchExaWeb(query: string, numResults = 6): Promise<ExaDo
     headers: { 'x-api-key': key, accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify({ query, type: 'auto', numResults, contents: { text: { maxCharacters: 1000 } } }),
   })
-  if (!res.ok) throw new Error(`Exa ${res.status} — ${(await res.text()).slice(0, 150)}`)
+  // SEC-LOG-01 — le corps de réponse ne franchit pas l'erreur.
+  if (!res.ok) throw new ProviderError({ code: 'provider_http', provider: 'exa', operation: 'search', status: res.status })
   const data = await res.json()
   return (data.results || []).map((r: any): ExaDoc => ({ title: r.title || '', url: r.url || '', text: r.text || '', publishedDate: r.publishedDate }))
 }

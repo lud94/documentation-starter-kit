@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { enrichCompanyWeb } from '../../../lib/prospector/identify'
 import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
+import { logSafeError, PUBLIC_ERROR } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -23,6 +24,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const r = await enrichCompanyWeb(tenant, company, city, siren)
     res.status(200).json(r)
   } catch (e: any) {
-    res.status(200).json({ mode: 'error', error: e?.message })
+    logSafeError('enrich.company_web_error', e, { operation: 'company_web' })
+    res.status(200).json({ mode: 'error', error: PUBLIC_ERROR })
   }
 }

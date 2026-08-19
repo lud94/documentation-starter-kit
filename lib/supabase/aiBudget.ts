@@ -31,6 +31,7 @@
 //    tout ce qui n'est pas un entier exact.
 import { supabase } from './client'
 import { writeAllowed } from '../env'
+import { storageFailure } from '../observability/safeError'
 
 const RESERVATIONS = 'prospector_ai_reservations'
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER)
@@ -117,7 +118,8 @@ export async function reserve(o: ReserveInput): Promise<ReserveResult> {
       p_ttl_seconds: Math.max(1, Math.trunc(o.ttlSeconds)),
       p_tenant_id: tenantId,
     })
-    if (error) return { ok: false, reason: error.code ? `${error.code}: ${error.message}` : error.message }
+    // SEC-LOG-01 — le message PostgreSQL porte parfois la LIGNE fautive.
+    if (error) return { ok: false, reason: storageFailure(error) }
     const row = firstRow(data)
     if (!row) return { ok: false, reason: 'empty_result' }
     // `result_state` et non `state` : dans un RETURNS TABLE PL/pgSQL un OUT
@@ -129,7 +131,7 @@ export async function reserve(o: ReserveInput): Promise<ReserveResult> {
       budgetMicros: toBigInt(row.budget_micros),
     }
   } catch (e: any) {
-    return { ok: false, reason: String(e?.message || e).slice(0, 200) }
+    return { ok: false, reason: storageFailure(e) }
   }
 }
 
@@ -145,9 +147,9 @@ export async function settle(id: string, micros: bigint, outcome: string): Promi
     const { error } = await sb.rpc('prospector_ai_settle', {
       p_id: id, p_settled_micros: microsToWire(micros), p_outcome: outcome,
     })
-    return error ? { ok: false, reason: error.message } : { ok: true }
+    return error ? { ok: false, reason: storageFailure(error) } : { ok: true }
   } catch (e: any) {
-    return { ok: false, reason: String(e?.message || e).slice(0, 200) }
+    return { ok: false, reason: storageFailure(e) }
   }
 }
 
@@ -164,9 +166,9 @@ export async function resolveReservation(
     const { error } = await sb.rpc('prospector_ai_resolve', {
       p_id: id, p_state: state, p_outcome: outcome,
     })
-    return error ? { ok: false, reason: error.message } : { ok: true }
+    return error ? { ok: false, reason: storageFailure(error) } : { ok: true }
   } catch (e: any) {
-    return { ok: false, reason: String(e?.message || e).slice(0, 200) }
+    return { ok: false, reason: storageFailure(e) }
   }
 }
 
@@ -185,7 +187,7 @@ export async function engaged(): Promise<EngagedResult> {
   if (!sb) return { ok: false, reason: 'no_client' }
   try {
     const { data, error } = await sb.rpc('prospector_ai_engaged')
-    if (error) return { ok: false, reason: error.message }
+    if (error) return { ok: false, reason: storageFailure(error) }
     const row = firstRow(data)
     if (!row) return { ok: false, reason: 'empty_result' }
     return {
@@ -195,6 +197,6 @@ export async function engaged(): Promise<EngagedResult> {
       unresolvedMicros: toBigInt(row.unresolved_micros),
     }
   } catch (e: any) {
-    return { ok: false, reason: String(e?.message || e).slice(0, 200) }
+    return { ok: false, reason: storageFailure(e) }
   }
 }

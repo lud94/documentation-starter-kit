@@ -11,6 +11,7 @@ import { getKey } from './keystore'
 import { withBuild } from '../version'
 import { callClaude as llmCall, cacheKey, pickModel } from './llm'
 import type { TenantContext } from './tenant'
+import { logSafeError, PUBLIC_ERROR } from '../observability/safeError'
 
 const SIGNAL_AGENT = 'Recherche signal'
 
@@ -294,7 +295,11 @@ export async function searchSignals(tenant: TenantContext, thesis: string, max =
   } catch (e: any) {
     // On remonte l'erreur RÉELLE (modèle indisponible, outil web non activé, quota…)
     // au lieu de fabriquer des résultats.
-    return { mode, hits: [], thesis, error: withBuild(String(e?.message || e).slice(0, 300)) }
+    // SEC-LOG-01 — ce champ part TEL QUEL dans la réponse HTTP 200 de
+    // `/api/signals/search`. Le message d'exception n'y a donc pas sa place :
+    // seule la classe de panne est communiquée, le détail va au journal.
+    logSafeError('signals.search_failed', e, { operation: 'signals_search' })
+    return { mode, hits: [], thesis, error: withBuild(PUBLIC_ERROR) }
   }
 
   // Post-traitement LOCAL (gratuit, instantané) : on respecte le ciblage demandé
