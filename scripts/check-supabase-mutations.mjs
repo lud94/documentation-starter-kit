@@ -72,11 +72,53 @@ const MUTATIONS = ['insert', 'upsert', 'update', 'delete']
 // plusieurs lignes sans avaler le reste du fichier.
 const CHAIN_WINDOW = 400
 
+/**
+ * RÉCEPTEURS `.from(` QUI NE SONT PAS DES CLIENTS SUPABASE (CHECK-ROBUST-01).
+ *
+ * `.from(` n'appartient pas à Supabase : c'est aussi le constructeur statique de
+ * plusieurs globales standard. `Array.from(store.entries())` suivi, plus bas,
+ * d'un `store.delete(k)` ressemble alors trait pour trait à
+ * `sb.from('t').delete()` — et c'est exactement le faux positif observé sur
+ * `tests/reminder-runner.test.ts:103`.
+ *
+ * ⚠️ DENY-LIST, ET C'EST VOULU. On ne peut pas lister les récepteurs LÉGITIMES :
+ * un client Supabase s'appelle `sb`, `client`, `raw`, `supabase()`… il n'y a pas
+ * de nom canonique. En revanche, les globales du langage qui exposent un `.from`
+ * statique forment un ensemble FINI et connu. Écarter celles-là ne réduit donc
+ * en rien la capacité de détection : aucune de ces globales n'est un client de
+ * base de données.
+ */
+const RECEPTEURS_NON_SUPABASE = new Set([
+  'Array', 'Object', 'String', 'Buffer',
+  'Int8Array', 'Uint8Array', 'Uint8ClampedArray',
+  'Int16Array', 'Uint16Array',
+  'Int32Array', 'Uint32Array',
+  'Float32Array', 'Float64Array',
+  'BigInt64Array', 'BigUint64Array',
+])
+
 function stripNoise(src) {
+  // ⚠️ NORMALISATION DES FINS DE LIGNE (CHECK-ROBUST-01), EN PREMIER.
+  //
+  // La chaîne analysée s'arrête à la première ligne vide — cherchée comme
+  // `\n\n`. Or dans un fichier au format Windows, une ligne vide s'écrit
+  // `\r\n\r\n` : la séquence `\n\n` n'y apparaît JAMAIS. Le terminateur ne
+  // se déclenchait donc pas, la fenêtre s'étendait sur 400 caractères, et
+  // raccrochait un `.from(` à une méthode sans aucun rapport située plus bas.
+  //
+  // Le garde rendait ainsi un verdict DIFFÉRENT selon la plateforme du
+  // développeur — vert sous Linux, rouge sous PowerShell, sur un dépôt
+  // identique. Un contrôle de sécurité qui dépend du `core.autocrlf` de qui
+  // l'exécute n'est pas un contrôle.
+  //
+  // Remplacer `\r\n` par `\n` conserve le nombre de lignes, donc les numéros
+  // rapportés restent exacts.
+  const lf = src.replace(/\r\n/g, '\n')
+
   // Commentaires seulement : les littéraux de chaîne sont conservés, un
   // `.from()` en chaîne de caractères reste préférable à signaler qu'à manquer.
-  return src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-            .replace(/\/\/[^\n]*/g, '')
+  return lf.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+           .replace(/\/\/[^\n]*/g, '')
 }
 
 function lineOf(src, index) {
@@ -88,9 +130,17 @@ function findViolations(file, raw) {
   const out = []
 
   // 1. Chaînes `.from(...)` → méthode de mutation.
-  const fromRe = /\.from\s*\(/g
+  //
+  // Le récepteur est capturé pour écarter les `.from` des globales standard.
+  // `\s*` traverse les retours à la ligne : `sb\n  .from(` reste détecté.
+  const fromRe = /([A-Za-z_$][\w$]*)?\s*\.from\s*\(/g
   let m
   while ((m = fromRe.exec(src))) {
+    if (m[1] && RECEPTEURS_NON_SUPABASE.has(m[1])) continue
+    // L'index du `.` — et non celui du récepteur — pour que le numéro de ligne
+    // rapporté désigne bien l'appel.
+    const dot = src.indexOf('.from', m.index)
+    m.index = dot >= 0 ? dot : m.index
     const chain = src.slice(m.index, m.index + CHAIN_WINDOW)
     // La chaîne s'arrête au premier point-virgule ou à la ligne vide suivante.
     const end = Math.min(
