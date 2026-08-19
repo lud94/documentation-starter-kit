@@ -32,7 +32,36 @@ export interface EvidenceSource {
   url?: string
 }
 
-export interface EvidenceEvent {
+/**
+ * NATURE TEMPORELLE d'une evidence — « quand » est-il connu ?
+ *
+ * ── LE DÉFAUT QUE CE CHAMP FERME (JARVIS-PROACTIVE-01D, red-team) ───────────
+ * `occurredAt` est obligatoire, donc toute evidence doit porter une date. Une
+ * donnée d'ÉTAT non horodatée — « la fiche dit que ce lead est chaud » — n'en a
+ * pourtant aucune : on sait qu'on l'observe maintenant, on ignore depuis quand
+ * elle est vraie. La dater de `now` la rendait indiscernable d'un événement
+ * survenu à l'instant, et le Situation Engine, qui lit la fraîcheur de
+ * `occurredAt`, en tirait une urgence maximale.
+ *
+ * ── LE CHAMP EST OBLIGATOIRE, ET SANS VALEUR PAR DÉFAUT ────────────────────
+ * Une première version le rendait optionnel, « absent ⇒ dated_event ». C'était
+ * un fail-open sémantique : une future ingestion qui oublierait le champ verrait
+ * ses evidences promues au rang d'événements datés, donc porteuses d'urgence,
+ * sans que personne ne l'ait décidé. Oublier de dire ce qu'on sait ne doit pas
+ * valoir affirmation.
+ *
+ *   `dated_event`   — `occurredAt` est OBLIGATOIRE et porte la date métier
+ *                     réelle du fait. `observedAt` reste la date de découverte.
+ *   `undated_state` — `occurredAt` est ABSENT, et le type l'interdit. Seul
+ *                     `observedAt` existe : on constate un état, on ignore
+ *                     depuis quand il est vrai. Aucune urgence n'en découle.
+ *
+ * « Observé maintenant » ne signifie jamais « survenu maintenant ».
+ */
+export type EvidenceTemporality = 'dated_event' | 'undated_state'
+
+/** Champs communs aux deux natures temporelles. */
+interface EvidenceBase {
   id: string
 
   // ACCOUNT reste la racine métier.
@@ -54,10 +83,8 @@ export interface EvidenceEvent {
   // 0..1 — confiance dans l'information elle-même.
   confidence: number
 
-  // Quand l'événement a réellement eu lieu.
-  occurredAt: string
-
-  // Quand Prospector/Jarvis l'a découvert.
+  // Quand Prospector/Jarvis a constaté l'information. TOUJOURS présent : même
+  // sans date métier, on sait quand on a regardé.
   observedAt: string
 
   // Dernière vérification éventuelle.
@@ -66,6 +93,30 @@ export interface EvidenceEvent {
   // Après cette date, l'evidence ne doit plus être considérée fraîche.
   expiresAt?: string
 }
+
+/** Un fait daté : la date de survenue est connue, et elle est exigée. */
+export interface DatedEventEvidence extends EvidenceBase {
+  temporality: 'dated_event'
+
+  // Quand l'événement a RÉELLEMENT eu lieu. Obligatoire : un événement daté
+  // sans date n'est pas un événement daté.
+  occurredAt: string
+}
+
+/**
+ * Un état constaté dont la date de survenue est inconnue.
+ *
+ * ⚠️ `occurredAt?: never` n'est pas une coquetterie de typage : il rend
+ * IMPOSSIBLE, à la compilation, de glisser une date de survenue inventée sur un
+ * état non daté. L'ancienne version y recopiait `now`, et c'est exactement ce
+ * qui faisait passer une fiche vieille de dix-huit mois pour un fait du jour.
+ */
+export interface UndatedStateEvidence extends EvidenceBase {
+  temporality: 'undated_state'
+  occurredAt?: never
+}
+
+export type EvidenceEvent = DatedEventEvidence | UndatedStateEvidence
 
 export type SituationType =
   | 'sales_scale_up'

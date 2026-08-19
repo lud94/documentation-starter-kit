@@ -1,8 +1,21 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { listItems, upsertItem, deleteItem } from '../../../lib/supabase/store'
 import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
+import { PROACTIVE_KIND_LIST } from '../../../lib/prospector/proactive/persistence'
 
-const KINDS = ['sequence', 'task', 'thread', 'list', 'mission', 'notification'] // whitelist
+// JARVIS-PROACTIVE-01D — les quatre `kind` du Decision Model rejoignent la
+// whitelist, et RIEN D'AUTRE ne change ici. La liste est importée plutôt que
+// recopiée : deux listes finiraient par diverger, et une divergence ici
+// signifierait qu'un objet persistable côté serveur devient illisible côté
+// route, ou l'inverse.
+//
+// Aucun assouplissement du cloisonnement : la route continue de résoudre le
+// tenant AVANT toute lecture, et `ws` reste `tenant.id` — jamais le corps de la
+// requête, jamais la query.
+const KINDS = [
+  'sequence', 'task', 'thread', 'list', 'mission', 'notification',
+  ...PROACTIVE_KIND_LIST,
+] // whitelist
 
 const str = (v: any) => (Array.isArray(v) ? v[0] : v) || ''
 

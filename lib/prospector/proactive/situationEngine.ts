@@ -9,6 +9,7 @@
 // - aucune situation inventée si les preuves sont insuffisantes
 
 import type {
+  DatedEventEvidence,
   EvidenceEvent,
   EvidenceType,
   Situation,
@@ -109,13 +110,26 @@ function evidenceIsUsable(
   // Une hypothèse seule ne doit jamais déclencher une situation.
   if (evidence.assertionType === 'assumption') return false
 
-  const occurredMs = validDateMs(evidence.occurredAt)
   const observedMs = validDateMs(evidence.observedAt)
 
-  if (occurredMs === null || observedMs === null) return false
+  // On sait TOUJOURS quand on a regardé, même sans date métier.
+  if (observedMs === null) return false
+  // Fail closed sur une observation prétendument future.
+  if (observedMs > nowMs) return false
 
-  // Fail closed sur les événements prétendument futurs.
-  if (occurredMs > nowMs || observedMs > nowMs) return false
+  if (evidence.temporality === 'dated_event') {
+    const occurredMs = validDateMs(evidence.occurredAt)
+
+    // Un événement daté SANS date valide n'est pas exploitable : c'est une
+    // contradiction dans les termes, pas une evidence à réparer.
+    if (occurredMs === null) return false
+    if (occurredMs > nowMs) return false
+  } else if (evidence.temporality !== 'undated_state') {
+    // Temporalité absente ou inconnue ⇒ REFUS. Aucune valeur par défaut : ne pas
+    // dire ce qu'on sait ne vaut pas affirmation, et surtout pas l'affirmation
+    // la plus permissive.
+    return false
+  }
 
   if (evidence.expiresAt) {
     const expiresMs = validDateMs(evidence.expiresAt)
@@ -167,7 +181,7 @@ function hasFact(evidence: EvidenceEvent[]): boolean {
 }
 
 function freshnessScore(
-  evidence: EvidenceEvent,
+  evidence: DatedEventEvidence,
   now: Date,
 ): number {
   const occurredMs = Date.parse(evidence.occurredAt)
@@ -180,15 +194,60 @@ function freshnessScore(
   return 0.4
 }
 
+/**
+ * L'evidence porte-t-elle une date MÉTIER exploitable ?
+ *
+ * `undated_state` signifie « je constate un état, j'ignore depuis quand ». Une
+ * telle evidence n'a PAS de `occurredAt` — le type l'interdit — et il n'existe
+ * AUCUN repli sur `observedAt` pour en fabriquer une : lire la date
+ * d'observation comme une date de survenue ferait passer une fiche vieille de
+ * dix-huit mois pour un fait du jour.
+ */
+function aUneDateMetier(
+  evidence: EvidenceEvent,
+): evidence is DatedEventEvidence {
+  return evidence.temporality === 'dated_event'
+}
+
+/**
+ * URGENCE — calculée UNIQUEMENT sur les evidences réellement datées.
+ *
+ * ⚠️ INCONNU N'EST PAS RÉCENT. Une evidence dont la date métier est inconnue ne
+ * contribue à aucune urgence : ni maximale (ce serait inventer une actualité),
+ * ni minimale (ce serait inventer une ancienneté). Elle n'apporte simplement
+ * aucune information temporelle, et une information absente ne doit pas produire
+ * de score.
+ *
+ * Conséquence assumée : une situation fondée exclusivement sur des états non
+ * datés a une urgence de 0. Ce n'est pas un défaut, c'est l'énoncé exact de ce
+ * qu'on sait — rien ne permet d'affirmer qu'il faut agir MAINTENANT. La
+ * pertinence et la confiance, elles, restent pleinement calculées.
+ *
+ * ⚠️ LIMITATION CONNUE, CONSERVATIVE, NON BLOQUANTE POUR 01D.
+ * `bestEvidenceByType` ne retient qu'UNE evidence par type, choisie sur la
+ * confiance puis la date d'observation — la temporalité n'entre pas dans ce
+ * choix. Un état non daté plus « confiant » peut donc évincer un fait daté du
+ * même type, et l'urgence retombe alors à 0 alors qu'une date existait dans le
+ * lot. On perd de l'urgence, on n'en fabrique jamais : l'erreur va dans le sens
+ * fermé, ce qui la rend acceptable en V0.
+ *
+ * Le correctif appartient à la Structured Evidence Ingestion : quand des
+ * evidences réellement datées existeront (pipeline `SignalHit → EvidenceEvent`),
+ * la sélection devra préférer une date connue à une confiance marginalement
+ * supérieure. Le faire aujourd'hui reviendrait à optimiser pour des données qui
+ * n'existent pas encore.
+ */
 function urgencyFromEvidence(
   evidence: EvidenceEvent[],
   now: Date,
 ): number {
-  if (evidence.length === 0) return 0
+  const datees = evidence.filter(aUneDateMetier)
+
+  if (datees.length === 0) return 0
 
   return roundScore(
     Math.max(
-      ...evidence.map((item) => freshnessScore(item, now)),
+      ...datees.map((item) => freshnessScore(item, now)),
     ),
   )
 }

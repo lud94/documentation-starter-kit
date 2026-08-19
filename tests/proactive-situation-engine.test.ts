@@ -11,6 +11,10 @@ import type {
 
 const NOW = new Date('2026-08-18T12:00:00.000Z')
 
+// La temporalité est désormais EXPLICITE et obligatoire (01D red-team). Ces cas
+// historiques décrivent tous des faits datés — c'est leur `occurredAt` qui porte
+// la fraîcheur qu'ils éprouvent — donc `dated_event` est la déclaration exacte,
+// pas une formalité d'adaptation.
 function evidence(
   id: string,
   type: EvidenceType,
@@ -18,6 +22,7 @@ function evidence(
 ): EvidenceEvent {
   return {
     id,
+    temporality: 'dated_event',
     accountId: 'acc_1',
     scope: 'account',
     type,
@@ -32,7 +37,7 @@ function evidence(
     observedAt: '2026-08-17T11:00:00.000Z',
     expiresAt: '2026-09-01T00:00:00.000Z',
     ...patch,
-  }
+  } as EvidenceEvent
 }
 
 const BASE_CONTEXT = {
