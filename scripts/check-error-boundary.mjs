@@ -16,6 +16,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { tolererDisparitionDeFixture } from './lib/transient-fixtures.mjs'
 
 const ROOT = process.cwd()
 const SCANNED = ['lib', 'pages', 'components']
@@ -94,8 +95,10 @@ function fichiers(dir) {
   for (const nom of entrees) {
     if (nom === 'node_modules' || nom === '.next' || nom.startsWith('.')) continue
     const chemin = join(dir, nom)
-    const st = statSync(chemin)
-    if (st.isDirectory()) out.push(...fichiers(chemin))
+    // Une fixture de test peut disparaître ENTRE l'énumération et ce `stat`.
+    const st = tolererDisparitionDeFixture(relative(ROOT, chemin).split(sep).join('/'), () => statSync(chemin))
+    if (!st.present) continue
+    if (st.valeur.isDirectory()) out.push(...fichiers(chemin))
     else if (EXT.test(nom)) out.push(chemin)
   }
   return out
@@ -126,8 +129,13 @@ for (const racine of SCANNED) {
     if (ALLOWED.has(rel)) continue
     if (ALLOWED_PREFIXES.some((p) => rel.startsWith(p))) continue
 
+    // ⚠️ La fixture est bien ANALYSÉE si elle est là — elle n'est pas exclue du
+    // scan. Seule sa disparition en cours de route est tolérée.
+    const src = tolererDisparitionDeFixture(rel, () => readFileSync(chemin, 'utf8'))
+    if (!src.present) continue
+
     analyses++
-    const lignes = codeSeul(readFileSync(chemin, 'utf8')).split('\n')
+    const lignes = codeSeul(src.valeur).split('\n')
 
     lignes.forEach((ligne, i) => {
       for (const motif of MOTIFS) {

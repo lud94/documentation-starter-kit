@@ -14,6 +14,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { tolererDisparitionDeFixture } from './lib/transient-fixtures.mjs'
 
 const ROOT = process.cwd()
 const SCANNED = ['lib', 'pages', 'components']
@@ -33,7 +34,10 @@ function walk(dir, acc = []) {
   for (const name of entries) {
     if (name === 'node_modules' || name === '.next' || name.startsWith('.')) continue
     const full = join(dir, name)
-    if (statSync(full).isDirectory()) walk(full, acc)
+    // Une fixture de test peut disparaître ENTRE l'énumération et ce `stat`.
+    const st = tolererDisparitionDeFixture(relative(ROOT, full).split(sep).join('/'), () => statSync(full))
+    if (!st.present) continue
+    if (st.valeur.isDirectory()) walk(full, acc)
     else if (EXT.test(name)) acc.push(full)
   }
   return acc
@@ -45,7 +49,10 @@ for (const full of SCANNED.flatMap((d) => walk(join(ROOT, d)))) {
   const rel = relative(ROOT, full).split(sep).join('/')
   if (ALLOWED.has(rel)) continue
   scanned++
-  const src = readFileSync(full, 'utf8')
+  // La fixture reste ANALYSÉE si elle est là ; seule sa disparition est tolérée.
+  const lu = tolererDisparitionDeFixture(rel, () => readFileSync(full, 'utf8'))
+  if (!lu.present) continue
+  const src = lu.valeur
   src.split('\n').forEach((line, i) => {
     if (/\bsystemTenant\s*\(/.test(line) && !line.trim().startsWith('//')) {
       violations.push({ file: rel, line: i + 1, what: 'systemTenant()' })

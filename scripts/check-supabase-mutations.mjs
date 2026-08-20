@@ -16,6 +16,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { tolererDisparitionDeFixture } from './lib/transient-fixtures.mjs'
 
 const ROOT = process.cwd()
 const SCANNED = ['lib', 'pages', 'components', 'scripts']
@@ -170,7 +171,10 @@ function walk(dir, acc = []) {
   for (const name of entries) {
     if (name === 'node_modules' || name === '.next' || name.startsWith('.')) continue
     const full = join(dir, name)
-    if (statSync(full).isDirectory()) walk(full, acc)
+    // Une fixture de test peut disparaître ENTRE l'énumération et ce `stat`.
+    const st = tolererDisparitionDeFixture(relative(ROOT, full).split(sep).join('/'), () => statSync(full))
+    if (!st.present) continue
+    if (st.valeur.isDirectory()) walk(full, acc)
     else if (EXT.test(name)) acc.push(full)
   }
   return acc
@@ -184,7 +188,11 @@ for (const full of files) {
   const rel = relative(ROOT, full).split(sep).join('/')
   if (ALLOWED.has(rel) || ALLOWED_PREFIXES.some((p) => rel.startsWith(p))) continue
   if (rel === 'scripts/check-supabase-mutations.mjs') continue // ce fichier décrit les motifs
-  violations.push(...findViolations(rel, readFileSync(full, 'utf8')))
+  // ⚠️ La fixture est bien ANALYSÉE si elle est là — elle n'est pas exclue du
+  // scan. Seule sa disparition en cours de route est tolérée.
+  const src = tolererDisparitionDeFixture(rel, () => readFileSync(full, 'utf8'))
+  if (!src.present) continue
+  violations.push(...findViolations(rel, src.valeur))
 }
 
 if (violations.length === 0) {
