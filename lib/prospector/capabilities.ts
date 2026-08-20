@@ -4,6 +4,7 @@
 
 import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, SequenceStep, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../../types/prospector'
 import { ACTION_META, STATUS_META, STAGE_META } from '../../types/prospector'
+import { isAccountLead, isContactLead } from './leadKind'
 
 export type Period = 'week' | 'month' | 'quarter' | 'year'
 
@@ -1114,13 +1115,11 @@ let sourcedSeq = 0
 // SIREN → id de la carte « entreprise à enrichir » placeholder dans le pipe.
 const importedPlaceholders: Record<string, string> = {}
 
-// Un lead est un COMPTE (entreprise sans personne) si kind='account' OU si aucun
-// nom de personne n'est renseigné. Sert de garde-fou même pour d'anciens leads.
-export function isAccountLead(l: { kind?: string; firstName?: string; lastName?: string }): boolean {
-  if (l.kind === 'account') return true
-  if (l.kind === 'contact') return false
-  return !(l.firstName || '').trim() && !(l.lastName || '').trim()
-}
+// La définition de « compte » vit dans `lib/prospector/leadKind.ts` — un module
+// pur, partagé avec le cerveau serveur (jarvisAgent). Réexporté ici pour que les
+// écrans qui importaient déjà `isAccountLead` de ce module continuent de
+// fonctionner, SANS qu'une seconde implémentation puisse réapparaître.
+export { isAccountLead, isContactLead }
 
 // Ajoute un CONTACT (personne) rattaché à un compte → il entre, lui, dans « à inviter ».
 export interface AccountContactInput { firstName?: string; lastName?: string; title?: string; persona?: string; email?: string; linkedinUrl?: string }

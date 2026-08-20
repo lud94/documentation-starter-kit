@@ -3,12 +3,13 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, isAccountLead, PERSONAS , takeWriteRejections, rejectionLabel} from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, PERSONAS , takeWriteRejections, rejectionLabel} from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 import AddToListModal from '../components/AddToListModal'
 import { ConfirmDialog } from '../components/Dialog'
+import { isAccountLead, projectAccounts, summarizeAccounts } from '../lib/prospector/leadKind'
 
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
 const STATUS_ORDER: LeadStatus[] = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
@@ -160,6 +161,11 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
               : <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">Non vérifiée</span>}
             {meta?.siren && <span className="text-[10px] text-gray-400 font-mono">SIREN {meta.siren}</span>}
             {contacts.length === 0 && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 text-amber-600">Compte seul · 0 contact</span>}
+            {/* Groupe porté par des contacts SANS fiche compte. L'entreprise est
+                bien connue — son nom est enregistré dans le contact — mais aucune
+                entité compte n'existe. Le dire ici évite que la carte se lise
+                comme une fiche compte créée. */}
+            {!account && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700">Entreprise liée — aucune fiche compte créée</span>}
           </div>
           <p className="text-xs text-gray-400 truncate mt-0.5">
             {[meta?.dirigeant && `Dirigeant : ${meta.dirigeant}`, meta?.city, meta?.effectif && `${meta.effectif} sal.`, meta?.website].filter(Boolean).join(' · ') || 'Infos entreprise à enrichir'}
@@ -279,19 +285,14 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
 }
 
 function AccountsView({ leads, onChanged }: { leads: Lead[]; onChanged: () => void }) {
-  const groups = new Map<string, { account?: Lead; contacts: Lead[] }>()
-  for (const l of leads) {
-    const k = l.company || '—'
-    if (!groups.has(k)) groups.set(k, { contacts: [] })
-    const g = groups.get(k)!
-    if (isAccountLead(l)) g.account = l
-    else g.contacts.push(l)
-  }
-  const entries = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]))
-  if (entries.length === 0) return <p className="text-sm text-gray-400 text-center py-12">Aucun compte. Importe des entreprises depuis Sourcing.</p>
+  // Le regroupement vit dans `projectAccounts` (module pur) : c'est le MÊME
+  // calcul que celui du compteur d'en-tête, donc les deux ne peuvent plus se
+  // contredire.
+  const { groups } = projectAccounts(leads)
+  if (groups.length === 0) return <p className="text-sm text-gray-400 text-center py-12">Aucun compte. Importe des entreprises depuis Sourcing.</p>
   return (
     <div className="space-y-3">
-      {entries.map(([company, g]) => <AccountCard key={company} company={company} account={g.account} contacts={g.contacts} onChanged={onChanged} />)}
+      {groups.map((g) => <AccountCard key={g.company} company={g.company} account={g.account} contacts={g.contacts} onChanged={onChanged} />)}
     </div>
   )
 }
@@ -372,6 +373,10 @@ useEffect(() => {
   })
   // La vue Contacts n'affiche QUE des personnes (les comptes seuls restent en vue Comptes).
   const contactLeads = filtered.filter((l) => !isAccountLead(l))
+  // Compteur de l'en-tête « Comptes » : dénombrement d'ENTITÉS, issu du même
+  // calcul pur que la vue elle-même. Il remplace un `new Set(company).size` qui
+  // dénombrait des noms d'entreprise sous l'étiquette « comptes ».
+  const accountsSummary = summarizeAccounts(projectAccounts(filtered))
   const byStage = (s: Stage) => contactLeads.filter((l) => l.stage === s)
   const hasFilter = query || statusF.size || stageF.size || personaF.size || enrichF !== 'all'
 
@@ -414,7 +419,7 @@ useEffect(() => {
           <h1 className="text-2xl font-bold text-gray-900">Pipeline &amp; Leads</h1>
           <p className="text-gray-400 text-sm mt-0.5">
             {loading ? 'Chargement…'
-              : mainView === 'comptes' ? `${new Set(filtered.map((l) => l.company)).size} comptes · ${contactLeads.length} contacts`
+              : mainView === 'comptes' ? accountsSummary
               : hasFilter ? `${contactLeads.length} contacts filtrés` : `${contactLeads.length} contacts dans votre base`}
           </p>
         </div>

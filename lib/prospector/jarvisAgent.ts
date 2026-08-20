@@ -16,10 +16,18 @@ import {
   type UpsertResult,
 } from '../supabase/leads'
 import { listItems, upsertItem } from '../supabase/store'
+import { isAccountLead } from './leadKind'
 import type { Lead, Sequence } from '../../types/prospector'
 
 const newId = () => `ld_${Math.random().toString(36).slice(2, 10)}`
-export const isAccount = (l: Lead) => l.kind === 'account' || (!l.firstName?.trim() && !l.lastName?.trim())
+
+// ⚠️ IL Y AVAIT ICI UNE SECONDE DÉFINITION DE « COMPTE », INCOMPLÈTE :
+//     l.kind === 'account' || (!l.firstName?.trim() && !l.lastName?.trim())
+// Elle omettait le court-circuit `kind === 'contact'`. Un contact DÉCLARÉ mais
+// sans prénom ni nom était donc compté COMPTE ici et CONTACT dans l'UI, sur la
+// même ligne. La définition canonique vit désormais dans `./leadKind` — module
+// pur, sans état ni réseau, partagé par le serveur et le navigateur.
+export const isAccount = (l: Lead): boolean => isAccountLead(l)
 
 const SYSTEM = `Tu es Jarvis, copilote de Prospector (prospection B2B française).
 L'utilisateur te donne une directive depuis un canal texte (extension web ou messagerie mobile).
