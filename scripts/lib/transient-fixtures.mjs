@@ -64,9 +64,17 @@ export function estFixtureTransitoire(chemin) {
   return chemin.split('/').some((segment) => SEGMENT_FIXTURE.test(segment))
 }
 
-/** Un `ENOENT`, et rien d'autre. */
+/**
+ * Un `ENOENT`, et rien d'autre.
+ *
+ * ⚠️ `ENOTDIR` A ÉTÉ RETIRÉ (TEST-ROBUST-03.1). Il décrit une situation
+ * différente : un composant du chemin attendu comme dossier n'en est plus un.
+ * Ce n'est pas la disparition d'une fixture, et rien ne prouve qu'il faille la
+ * masquer. Une tolérance s'accorde sur preuve du besoin, jamais par précaution —
+ * chaque code ajouté ici est un cas où un garde se tait.
+ */
 function estDisparu(err) {
-  return Boolean(err) && (err.code === 'ENOENT' || err.code === 'ENOTDIR')
+  return Boolean(err) && err.code === 'ENOENT'
 }
 
 /**

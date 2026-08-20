@@ -76,10 +76,30 @@ describe('B. La tolérance est bornée aux deux extrémités', () => {
     ).toThrow('boom')
   })
 
-  it('une erreur NON-ENOENT remonte, même sur une fixture', () => {
+  // ⚠️ LA TOLÉRANCE EST STRICTEMENT LIMITÉE À `ENOENT` (TEST-ROBUST-03.1).
+  //
+  // `ENOTDIR` figurait initialement dans la liste alors que le contrat écrit
+  // juste au-dessus disait « un ENOENT, et rien d'autre ». Il décrit une
+  // situation différente — un composant du chemin attendu comme dossier n'en est
+  // plus un — dont rien n'établit qu'elle doive être masquée.
+  //
+  // Chaque code toléré est un cas où un garde se tait : la liste doit rester
+  // aussi courte que le besoin PROUVÉ, y compris sur un chemin de fixture.
+  it.each(['ENOTDIR', 'EACCES', 'EPERM', 'EISDIR'])(
+    'une erreur %s remonte, MÊME sur une fixture réservée',
+    (code) => {
+      expect(() =>
+        tolererDisparitionDeFixture('lib/__sec_log_01_tmp__.ts', () => {
+          throw disparu(code)
+        }),
+      ).toThrow('boom')
+    },
+  )
+
+  it('une erreur SANS code remonte, même sur une fixture réservée', () => {
     expect(() =>
       tolererDisparitionDeFixture('lib/__sec_log_01_tmp__.ts', () => {
-        throw disparu('EACCES')
+        throw new Error('boom')
       }),
     ).toThrow('boom')
   })
