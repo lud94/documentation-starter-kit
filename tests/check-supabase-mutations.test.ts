@@ -81,6 +81,17 @@ export function balayer(store: Map<string, any>, prefix: string) {
     expect(r.code).toBe(0)
   })
 
+  // ⚠️ TIMEOUT LOCAL À 15 s (TEST-ROBUST-02) — CE CAS SEUL.
+  //
+  // Il est le seul du fichier à lancer QUATRE fois le scanner : un processus
+  // `node` complet par globale, chacun relisant les ~200 fichiers du dépôt.
+  // Isolé il tient en ~2,4 s ; sous la contention CPU du `npm test` complet il
+  // monte à ~7,5 s et dépassait la limite par défaut de 5 s.
+  //
+  // Le défaut est celui du BUDGET, pas du scanner ni des assertions : l'échec
+  // dépendait de la charge de la machine, donc de qui exécutait la suite. Les
+  // quatre cas sont conservés — les réduire échangerait de la couverture réelle
+  // contre du temps d'exécution.
   it('les autres globales à `.from` statique sont écartées de même', () => {
     for (const global of ['Buffer', 'Uint8Array', 'Object', 'String']) {
       const src = `
@@ -93,7 +104,7 @@ export function f(store: Map<string, any>) {
       const r = verdictPour(src)
       expect(r.sortie, `${global} : ${r.sortie}`).toContain('OK')
     }
-  })
+  }, 15_000)
 })
 
 describe('B. Les vraies mutations Supabase restent REFUSÉES', () => {
