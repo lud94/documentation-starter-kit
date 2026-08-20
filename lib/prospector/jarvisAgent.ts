@@ -17,6 +17,11 @@ import {
 } from '../supabase/leads'
 import { listItems, upsertItem } from '../supabase/store'
 import { isAccountLead } from './leadKind'
+import {
+  detectInventoryIntent,
+  normalizeScope,
+  renderInventory,
+} from './inventory'
 import type { Lead, Sequence } from '../../types/prospector'
 
 const newId = () => `ld_${Math.random().toString(36).slice(2, 10)}`
@@ -48,6 +53,9 @@ ACTION (au plus une) :
   autre action ne convient ET si la question relève du contexte commercial. "attachTo" = nom d'un lead auquel
   rattacher la réponse en note, si l'utilisateur le demande.
 - { "type":"stats" } → chiffres du pipe (comptes, contacts, étapes). LECTURE.
+- { "type":"list_inventory", "scope":"contacts"|"accounts"|"all" } → LISTER les entités réellement présentes dans l'espace. LECTURE.
+  Utilise-la quand l'utilisateur veut VOIR QUI/QUOI est là (« liste mes contacts », « quels sont mes comptes », « montre-moi les entreprises de mon espace »).
+  ⚠️ Ne la confonds pas avec "stats" : une question de NOMBRE (« combien ai-je de contacts ? ») reste "stats".
 - { "type":"find_lead", "query":"..." } → retrouver des leads DÉJÀ dans le pipe. LECTURE.
 - { "type":"explain_company", "company":"..." } → fiche + résumé d'une entreprise. LECTURE.
 - { "type":"add_company", "company":"...", "withContacts": true|false } → créer le COMPTE (+ dirigeants réels en contacts).
@@ -91,6 +99,24 @@ export interface PlanResult { reply: string; action: any | null }
 
 // 1) COMPRENDRE — modèle économique (classification), aucun effet de bord.
 export async function planJarvis(tenant: TenantContext, message: string, ctx: { url?: string; title?: string; channel?: string } = {}): Promise<PlanResult> {
+  // ── INVENTAIRE : DÉTERMINISTE, ET AVANT TOUT APPEL AU MODÈLE ───────────────
+  //
+  // « Liste-moi mes contacts » ne doit pas pouvoir devenir `stats` d'une
+  // exécution à l'autre. Ces formulations sont sans ambiguïté : on ne les
+  // soumet pas au classifieur, on les tranche ici.
+  //
+  // Le court-circuit précède même le contrôle de clé : un inventaire est une
+  // lecture de la base du client, il ne consomme aucun jeton et n'a aucune
+  // raison d'exiger une clé Anthropic.
+  //
+  // ⚠️ Les demandes quantitatives sont explicitement exclues par
+  // `detectInventoryIntent` — « combien ai-je de contacts ? » continue d'aller
+  // au classifieur, donc à `stats`.
+  const inventaire = detectInventoryIntent(message)
+  if (inventaire) {
+    return { reply: '', action: { type: 'list_inventory', scope: inventaire } }
+  }
+
   if (!getKey('ANTHROPIC_API_KEY')) return { reply: 'Clé Anthropic non configurée (Admin → Connexions).', action: null }
   const page = ctx.url || ctx.title ? `Page: ${(ctx.title || '').slice(0, 200)} (${(ctx.url || '').slice(0, 200)})\n` : ''
   const r = await callClaude({
@@ -490,6 +516,16 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
         }
       }
       return answer
+    }
+
+    // LECTURE PURE. Absente de WRITE_ACTIONS : aucune confirmation, aucun effet.
+    case 'list_inventory': {
+      // `listLeadsStrict` et non `listLeads` : cette dernière rend `[]` aussi
+      // bien pour un espace vide que pour une base injoignable. Annoncer
+      // « aucun contact » pendant une panne serait une affirmation fausse sur
+      // les données du client.
+      const read = await listLeadsStrict(ws)
+      return renderInventory(read, normalizeScope((action as any).scope))
     }
 
     case 'stats': {
