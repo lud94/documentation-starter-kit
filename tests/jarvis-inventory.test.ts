@@ -229,6 +229,7 @@ describe('9. Intention d\'inventaire — déterministe', () => {
     ['liste-moi mes contacts', 'contacts'],
     ['Liste-moi mes contacts !', 'contacts'],
     ['quels sont mes contacts ?', 'contacts'],
+    ['affiche les contacts de mon espace', 'contacts'],
     ['montre-moi les personnes de mon espace', 'contacts'],
     ['liste mes comptes', 'accounts'],
     ['montre-moi les comptes de mon espace', 'accounts'],
@@ -252,6 +253,7 @@ describe('9. Intention d\'inventaire — déterministe', () => {
   it('un verbe de liste sans objet d\'inventaire laisse décider le classifieur', () => {
     expect(detectInventoryIntent('liste mes séquences')).toBeNull()
     expect(detectInventoryIntent('montre-moi la page')).toBeNull()
+    expect(detectInventoryIntent('liste les contacts commerciaux chez Acme')).toBeNull()
     expect(detectInventoryIntent('')).toBeNull()
   })
 })
@@ -332,10 +334,16 @@ describe('12. Le pré-routeur ne VOLE PAS les intentions de sourcing', () => {
     expect(detectInventoryIntent('liste les boîtes de ma base')).toBe('accounts')
   })
 
-  it('« comptes » se suffit à lui-même : aucun ancrage requis', () => {
+  // ⚠️ MÊME « comptes » EXIGE UN ANCRAGE (JARVIS-CONTEXT-01b.2). Un nom nu ne
+  // suffit plus : « affiche les comptes cibles SaaS en France » parle du monde
+  // extérieur. Laisser une formulation ambiguë au classifieur ne coûte qu'un
+  // appel au modèle ; lui voler une intention de sourcing rend une capacité
+  // définitivement inatteignable. Les deux erreurs n'ont pas le même prix.
+  it('« comptes » NU ne suffit pas — il lui faut un ancrage', () => {
     expect(detectInventoryIntent('liste mes comptes')).toBe('accounts')
-    expect(detectInventoryIntent('affiche les comptes')).toBe('accounts')
-    expect(detectInventoryIntent('quels sont les comptes ?')).toBe('accounts')
+    expect(detectInventoryIntent('montre les comptes dans mon pipeline')).toBe('accounts')
+    expect(detectInventoryIntent('affiche les comptes')).toBeNull()
+    expect(detectInventoryIntent('quels sont les comptes ?')).toBeNull()
   })
 
   // ⚠️ `tout` / `tous` n'ancrent rien. Les garder dans le repli « all »
@@ -348,6 +356,59 @@ describe('12. Le pré-routeur ne VOLE PAS les intentions de sourcing', () => {
   it('les demandes quantitatives restent exclues, ancrage ou non', () => {
     expect(detectInventoryIntent('combien ai-je d\'entreprises dans mon espace ?')).toBeNull()
     expect(detectInventoryIntent('liste-moi le nombre de mes comptes')).toBeNull()
+  })
+})
+
+describe('13. L\'ancrage porte sur L\'ENTITÉ, pas sur la phrase', () => {
+  // ── LE DÉFAUT FERMÉ (JARVIS-CONTEXT-01b.2) ─────────────────────────────────
+  //
+  // 01b.1 exigeait un ancrage pour les termes génériques, mais le cherchait
+  // N'IMPORTE OÙ dans la phrase. La seule présence du mot « mes » suffisait :
+  //
+  //   « liste les entreprises de MES concurrents »        → capturé à tort
+  //   « montre les sociétés dans MES secteurs prioritaires » → capturé à tort
+  //
+  // Le « mes » ne portait pas sur l'entité. Et `leads|personnes|interlocuteurs`
+  // n'exigeaient aucun ancrage du tout.
+  //
+  // La règle est désormais SYNTAXIQUE : l'ancrage doit être ADJACENT au nom.
+  it.each([
+    'liste-moi des leads cybersécurité à Paris',
+    'montre-moi des personnes chez Microsoft',
+    'quels sont les interlocuteurs pertinents chez Acme ?',
+    'liste les entreprises de mes concurrents',
+    'montre les sociétés dans mes secteurs prioritaires',
+    'liste les contacts commerciaux chez Acme',
+    'affiche les comptes cibles SaaS en France',
+  ])('« %s » reste au classifieur', (message) => {
+    expect(detectInventoryIntent(message)).toBeNull()
+  })
+
+  it.each([
+    ['liste mes contacts', 'contacts'],
+    ['liste mes comptes', 'accounts'],
+    ['liste tous mes leads', 'all'],
+    ['affiche les contacts de mon espace', 'contacts'],
+    ['montre les comptes dans mon pipeline', 'accounts'],
+    ['liste les entreprises déjà présentes', 'accounts'],
+  ])('« %s » ⇒ %s', (message, attendu) => {
+    expect(detectInventoryIntent(message)).toBe(attendu)
+  })
+
+  // ⚠️ « mes concurrents » et « mes contacts » se distinguent UNIQUEMENT par le
+  // mot qui suit « mes ». Un ancrage global ne peut pas les séparer ; un
+  // ancrage adjacent, si.
+  it('un possessif portant sur autre chose n\'ancre rien', () => {
+    expect(detectInventoryIntent('liste les contacts de mes partenaires')).toBeNull()
+    expect(detectInventoryIntent('affiche les comptes de mes clients')).toBeNull()
+    expect(detectInventoryIntent('liste mes contacts')).toBe('contacts')
+  })
+
+  it('« leads » exige lui aussi son ancrage, et vaut alors l\'espace entier', () => {
+    expect(detectInventoryIntent('liste les leads')).toBeNull()
+    expect(detectInventoryIntent('liste-moi des leads à Paris')).toBeNull()
+    expect(detectInventoryIntent('liste mes leads')).toBe('all')
+    expect(detectInventoryIntent('affiche les leads de mon espace')).toBe('all')
   })
 })
 

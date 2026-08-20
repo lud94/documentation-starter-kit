@@ -181,56 +181,74 @@ const QUANTITATIF = /\b(combien|nombre|total|compte(?:ur)? de|statistiques?|stat
 const DEMANDE_LISTE =
   /\b(liste|listes|lister|listing|inventaire|montre|montrer|affiche|afficher|enumere|enumerer|donne moi (?:la liste|les)|quels sont|quelles sont|qui sont|qui est dans)\b/
 
-const NOM_CONTACT = /\b(contacts?|personnes?|interlocuteurs?)\b/
+/**
+ * ─── ANCRAGE LIÉ À L'ENTITÉ (JARVIS-CONTEXT-01b.2) ──────────────────────────
+ *
+ * ⚠️ DEUX SURCAPTURES SUCCESSIVES ONT ÉTÉ FERMÉES ICI. Elles avaient la même
+ * cause : le pré-routeur cherchait un NOM d'entité quelque part, et un ANCRAGE
+ * quelque part ailleurs, sans exiger qu'ils se rapportent l'un à l'autre.
+ *
+ *   01b   — `entreprises|societes|boites` valaient inventaire à eux seuls.
+ *           « liste-moi des entreprises de cybersécurité à Lyon » partait en
+ *           inventaire ; `source_companies` devenait inatteignable.
+ *
+ *   01b.1 — l'ancrage restait GLOBAL : la seule présence du mot « mes »
+ *           suffisait, où qu'il soit. « Liste les entreprises de MES
+ *           concurrents » et « montre les sociétés dans MES secteurs
+ *           prioritaires » étaient donc capturées — le « mes » ne portait pas
+ *           sur l'entité. Et `leads|personnes|interlocuteurs` n'exigeaient
+ *           toujours aucun ancrage : « montre-moi des personnes chez
+ *           Microsoft » partait en inventaire.
+ *
+ * LA RÈGLE EST DÉSORMAIS SYNTAXIQUE, PAS LEXICALE : l'ancrage doit être
+ * ADJACENT au nom d'entité. « mes contacts » ancre ; « mes concurrents » dans
+ * une phrase parlant de contacts n'ancre rien.
+ *
+ * ── CONSERVATEUR PAR CONSTRUCTION ───────────────────────────────────────────
+ * Aucun nom nu ne déclenche plus l'inventaire — pas même `contacts` ou
+ * `comptes`. « Affiche les comptes cibles SaaS en France » et « liste les
+ * contacts commerciaux chez Acme » retournent `null`.
+ *
+ * C'est un choix ASYMÉTRIQUE et délibéré : laisser une formulation ambiguë au
+ * classifieur ne coûte qu'un appel au modèle — qui, lui, dispose du contrat
+ * complet et peut choisir `list_inventory`. Voler une intention de sourcing,
+ * en revanche, rend une capacité DÉFINITIVEMENT inatteignable, sans recours et
+ * sans trace. Les deux erreurs n'ont pas le même prix.
+ */
+const NOMS_CONTACT = 'contacts?|personnes?|interlocuteurs?'
+const NOMS_COMPTE = 'comptes?|entreprises?|societes?|boites?'
+const NOMS_LEAD = 'leads?'
+
+/** L'espace du client, jamais le monde extérieur. */
+const LIEU = '(?:mon|ma|le|la) (?:espace|pipe|pipeline|base|portefeuille)'
+
+/** État qui n'a de sens que pour une donnée déjà entrée dans Prospector. */
+const DEJA_LA = '(?:deja (?:presentes?|present|la|ici|importees?|importe|enregistrees?)|importees?|enregistrees?)'
 
 /**
- * ⚠️ « ENTREPRISE » N'EST PAS UN TERME D'INVENTAIRE (JARVIS-CONTEXT-01b.1).
+ * Construit le motif d'un nom d'entité RÉELLEMENT ancré.
  *
- * La première version reconnaissait `entreprises|societes|boites` au même titre
- * que `comptes`. Le pré-routeur volait alors des intentions de SOURCING avant
- * même que le classifieur les voie :
- *
- *   « liste-moi des entreprises de cybersécurité à Lyon »
- *   « quelles sont les entreprises SaaS françaises ? »
- *
- * Ces directives demandent à CHERCHER sur data.gouv, pas à relire l'espace.
- * Les router déterministement vers `list_inventory` rendait `source_companies`
- * inatteignable pour toute formulation commençant par un verbe de liste — une
- * capacité perdue en échange d'une capacité gagnée.
- *
- * La distinction est lexicale et nette : `compte` est un terme MÉTIER de
- * Prospector — on n'a de « comptes » que dans son propre espace. `entreprise`,
- * `société`, `boîte` désignent le monde entier.
+ * Trois formes, toutes adjacentes au nom :
+ *   « (tous) mes <nom> »            possessif direct
+ *   « <nom> de|dans <lieu> »        rattachement à l'espace
+ *   « <nom> déjà présentes »        état d'appartenance
  */
-const NOM_COMPTE_FORT = /\b(comptes?)\b/
-const NOM_COMPTE_GENERIQUE = /\b(entreprises?|societes?|boites?)\b/
+function ancre(noms: string): RegExp {
+  return new RegExp(
+    '\\b(?:' +
+      [
+        `(?:tous |toutes )?mes (?:${noms})`,
+        `(?:${noms}) (?:de|dans) ${LIEU}`,
+        `(?:${noms}) du (?:pipe|pipeline)`,
+        `(?:${noms}) ${DEJA_LA}`,
+      ].join('|') +
+      ')\\b',
+  )
+}
 
-/**
- * Ancrage explicite aux données DÉJÀ PRÉSENTES dans Prospector.
- *
- * Seul un tel ancrage autorise un terme générique à déclencher l'inventaire.
- * Sans lui, l'intention est ambiguë — et l'ambiguïté se tranche en rendant
- * `null` : le classifieur décide, comme avant ce lot.
- */
-const ANCRAGE_ESPACE = new RegExp(
-  '\\b(?:' +
-    [
-      'mes',
-      '(?:mon|le|du|de mon|dans mon|dans le) (?:espace|pipe|pipeline|portefeuille)',
-      '(?:ma|la|de ma|dans ma) base',
-      'deja (?:presentes?|present|importees?|importe|dans|ici)',
-    ].join('|') +
-    ')\\b',
-)
-
-/**
- * Termes propres à Prospector, qui valent à eux seuls ancrage.
- *
- * ⚠️ `tout` / `tous` ONT ÉTÉ RETIRÉS. Ils n'ancrent rien — « liste des
- * entreprises tous secteurs » est du sourcing — et les conserver rouvrait par
- * la bande la capture qu'on vient de fermer.
- */
-const NOM_TOUT = /\b(leads?|pipe|pipeline|espace)\b/
+const CONTACT_ANCRE = ancre(NOMS_CONTACT)
+const COMPTE_ANCRE = ancre(NOMS_COMPTE)
+const LEAD_ANCRE = ancre(NOMS_LEAD)
 
 /**
  * Rend le périmètre d'inventaire demandé, ou `null` si la directive n'est pas
@@ -243,18 +261,21 @@ export function detectInventoryIntent(message: string): InventoryScope | null {
   if (QUANTITATIF.test(m)) return null
   if (!DEMANDE_LISTE.test(m)) return null
 
-  const contact = NOM_CONTACT.test(m)
-  // Un terme générique ne compte que s'il est ancré à l'espace du client.
-  const compte =
-    NOM_COMPTE_FORT.test(m) || (NOM_COMPTE_GENERIQUE.test(m) && ANCRAGE_ESPACE.test(m))
+  // Chaque entité doit porter SON PROPRE ancrage, adjacent à son nom. Un
+  // « mes » qui se rapporte à autre chose — « les entreprises de mes
+  // concurrents » — n'ancre rien.
+  const contact = CONTACT_ANCRE.test(m)
+  const compte = COMPTE_ANCRE.test(m)
+  // « mes leads » ne distingue pas comptes et contacts : c'est l'espace entier.
+  if (LEAD_ANCRE.test(m)) return 'all'
 
   if (contact && compte) return 'all'
   if (contact) return 'contacts'
   if (compte) return 'accounts'
-  if (NOM_TOUT.test(m)) return 'all'
 
-  // Un verbe de liste sans objet reconnaissable — « liste les séquences » —
-  // n'est pas un inventaire d'entités. On laisse le classifieur trancher.
+  // Aucun nom d'entité ANCRÉ : « liste les séquences », « affiche les comptes
+  // cibles SaaS en France », « montre-moi des personnes chez Microsoft ». On
+  // laisse le classifieur trancher — il a le contrat complet sous les yeux.
   return null
 }
 
