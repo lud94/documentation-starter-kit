@@ -225,6 +225,14 @@ describe('F. Regroupement — dénombrement d\'entités, jamais de chaînes', ()
     expect(p.groups[0].company).toBe('—')
   })
 
+  it('une entreprise nommée littéralement « — » reste une vraie entreprise', () => {
+    // Garde-fou contre une correction paresseuse : distinguer par comparaison
+    // de chaîne avec le placeholder confondrait les deux cas.
+    const p = projectAccounts([contact({ company: '—' })])
+    expect(p.groups[0].hasCompany).toBe(true)
+    expect(p.companiesWithoutAccount).toHaveLength(1)
+  })
+
   it('l\'entrée n\'est jamais modifiée', () => {
     const entree = [compte(), contact()]
     const copie = JSON.parse(JSON.stringify(entree))
@@ -236,5 +244,62 @@ describe('F. Regroupement — dénombrement d\'entités, jamais de chaînes', ()
     const p = projectAccounts([])
     expect(p).toEqual({ accounts: [], contacts: [], groups: [], companiesWithoutAccount: [] })
     expect(summarizeAccounts(p)).toBe('0 compte · 0 contact')
+  })
+})
+
+// JARVIS-CONTEXT-01a.1 — UN CONTACT SANS ENTREPRISE NE LIE AUCUNE ENTREPRISE.
+//
+// Le groupe des leads sans entreprise porte le libellé `'—'`, qui est un
+// PLACEHOLDER D'AFFICHAGE, pas un nom. Il entrait néanmoins dans
+// `companiesWithoutAccount`, si bien qu'un contact sans entreprise s'annonçait
+// « 1 entreprise liée sans fiche compte ». Aucune entreprise n'est liée : le
+// libellé affirmait un fait faux.
+describe('G. Absence totale d\'entreprise ≠ entreprise sans fiche compte', () => {
+  it('A. entreprise renseignée, aucune fiche compte ⇒ 1 entreprise liée', () => {
+    const p = projectAccounts([contact({ company: 'Acme' })])
+    expect(p.companiesWithoutAccount).toHaveLength(1)
+    expect(p.groups[0].hasCompany).toBe(true)
+  })
+
+  it('B. entreprise vide ⇒ groupe « — » visible, mais AUCUNE entreprise liée', () => {
+    const p = projectAccounts([contact({ company: '' })])
+    expect(p.groups).toHaveLength(1)
+    expect(p.groups[0].company).toBe('—')
+    expect(p.groups[0].hasCompany).toBe(false)
+    expect(p.companiesWithoutAccount).toHaveLength(0)
+    expect(summarizeAccounts(p)).toBe('0 compte · 1 contact')
+  })
+
+  it('C. entreprise en espaces seuls ⇒ même résultat', () => {
+    const p = projectAccounts([contact({ company: '   ' })])
+    expect(p.groups[0].hasCompany).toBe(false)
+    expect(p.companiesWithoutAccount).toHaveLength(0)
+    expect(summarizeAccounts(p)).toBe('0 compte · 1 contact')
+  })
+
+  it('champ `company` absent du lead ⇒ même résultat', () => {
+    const p = projectAccounts([{ id: 'ld_9', kind: 'contact', firstName: 'Alice' }])
+    expect(p.companiesWithoutAccount).toHaveLength(0)
+    expect(summarizeAccounts(p)).toBe('0 compte · 1 contact')
+  })
+
+  it('mélange : seules les vraies entreprises sont dénombrées', () => {
+    const p = projectAccounts([
+      contact({ id: 'ld_1', company: 'Acme' }),
+      contact({ id: 'ld_2', company: '' }),
+      contact({ id: 'ld_3', company: '  ' }),
+    ])
+    // Les deux contacts sans entreprise partagent le groupe « — ».
+    expect(p.groups).toHaveLength(2)
+    expect(p.contacts).toHaveLength(3)
+    expect(p.companiesWithoutAccount.map((g) => g.company)).toEqual(['Acme'])
+    expect(summarizeAccounts(p)).toBe('0 compte · 1 entreprise liée sans fiche compte · 3 contacts')
+  })
+
+  it('un compte sans entreprise ne devient pas une entreprise liée', () => {
+    const p = projectAccounts([compte({ company: '' })])
+    expect(p.accounts).toHaveLength(1)
+    expect(p.companiesWithoutAccount).toEqual([])
+    expect(summarizeAccounts(p)).toBe('1 compte · 0 contact')
   })
 })

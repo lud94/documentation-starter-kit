@@ -88,7 +88,19 @@ export function isContactLead(l: LeadKindShape): boolean {
 
 /** Une entreprise et ce qui s'y rattache. `account` absent = aucune fiche compte. */
 export interface AccountGroup<T extends LeadKindShape> {
+  /** Nom affichable. Vaut `'—'` quand aucune entreprise n'est renseignée. */
   company: string
+  /**
+   * Une entreprise est-elle RÉELLEMENT renseignée ?
+   *
+   * ⚠️ NE PAS DÉDUIRE CETTE RÉPONSE DE `company`. Le groupe des leads sans
+   * entreprise porte le libellé `'—'`, qui est un placeholder d'affichage, pas
+   * un nom. Le tester par comparaison de chaîne confondrait « pas d'entreprise »
+   * avec « une entreprise nommée “—” » — c'est exactement le défaut corrigé
+   * ici : un contact sans entreprise était annoncé « 1 entreprise liée sans
+   * fiche compte », alors qu'aucune entreprise n'est liée.
+   */
+  hasCompany: boolean
   /** La fiche compte, si elle existe RÉELLEMENT comme entité. */
   account?: T
   contacts: T[]
@@ -105,6 +117,10 @@ export interface AccountProjection<T extends LeadKindShape> {
    * Groupes portés uniquement par des contacts : l'entreprise est connue (elle
    * est persistée DANS le contact), mais aucune fiche compte n'a été créée.
    * Grandeur distincte, jamais à additionner avec `accounts`.
+   *
+   * ⚠️ Les contacts SANS entreprise en sont exclus (`hasCompany`). Leur groupe
+   * d'affichage `'—'` reste dans `groups` — la vue en a besoin — mais il ne
+   * désigne aucune entreprise, donc il ne s'y compte pas.
    */
   companiesWithoutAccount: AccountGroup<T>[]
 }
@@ -120,10 +136,11 @@ export function projectAccounts<T extends LeadKindShape & { company?: string }>(
   const contacts: T[] = []
 
   for (const l of leads) {
-    const company = (l.company || '').trim() || SANS_ENTREPRISE
+    const renseignee = (l.company || '').trim()
+    const company = renseignee || SANS_ENTREPRISE
     let g = groups.get(company)
     if (!g) {
-      g = { company, contacts: [] }
+      g = { company, hasCompany: Boolean(renseignee), contacts: [] }
       groups.set(company, g)
     }
     if (isAccountLead(l)) {
@@ -144,7 +161,11 @@ export function projectAccounts<T extends LeadKindShape & { company?: string }>(
     accounts,
     contacts,
     groups: ordonnes,
-    companiesWithoutAccount: ordonnes.filter((g) => !g.account && g.contacts.length > 0),
+    // `hasCompany` d'abord : un contact sans entreprise n'est PAS une
+    // « entreprise liée sans fiche compte ». Il n'y a rien à lier.
+    companiesWithoutAccount: ordonnes.filter(
+      (g) => g.hasCompany && !g.account && g.contacts.length > 0,
+    ),
   }
 }
 
