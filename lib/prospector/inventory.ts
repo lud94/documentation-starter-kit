@@ -182,8 +182,55 @@ const DEMANDE_LISTE =
   /\b(liste|listes|lister|listing|inventaire|montre|montrer|affiche|afficher|enumere|enumerer|donne moi (?:la liste|les)|quels sont|quelles sont|qui sont|qui est dans)\b/
 
 const NOM_CONTACT = /\b(contacts?|personnes?|interlocuteurs?)\b/
-const NOM_COMPTE = /\b(comptes?|entreprises?|societes?|boites?)\b/
-const NOM_TOUT = /\b(leads?|pipe|pipeline|espace|base|tout|tous)\b/
+
+/**
+ * ⚠️ « ENTREPRISE » N'EST PAS UN TERME D'INVENTAIRE (JARVIS-CONTEXT-01b.1).
+ *
+ * La première version reconnaissait `entreprises|societes|boites` au même titre
+ * que `comptes`. Le pré-routeur volait alors des intentions de SOURCING avant
+ * même que le classifieur les voie :
+ *
+ *   « liste-moi des entreprises de cybersécurité à Lyon »
+ *   « quelles sont les entreprises SaaS françaises ? »
+ *
+ * Ces directives demandent à CHERCHER sur data.gouv, pas à relire l'espace.
+ * Les router déterministement vers `list_inventory` rendait `source_companies`
+ * inatteignable pour toute formulation commençant par un verbe de liste — une
+ * capacité perdue en échange d'une capacité gagnée.
+ *
+ * La distinction est lexicale et nette : `compte` est un terme MÉTIER de
+ * Prospector — on n'a de « comptes » que dans son propre espace. `entreprise`,
+ * `société`, `boîte` désignent le monde entier.
+ */
+const NOM_COMPTE_FORT = /\b(comptes?)\b/
+const NOM_COMPTE_GENERIQUE = /\b(entreprises?|societes?|boites?)\b/
+
+/**
+ * Ancrage explicite aux données DÉJÀ PRÉSENTES dans Prospector.
+ *
+ * Seul un tel ancrage autorise un terme générique à déclencher l'inventaire.
+ * Sans lui, l'intention est ambiguë — et l'ambiguïté se tranche en rendant
+ * `null` : le classifieur décide, comme avant ce lot.
+ */
+const ANCRAGE_ESPACE = new RegExp(
+  '\\b(?:' +
+    [
+      'mes',
+      '(?:mon|le|du|de mon|dans mon|dans le) (?:espace|pipe|pipeline|portefeuille)',
+      '(?:ma|la|de ma|dans ma) base',
+      'deja (?:presentes?|present|importees?|importe|dans|ici)',
+    ].join('|') +
+    ')\\b',
+)
+
+/**
+ * Termes propres à Prospector, qui valent à eux seuls ancrage.
+ *
+ * ⚠️ `tout` / `tous` ONT ÉTÉ RETIRÉS. Ils n'ancrent rien — « liste des
+ * entreprises tous secteurs » est du sourcing — et les conserver rouvrait par
+ * la bande la capture qu'on vient de fermer.
+ */
+const NOM_TOUT = /\b(leads?|pipe|pipeline|espace)\b/
 
 /**
  * Rend le périmètre d'inventaire demandé, ou `null` si la directive n'est pas
@@ -197,7 +244,9 @@ export function detectInventoryIntent(message: string): InventoryScope | null {
   if (!DEMANDE_LISTE.test(m)) return null
 
   const contact = NOM_CONTACT.test(m)
-  const compte = NOM_COMPTE.test(m)
+  // Un terme générique ne compte que s'il est ancré à l'espace du client.
+  const compte =
+    NOM_COMPTE_FORT.test(m) || (NOM_COMPTE_GENERIQUE.test(m) && ANCRAGE_ESPACE.test(m))
 
   if (contact && compte) return 'all'
   if (contact) return 'contacts'

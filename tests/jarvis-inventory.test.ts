@@ -232,7 +232,12 @@ describe('9. Intention d\'inventaire — déterministe', () => {
     ['montre-moi les personnes de mon espace', 'contacts'],
     ['liste mes comptes', 'accounts'],
     ['montre-moi les comptes de mon espace', 'accounts'],
-    ['affiche les entreprises', 'accounts'],
+    // ⚠️ `affiche les entreprises` figurait ici comme `accounts`. C'était le
+    // défaut : un terme générique, sans ancrage, capturait du sourcing. Voir
+    // le bloc 12.
+    ['liste mes entreprises', 'accounts'],
+    ['affiche les entreprises de mon espace', 'accounts'],
+    ['quelles sont les entreprises dans mon pipeline ?', 'accounts'],
     ['liste mes comptes et mes contacts', 'all'],
     ['liste tous mes leads', 'all'],
   ])('« %s » ⇒ inventaire %s', (message, attendu) => {
@@ -282,6 +287,67 @@ describe('10. Les demandes QUANTITATIVES restent sur `stats`', () => {
     'montre-moi les statistiques de mes contacts',
   ])('« %s » demande un NOMBRE malgré son verbe de liste', (message) => {
     expect(detectInventoryIntent(message)).toBeNull()
+  })
+})
+
+describe('12. Le pré-routeur ne VOLE PAS les intentions de sourcing', () => {
+  // ── LE DÉFAUT FERMÉ (JARVIS-CONTEXT-01b.1) ─────────────────────────────────
+  //
+  // La première version reconnaissait `entreprises|societes|boites` au même
+  // titre que `comptes`. Toute directive de SOURCING commençant par un verbe de
+  // liste était donc tranchée AVANT le classifieur, et `source_companies`
+  // devenait inatteignable pour ces formulations. Une capacité perdue en
+  // échange d'une capacité gagnée : ce lot n'a jamais eu le droit de faire ça.
+  //
+  // `compte` est un terme MÉTIER — on n'a de comptes que dans son propre
+  // espace. `entreprise`, `société`, `boîte` désignent le monde entier : ils
+  // n'ouvrent l'inventaire QUE si un ancrage explicite les rattache aux données
+  // déjà présentes.
+  it.each([
+    'liste-moi des entreprises de cybersécurité à Lyon',
+    'quelles sont les entreprises SaaS françaises ?',
+    'affiche-moi des entreprises de 50 à 100 salariés',
+    'liste les entreprises qui recrutent un Head of Sales',
+  ])('« %s » reste au classifieur (sourcing)', (message) => {
+    expect(detectInventoryIntent(message)).toBeNull()
+  })
+
+  // Formulations calquées sur le contrat SYSTEM de `source_companies`.
+  it.each([
+    'trouve des ESN à Paris de 50 à 100 salariés',
+    'cherche des sociétés de conseil IT en Île-de-France',
+    'liste des boîtes de fintech à Bordeaux',
+    'montre-moi des entreprises du secteur Consulting',
+    'affiche des sociétés de 11 à 20 salariés',
+    'quelles sont les boîtes qui lèvent des fonds en ce moment ?',
+  ])('« %s » n\'est pas capturé par le pré-routeur', (message) => {
+    expect(detectInventoryIntent(message)).toBeNull()
+  })
+
+  it('un terme générique ANCRÉ ouvre bien l\'inventaire', () => {
+    expect(detectInventoryIntent('liste mes entreprises')).toBe('accounts')
+    expect(detectInventoryIntent('affiche les entreprises de mon espace')).toBe('accounts')
+    expect(detectInventoryIntent('quelles sont les entreprises dans mon pipeline ?')).toBe('accounts')
+    expect(detectInventoryIntent('montre les sociétés déjà présentes')).toBe('accounts')
+    expect(detectInventoryIntent('liste les boîtes de ma base')).toBe('accounts')
+  })
+
+  it('« comptes » se suffit à lui-même : aucun ancrage requis', () => {
+    expect(detectInventoryIntent('liste mes comptes')).toBe('accounts')
+    expect(detectInventoryIntent('affiche les comptes')).toBe('accounts')
+    expect(detectInventoryIntent('quels sont les comptes ?')).toBe('accounts')
+  })
+
+  // ⚠️ `tout` / `tous` n'ancrent rien. Les garder dans le repli « all »
+  // rouvrait la capture par la bande.
+  it('« tous » ne suffit pas à ancrer une demande de sourcing', () => {
+    expect(detectInventoryIntent('liste des entreprises tous secteurs')).toBeNull()
+    expect(detectInventoryIntent('affiche toutes les sociétés de la tech')).toBeNull()
+  })
+
+  it('les demandes quantitatives restent exclues, ancrage ou non', () => {
+    expect(detectInventoryIntent('combien ai-je d\'entreprises dans mon espace ?')).toBeNull()
+    expect(detectInventoryIntent('liste-moi le nombre de mes comptes')).toBeNull()
   })
 })
 
