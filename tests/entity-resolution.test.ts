@@ -46,6 +46,7 @@ vi.mock('../lib/prospector/identify', () => ({
 }))
 
 import { lookupByName } from '../lib/prospector/datagouv'
+import { ProviderError } from '../lib/observability/safeError'
 import { executeJarvis } from '../lib/prospector/jarvisAgent'
 
 const TENANT = { id: 'ws_alpha', kind: 'client' as const }
@@ -150,12 +151,21 @@ describe('A. lookupByName ne choisit plus arbitrairement', () => {
     expect(v.siren).toBe('600000001')
   })
 
-  it('une panne réseau reste found:false, sans corps fournisseur ni pile', async () => {
-    // SEC-LOG-01 : rien du fournisseur ne doit transiter vers l'appelant.
+  // ⚠️ CONTRAT MODIFIÉ PAR OBS-DATAGOUV-001. Ce test exigeait `{found:false}`
+  // sur panne réseau — c'était précisément le défaut : une indisponibilité
+  // rendue indiscernable d'un « aucune entreprise de ce nom ». La panne LÈVE
+  // désormais une `ProviderError`, que l'appelant classe en `provider_error`.
+  it('une panne réseau LÈVE, et ne se déguise plus en « introuvable »', async () => {
     fetchMock.mockRejectedValue(new Error('ECONNRESET secret interne'))
-    const v = await lookupByName('OVHcloud')
-    expect(v).toEqual({ found: false })
-    expect(JSON.stringify(v)).not.toContain('ECONNRESET')
+
+    await expect(lookupByName('OVHcloud')).rejects.toThrow(ProviderError)
+
+    // SEC-LOG-01 : rien du fournisseur ne transite vers l'appelant.
+    const capture = await lookupByName('OVHcloud').catch((e: any) => e)
+    expect(JSON.stringify(capture.safe)).not.toContain('ECONNRESET')
+    expect(capture.message).not.toContain('ECONNRESET')
+    expect(capture.safe.code).toBe('provider_network')
+    expect(capture.safe.provider).toBe('datagouv')
   })
 })
 

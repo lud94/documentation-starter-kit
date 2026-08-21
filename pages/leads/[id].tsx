@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson, saveResearchNotes, verifyLeadCompany, enrichCompanyWebsite, ambiguityLabel } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson, saveResearchNotes, verifyLeadCompany, enrichCompanyWebsite, ambiguityLabel, PROVIDER_UNAVAILABLE } from '../../lib/prospector/capabilities'
 import AskExternalAI from '../../components/AskExternalAI'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
@@ -169,6 +169,15 @@ useEffect(() => {
     // s'arrête ici — enchaîner sur l'agent web laisserait croire à une
     // vérification réussie, et dépenserait des jetons sur une entreprise
     // indéterminée.
+    // Panne fournisseur : on s'arrête AVANT l'agent web. Rien n'a été écrit, et
+    // on ne dépense pas de jetons sur une entreprise qu'on n'a pas pu vérifier.
+    if (v?.resolution === 'provider_error') {
+      setCompanyBusy(false)
+      setCompanyMsg(PROVIDER_UNAVAILABLE)
+      setTimeout(() => setCompanyMsg(null), 8000)
+      return
+    }
+
     if (v?.ambiguous) {
       setCompanyBusy(false)
       setCompanyMsg(ambiguityLabel(lead?.company || '', v.candidates, "Aucun champ n'a été modifié."))

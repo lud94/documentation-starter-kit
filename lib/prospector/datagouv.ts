@@ -110,6 +110,68 @@ export function buildSearchUrl(q: SourcingQuery): string {
  * `if (v.found)` restent corrects sans modification, et deviennent même plus
  * sûrs : une ambiguïté rend désormais `found: false`.
  */
+/**
+ * ─── PANNE FOURNISSEUR ≠ ABSENCE DE RÉSULTAT (OBS-DATAGOUV-001) ─────────────
+ *
+ * Toutes les fonctions de ce module convertissaient un 429, un 500, une coupure
+ * réseau ou un JSON illisible en `[]`, `null` ou `{found:false}` — exactement la
+ * même valeur qu'une réponse valide ne contenant aucune entreprise.
+ *
+ * L'utilisateur lisait donc « entreprise introuvable » alors que Prospector
+ * n'avait tout simplement pas pu interroger data.gouv. Les deux situations
+ * appellent des gestes opposés : sur « introuvable » on corrige la saisie, sur
+ * « indisponible » on réessaie. Confondre les deux fait corriger ce qui n'est
+ * pas faux, et abandonner ce qui aurait abouti.
+ *
+ * Pire : une panne pouvait faire écrire un compte SANS métadonnées comme si
+ * data.gouv avait répondu « je ne connais pas cette entreprise ».
+ */
+export type Resolution = 'resolved' | 'ambiguous' | 'not_found' | 'provider_error'
+
+/**
+ * Appel HTTP data.gouv. Rend le JSON, ou LÈVE une `ProviderError`.
+ *
+ * ⚠️ NE REND JAMAIS UNE VALEUR VIDE POUR SIGNALER UNE PANNE. C'est tout l'objet
+ * du lot : la seule façon de ne pas confondre les deux cas est que l'un soit une
+ * valeur et l'autre une exception.
+ *
+ * Aucun corps fournisseur, aucune URL, aucun message tiers ne franchit cette
+ * frontière — `ProviderError` ne transporte qu'une classe de panne, un statut et
+ * un identifiant de corrélation généré localement (SEC-LOG-01).
+ */
+async function appelDataGouv(url: string, operation: string): Promise<any> {
+  let res: Response
+  try {
+    res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
+  } catch (e: any) {
+    // Requête non aboutie : DNS, TLS, connexion coupée, avortement.
+    throw new ProviderError({
+      code: 'provider_network', provider: 'datagouv', operation, errorName: e?.name,
+    })
+  }
+
+  if (!res.ok) {
+    throw new ProviderError({
+      code: 'provider_http', provider: 'datagouv', operation, status: res.status,
+    })
+  }
+
+  try {
+    const data = await res.json()
+    // Une réponse 200 dont le corps n'est pas exploitable n'est pas un « zéro
+    // résultat » : c'est un fournisseur qui ne répond pas selon son contrat.
+    if (!data || typeof data !== 'object') {
+      throw new ProviderError({ code: 'provider_response', provider: 'datagouv', operation })
+    }
+    return data
+  } catch (e: any) {
+    if (e instanceof ProviderError) throw e
+    throw new ProviderError({
+      code: 'provider_response', provider: 'datagouv', operation, errorName: e?.name,
+    })
+  }
+}
+
 export interface CompanyLookup {
   found: boolean
   siren?: string
@@ -120,6 +182,11 @@ export interface CompanyLookup {
   naf?: string
   effectif?: string
   website?: string
+  /**
+   * Issue de la résolution. `found:true` implique toujours `'resolved'`.
+   * Ce champ est ADDITIF : les appelants qui testent `found` restent corrects.
+   */
+  resolution?: Resolution
   /** Plusieurs entreprises portent ce nom : AUCUNE n'a été choisie. */
   ambiguous?: boolean
   /** Les candidates, pour que l'appelant fasse trancher l'utilisateur. */
@@ -166,24 +233,26 @@ function normaliserRaisonSociale(v: string): string {
  */
 export async function lookupByName(name: string): Promise<CompanyLookup> {
   const n = (name || '').trim()
-  if (n.length < 2) return { found: false }
+  if (n.length < 2) return { found: false, resolution: 'not_found' }
 
   // Une fenêtre de 10 : voir les homonymes est la condition même pour les
   // détecter. `per_page=1` rendait l'ambiguïté structurellement invisible.
   const candidates = await searchCandidates(n, 10)
 
-  if (candidates.length === 0) return { found: false }
-  if (candidates.length === 1) return { found: true, ...candidates[0] }
+  // Réponse VALIDE et vide : l'entreprise n'existe pas. Une panne, elle, a déjà
+  // levé dans `searchCandidates` et n'arrive jamais ici.
+  if (candidates.length === 0) return { found: false, resolution: 'not_found' }
+  if (candidates.length === 1) return { found: true, resolution: 'resolved', ...candidates[0] }
 
   const cible = normaliserRaisonSociale(n)
   const exacts = candidates.filter((c) => normaliserRaisonSociale(c.name) === cible)
 
   // Exactement UNE correspondance stricte : le nom désigne sans équivoque.
-  if (exacts.length === 1) return { found: true, ...exacts[0] }
+  if (exacts.length === 1) return { found: true, resolution: 'resolved', ...exacts[0] }
 
   // Zéro correspondance stricte (que des approchants) OU plusieurs entités
   // portant le même nom : dans les deux cas, choisir serait deviner.
-  return { found: false, ambiguous: true, candidates }
+  return { found: false, resolution: 'ambiguous', ambiguous: true, candidates }
 }
 
 export interface CompanyMatch { siren: string; name: string; dirigeant?: string; active?: boolean; city: string; naf: string; effectif?: string; website?: string }
@@ -193,10 +262,10 @@ export async function searchCandidates(name: string, n = 10): Promise<CompanyMat
   const q = (name || '').trim()
   if (q.length < 2) return []
   const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(q)}&page=1&per_page=${n}`
-  try {
-    const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
-    if (!res.ok) return []
-    const data = await res.json()
+  // ⚠️ LÈVE sur panne fournisseur (OBS-DATAGOUV-001). Un `[]` ne signifie plus
+  // que « aucune entreprise ne porte ce nom » — jamais « je n'ai pas pu demander ».
+  const data = await appelDataGouv(url, 'search')
+  {
     return (data.results || []).map((r: any): CompanyMatch => {
       const dir = (r.dirigeants || []).find((d: any) => d && d.nom)
       return {
@@ -210,44 +279,51 @@ export async function searchCandidates(name: string, n = 10): Promise<CompanyMat
         website: extractWebsite(r),
       }
     })
-  } catch { return [] }
+  }
 }
 
 // Réconcilie un nom d'entreprise (issu d'un signal) sur un SIREN réel.
 // Sert à vérifier qu'une entreprise citée par l'agent existe vraiment.
+//
+// ── LE DERNIER `results[0]` (OBS-DATAGOUV-001) ──────────────────────────────
+// Cette fonction interrogeait data.gouv avec `per_page=1` et prenait
+// `results[0]` pour vérité — le défaut même qu'ENTITY-RESOLUTION-001 a fermé
+// dans `lookupByName`, resté ouvert ici. Elle rendait donc un SIREN arbitraire
+// pour tout nom ambigu, et ce SIREN servait à ÉLEVER la confiance d'une
+// identification : une collision homonyme se transformait en `confidence:'high'`.
+//
+// Elle s'appuie désormais sur le résolveur sûr, et ne rend un SIREN QUE si la
+// résolution est `resolved`. `ambiguous`, `not_found` et `provider_error` ne
+// produisent jamais d'identité — la panne se propage à l'appelant.
 export async function reconcileByName(
   name: string,
 ): Promise<{ siren: string; sector: string; city: string } | null> {
   if (!name || name.length < 2) return null
-  const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(name)}&page=1&per_page=1&etat_administratif=A`
-  try {
-    const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
-    if (!res.ok) return null
-    const data = await res.json()
-    const r = (data.results || [])[0]
-    if (!r) return null
-    return { siren: String(r.siren), sector: r.activite_principale || '', city: r.siege?.libelle_commune || '' }
-  } catch {
-    return null
-  }
+
+  const v = await lookupByName(name)
+  if (v.resolution !== 'resolved' || !v.siren) return null
+
+  return { siren: v.siren, sector: v.naf || '', city: v.city || '' }
 }
 
 // Vérifie un SIREN et renvoie les infos entreprise (anti-faux positifs à la saisie).
 export async function lookupBySiren(
   siren: string,
-): Promise<{ found: boolean; name?: string; naf?: string; city?: string; dirigeant?: string; active?: boolean; effectif?: string; website?: string }> {
+): Promise<{ found: boolean; resolution?: Resolution; name?: string; naf?: string; city?: string; dirigeant?: string; active?: boolean; effectif?: string; website?: string }> {
   const clean = (siren || '').replace(/\s/g, '')
-  if (!/^\d{9}$/.test(clean)) return { found: false }
+  if (!/^\d{9}$/.test(clean)) return { found: false, resolution: 'not_found' }
   const url = `https://recherche-entreprises.api.gouv.fr/search?q=${clean}&page=1&per_page=1`
-  try {
-    const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
-    if (!res.ok) return { found: false }
-    const data = await res.json()
-    const r = (data.results || []).find((x: any) => String(x.siren) === clean) || (data.results || [])[0]
-    if (!r || String(r.siren) !== clean) return { found: false }
+  {
+    // Panne fournisseur ⇒ exception, jamais `found:false` : un SIREN qui existe
+    // ne doit pas être déclaré inexistant parce que data.gouv était indisponible.
+    const data = await appelDataGouv(url, 'siren')
+    const r = (data.results || []).find((x: any) => String(x.siren) === clean)
+    // Réponse VALIDE ne contenant pas ce SIREN : il n'existe pas.
+    if (!r) return { found: false, resolution: 'not_found' }
     const dir = (r.dirigeants || []).find((d: any) => d && d.nom)
     return {
       found: true,
+      resolution: 'resolved',
       name: r.nom_complet || r.nom_raison_sociale || '',
       naf: r.activite_principale || '',
       city: r.siege?.libelle_commune || '',
@@ -256,8 +332,6 @@ export async function lookupBySiren(
       effectif: TRANCHE[r.tranche_effectif_salarie] || undefined,
       website: extractWebsite(r),
     }
-  } catch {
-    return { found: false }
   }
 }
 
@@ -330,6 +404,8 @@ export async function fetchCompanies(
 // (finances) + effectif + adresse. Site web/email NE sont PAS exposés par SIRENE.
 export interface CompanyDetail {
   found: boolean
+  /** `found:true` implique `'resolved'`. Champ ADDITIF, appelants inchangés. */
+  resolution?: Resolution
   siren?: string
   name?: string
   active?: boolean
@@ -344,14 +420,15 @@ export interface CompanyDetail {
 
 export async function fetchCompanyDetail(siren: string): Promise<CompanyDetail> {
   const clean = (siren || '').replace(/\s/g, '')
-  if (!/^\d{9}$/.test(clean)) return { found: false, dirigeants: [] }
+  if (!/^\d{9}$/.test(clean)) return { found: false, resolution: 'not_found', dirigeants: [] }
   const url = `https://recherche-entreprises.api.gouv.fr/search?q=${clean}&page=1&per_page=1`
-  try {
-    const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
-    if (!res.ok) return { found: false, dirigeants: [] }
-    const data = await res.json()
-    const r = (data.results || []).find((x: any) => String(x.siren) === clean) || (data.results || [])[0]
-    if (!r || String(r.siren) !== clean) return { found: false, dirigeants: [] }
+  {
+    // Panne fournisseur ⇒ exception. Une fiche momentanément injoignable n'est
+    // pas une fiche inexistante : l'écran doit proposer de réessayer, pas
+    // afficher un compte vide comme si data.gouv ne connaissait rien.
+    const data = await appelDataGouv(url, 'detail')
+    const r = (data.results || []).find((x: any) => String(x.siren) === clean)
+    if (!r) return { found: false, resolution: 'not_found', dirigeants: [] }
 
     const dirigeants = (r.dirigeants || []).map((d: any) => {
       if (d?.nom || d?.prenoms) {
@@ -372,6 +449,7 @@ export async function fetchCompanyDetail(siren: string): Promise<CompanyDetail> 
 
     return {
       found: true,
+      resolution: 'resolved',
       siren: clean,
       name: r.nom_complet || r.nom_raison_sociale || '',
       active: r.etat_administratif ? r.etat_administratif === 'A' : undefined,
@@ -383,7 +461,5 @@ export async function fetchCompanyDetail(siren: string): Promise<CompanyDetail> 
       dirigeants,
       finances,
     }
-  } catch {
-    return { found: false, dirigeants: [] }
   }
 }

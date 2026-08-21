@@ -11,11 +11,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const candidates = str(req.query.candidates) === '1'
   try {
     if (siren) return res.status(200).json(await lookupBySiren(siren))
-    if (name && candidates) return res.status(200).json({ candidates: await searchCandidates(name) })
+    if (name && candidates) {
+      const found = await searchCandidates(name)
+      return res.status(200).json({ candidates: found, resolution: found.length ? 'resolved' : 'not_found' })
+    }
     if (name) return res.status(200).json(await lookupByName(name))
-    res.status(400).json({ found: false, error: 'siren ou name requis' })
+    res.status(400).json({ found: false, resolution: 'not_found', error: 'siren ou name requis' })
   } catch (e: any) {
+    // ⚠️ `provider_error` N'EST PAS `not_found` (OBS-DATAGOUV-001). Répondre
+    // `{found:false}` seul faisait afficher « entreprise introuvable » alors que
+    // data.gouv n'avait pas répondu — l'utilisateur corrigeait une saisie juste.
+    //
+    // Le contrat public reste strictement fermé : un code de résolution, un
+    // message constant. Ni corps fournisseur, ni URL, ni pile, ni message tiers.
     logSafeError('company.verify_error', e, { provider: 'datagouv', operation: 'verify' })
-    res.status(200).json({ found: false, error: PUBLIC_ERROR })
+    res.status(200).json({ found: false, resolution: 'provider_error', error: PUBLIC_ERROR })
   }
 }

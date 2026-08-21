@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../types/prospector'
 import { PromptDialog } from '../components/Dialog'
-import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, ambiguityLabel, takeWriteRejections, rejectionLabel, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, ambiguityLabel, PROVIDER_UNAVAILABLE, takeWriteRejections, rejectionLabel, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { PersonHit } from '../lib/prospector/capabilities'
 
@@ -227,6 +227,11 @@ export default function SourcingPage() {
       // ⚠️ AMBIGU ≠ IMPORTÉ. Rien n'a été créé : ne pas marquer l'entreprise
       // comme importée, sans quoi l'écran afficherait un succès inexistant et
       // interdirait de réessayer après précision.
+      // Panne fournisseur : rien n'a été importé, et ce n'est pas un « introuvable ».
+      if (r?.resolution === 'provider_error') {
+        setSigAmbigu((a) => ({ ...a, [h.company]: PROVIDER_UNAVAILABLE }))
+        return
+      }
       if (r?.ambiguous) {
         setSigAmbigu((a) => ({ ...a, [h.company]: ambiguityLabel(h.company, r.candidates) }))
         return
@@ -246,10 +251,12 @@ export default function SourcingPage() {
     const ids: string[] = []
     const importees: string[] = []
     const aResoudre: string[] = []
+    const indisponibles: string[] = []
     for (const h of sigHits) {
       const r: any = await importSignalToPipeline(h)
       // Une ambiguïté est SAUTÉE, jamais importée — et elle ne bloque pas les
       // autres entreprises du lot.
+      if (r?.resolution === 'provider_error') { indisponibles.push(h.company); continue }
       if (r?.ambiguous) { aResoudre.push(h.company); continue }
       if (r?.id) ids.push(r.id)
       importees.push(h.company)
@@ -259,14 +266,19 @@ export default function SourcingPage() {
       const n = { ...a }
       importees.forEach((c) => delete n[c])
       aResoudre.forEach((c) => { n[c] = `Plusieurs sociétés portent ce nom — résolution nécessaire avant import.` })
+      indisponibles.forEach((c) => { n[c] = PROVIDER_UNAVAILABLE })
       return n
     })
     // Seules les entreprises RÉELLEMENT importées sont marquées comme telles.
     setSigImported((s) => { const n = new Set(s); importees.forEach((c) => n.add(c)); return n })
     await createList(name, ids, 'signaux Exa/Claude')
     setSignalListMsg(
-      aResoudre.length
-        ? `Liste « ${name} » créée (${ids.length} importée(s)). ${aResoudre.length} entreprise(s) nécessitent une résolution et n'ont PAS été importées : ${aResoudre.slice(0, 5).join(', ')}.`
+      aResoudre.length || indisponibles.length
+        ? [
+            `Liste « ${name} » créée (${ids.length} importée(s)).`,
+            aResoudre.length ? `${aResoudre.length} entreprise(s) nécessitent une résolution et n'ont PAS été importées : ${aResoudre.slice(0, 5).join(', ')}.` : '',
+            indisponibles.length ? `${indisponibles.length} n'ont pas pu être vérifiées (data.gouv indisponible) et n'ont PAS été importées.` : '',
+          ].filter(Boolean).join(' ')
         : `Liste « ${name} » créée depuis les signaux.`,
     )
     setTimeout(() => setSignalListMsg(null), 8000)

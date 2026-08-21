@@ -523,17 +523,23 @@ export async function verifyLeadCompany(id: string): Promise<{
   active?: boolean
   dirigeant?: string
   ambiguous?: boolean
+  resolution?: 'resolved' | 'ambiguous' | 'not_found' | 'provider_error'
   candidates?: CompanyCandidate[]
 } | undefined> {
   const l = LEADS[id]
-  if (!l || !l.company || l.company === '—') return { found: false }
+  if (!l || !l.company || l.company === '—') return { found: false, resolution: 'not_found' }
   try {
     const v = await fetch(`/api/company/verify?name=${encodeURIComponent(l.company)}`).then((r) => r.json())
+    // Panne fournisseur : aucun champ n'est écrit, et surtout on ne dit pas
+    // « introuvable ». La fiche reste exactement dans l'état où elle était.
+    if (v.resolution === 'provider_error') {
+      return { found: false, resolution: 'provider_error' }
+    }
     // ⚠️ AMBIGUÏTÉ : AUCUN champ du lead n'est touché. Écrire le SIREN d'une
     // société choisie au hasard serait pire que ne rien écrire — la fiche
     // paraîtrait vérifiée.
     if (v.ambiguous) {
-      return { found: false, ambiguous: true, candidates: v.candidates || [] }
+      return { found: false, ambiguous: true, resolution: 'ambiguous', candidates: v.candidates || [] }
     }
     if (v.found) {
       l.company = v.name || l.company; l.siren = v.siren; l.active = v.active; l.naf = v.naf; l.city = v.city; l.dirigeant = v.dirigeant
@@ -547,8 +553,11 @@ export async function verifyLeadCompany(id: string): Promise<{
       }
       await persistLead(l)
     }
-    return { found: !!v.found, active: v.active, dirigeant: v.dirigeant }
-  } catch { return { found: false } }
+    return { found: !!v.found, resolution: v.found ? 'resolved' : 'not_found', active: v.active, dirigeant: v.dirigeant }
+  } catch {
+    // La route est injoignable : panne, pas absence.
+    return { found: false, resolution: 'provider_error' }
+  }
 }
 
 // Met à jour les champs éditables d'un lead (nom, titre, entreprise, email…).
@@ -1227,6 +1236,8 @@ export interface SignalImportResult {
   verified?: boolean
   siren?: string
   ambiguous?: boolean
+  /** `provider_error` = data.gouv injoignable. RIEN n'a été écrit. */
+  resolution?: 'resolved' | 'ambiguous' | 'not_found' | 'provider_error'
   company?: string
   candidates?: CompanyCandidate[]
 }
@@ -1257,6 +1268,15 @@ export function ambiguityLabel(
   ].filter(Boolean).join(' ')
 }
 
+/**
+ * Libellé d'indisponibilité fournisseur.
+ *
+ * ⚠️ IL NE DIT JAMAIS « INTROUVABLE ». C'est le cœur d'OBS-DATAGOUV-001 : une
+ * panne annoncée comme une absence fait corriger une saisie qui était juste, et
+ * abandonner une entreprise qui existe.
+ */
+export const PROVIDER_UNAVAILABLE = 'Data.gouv est temporairement indisponible. Réessaie dans un instant.'
+
 export async function importSignalToPipeline(hit: SignalHit): Promise<SignalImportResult> {
   // ⚠️ CLÉ PROVISOIRE, JAMAIS LE SIREN DU SIGNAL.
   //
@@ -1280,6 +1300,7 @@ export async function importSignalToPipeline(hit: SignalHit): Promise<SignalImpo
   // par un classement de pertinence — et rouvrir la collision qu'on ferme.
   let dg: any = null
   let ambigu: any = null
+  let panne = false
   try {
     const url = hit.siren
       ? `/api/company/verify?siren=${encodeURIComponent(hit.siren)}`
@@ -1288,7 +1309,21 @@ export async function importSignalToPipeline(hit: SignalHit): Promise<SignalImpo
     const j = await r.json()
     if (j?.found) dg = j
     else if (j?.ambiguous) ambigu = j
-  } catch { /* réseau : on importe sans vérification */ }
+    else if (j?.resolution === 'provider_error') panne = true
+  } catch {
+    // ⚠️ La route elle-même est injoignable : c'est une panne, pas un « non
+    // trouvé ». L'ancien commentaire disait « on importe sans vérification » —
+    // c'était précisément le fail-open que ce lot ferme.
+    panne = true
+  }
+
+  // ⚠️ PANNE FOURNISSEUR : AUCUNE ÉCRITURE, AUCUN ENRICHISSEMENT, AUCUN
+  // REPLI IDENTITAIRE. Importer « sans métadonnées » reviendrait à créer un
+  // compte inerte sur la foi d'une indisponibilité, et à poser un placeholder
+  // qui empêcherait tout réessai.
+  if (panne) {
+    return { added: 0, resolution: 'provider_error', company: hit.company }
+  }
 
   // ⚠️ RETOUR AVANT TOUTE ÉCRITURE. Aucun identifiant n'est tiré, aucune entrée
   // n'est posée dans LEADS ni dans importedPlaceholders, aucun persistLead.
@@ -1298,6 +1333,7 @@ export async function importSignalToPipeline(hit: SignalHit): Promise<SignalImpo
     return {
       added: 0,
       ambiguous: true,
+      resolution: 'ambiguous',
       company: hit.company,
       candidates: ambigu.candidates || [],
     }
@@ -1329,7 +1365,7 @@ export async function importSignalToPipeline(hit: SignalHit): Promise<SignalImpo
   }
   LEADS[id] = lead
   await persistLead(lead)
-  return { added: 1, id, verified: !!dg, siren }
+  return { added: 1, id, verified: !!dg, siren, resolution: dg ? 'resolved' : 'not_found' }
 }
 
 // Ajout manuel d'un lead (saisie ou depuis une URL LinkedIn).

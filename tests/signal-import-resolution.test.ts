@@ -317,9 +317,12 @@ describe('F. Un SIREN de signal non vérifié n\'est jamais canonique', () => {
     expect(JSON.stringify(getLead(r.id!))).not.toContain(CANDIDAT)
   })
 
-  it('B. vérification en ÉCHEC ⇒ aucun SIREN persisté, aucune clé', async () => {
-    // ⚠️ Un échec réseau ne vaut pas confirmation. C'est la doctrine
-    // fail-closed : « je n'ai pas pu vérifier » n'est jamais « c'est valide ».
+  // ⚠️ CONTRAT RENFORCÉ PAR OBS-DATAGOUV-001. Ce test acceptait l'import du
+  // compte lors d'une panne, à condition qu'aucun SIREN ne soit écrit. C'était
+  // encore trop permissif : créer un compte inerte sur la foi d'une
+  // indisponibilité pose un placeholder qui empêche ensuite tout réessai.
+  // Une panne ne produit désormais AUCUNE écriture du tout.
+  it('B. vérification en ÉCHEC ⇒ AUCUN import, aucun SIREN, aucune clé', async () => {
     fetchMock.mockImplementation(async (url: string, init?: any) => {
       appels.push({ url: String(url), method: String(init?.method || 'GET').toUpperCase() })
       if (String(url).includes('/api/company/verify')) throw new Error('ECONNRESET')
@@ -329,9 +332,11 @@ describe('F. Un SIREN de signal non vérifié n\'est jamais canonique', () => {
 
     const r = await importSignalToPipeline(hit({ company: 'PanneReseau', siren: CANDIDAT }))
 
-    expect(r.verified).toBe(false)
+    expect(r.added).toBe(0)
+    expect(r.resolution).toBe('provider_error')
+    expect(r.id).toBeUndefined()
     expect(r.siren).toBeUndefined()
-    expect(getLead(r.id!)?.siren).toBeUndefined()
+    expect(ecritures()).toEqual([])
     expect(await getImportedSirens()).not.toContain(CANDIDAT)
   })
 
@@ -344,6 +349,8 @@ describe('F. Un SIREN de signal non vérifié n\'est jamais canonique', () => {
 
     const r = await importSignalToPipeline(hit({ company: 'ReponseIllisible', siren: CANDIDAT }))
 
+    expect(r.added).toBe(0)
+    expect(r.resolution).toBe('provider_error')
     expect(r.siren).toBeUndefined()
     expect(await getImportedSirens()).not.toContain(CANDIDAT)
   })
@@ -388,5 +395,73 @@ describe('F. Un SIREN de signal non vérifié n\'est jamais canonique', () => {
 
     expect(second.added).toBe(0)
     expect(second.id).toBe(premier.id)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G. OBS-DATAGOUV-001 — AUCUN APPELANT NE PERSISTE SUR `provider_error`
+//
+// Une panne data.gouv ne doit déclencher AUCUNE écriture, AUCUN enrichissement,
+// AUCUN repli identitaire et AUCUN message « introuvable ». Importer « sans
+// métadonnées » créerait un compte inerte sur la foi d'une indisponibilité, et
+// poserait un placeholder qui empêcherait ensuite tout réessai.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('G. provider_error ⇒ aucune écriture, nulle part', () => {
+  it('9a. import de signal : rien n\'est créé, rien n\'est réservé', async () => {
+    repond(() => ({ found: false, resolution: 'provider_error', error: 'Opération indisponible pour le moment.' }))
+
+    const r = await importSignalToPipeline(hit({ company: 'PanneDataGouv' }))
+
+    expect(r.added).toBe(0)
+    expect(r.resolution).toBe('provider_error')
+    expect(r.id).toBeUndefined()
+    expect(ecritures()).toEqual([])
+    expect(await getImportedSirens()).not.toContain('sig-PanneDataGouv')
+  })
+
+  it('un second essai reste possible : aucun placeholder n\'a figé la panne', async () => {
+    repond(() => ({ found: false, resolution: 'provider_error' }))
+    await importSignalToPipeline(hit({ company: 'PanneRetentee' }))
+
+    // La panne cesse : l'import doit désormais aboutir.
+    repond(() => ({ found: true, siren: '966666666', name: 'RETENTEE SA', city: 'Lyon' }))
+    const r2 = await importSignalToPipeline(hit({ company: 'PanneRetentee' }))
+
+    expect(r2.added).toBe(1)
+    expect(r2.siren).toBe('966666666')
+  })
+
+  it('9b. verifyLeadCompany : aucun champ du lead n\'est touché', async () => {
+    repond(() => ({ found: true }))
+    const lead = await addLead({ firstName: 'Carla', lastName: 'Dubois', company: 'PanneFiche SA' })
+    const avant = JSON.parse(JSON.stringify(getLead(lead.id)))
+
+    repond(() => ({ found: false, resolution: 'provider_error' }))
+    appels.length = 0
+    const r = await verifyLeadCompany(lead.id)
+
+    expect(r?.found).toBe(false)
+    expect(r?.resolution).toBe('provider_error')
+    expect(r?.ambiguous).toBeUndefined()
+    expect(getLead(lead.id)).toEqual(avant)
+    expect(ecritures()).toEqual([])
+  })
+
+  it('la route injoignable est traitée comme une panne, pas comme une absence', async () => {
+    repond(() => ({ found: true }))
+    const lead = await addLead({ firstName: 'Denis', lastName: 'Roux', company: 'RouteKO SA' })
+    const avant = JSON.parse(JSON.stringify(getLead(lead.id)))
+
+    fetchMock.mockRejectedValue(new Error('ECONNRESET'))
+    const r = await verifyLeadCompany(lead.id)
+
+    expect(r?.resolution).toBe('provider_error')
+    expect(getLead(lead.id)).toEqual(avant)
+  })
+
+  it('9c. le libellé rendu à l\'utilisateur ne dit jamais « introuvable »', async () => {
+    const { PROVIDER_UNAVAILABLE } = await import('../lib/prospector/capabilities')
+    expect(PROVIDER_UNAVAILABLE).not.toMatch(/introuvable/i)
+    expect(PROVIDER_UNAVAILABLE).toMatch(/indisponible/i)
   })
 })

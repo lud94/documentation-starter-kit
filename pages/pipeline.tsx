@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, ambiguityLabel, PERSONAS , takeWriteRejections, rejectionLabel} from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, ambiguityLabel, PROVIDER_UNAVAILABLE, PERSONAS , takeWriteRejections, rejectionLabel} from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
@@ -135,6 +135,9 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
     flash(
       r?.found ? 'Entreprise vérifiée (data.gouv).'
       : r?.ambiguous ? ambiguityLabel(account?.company || company, r.candidates, "Aucun champ n'a été modifié.")
+      // ⚠️ PANNE ≠ ABSENCE. Annoncer « introuvable » pendant une indisponibilité
+      // ferait corriger un nom qui était juste.
+      : r?.resolution === 'provider_error' ? PROVIDER_UNAVAILABLE
       : 'Entreprise introuvable sur data.gouv — précise le nom.',
     )
   }
