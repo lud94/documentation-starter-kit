@@ -102,35 +102,88 @@ export function buildSearchUrl(q: SourcingQuery): string {
   return `https://recherche-entreprises.api.gouv.fr/search?${params.toString()}`
 }
 
-// Vérifie une entreprise par son NOM → SIREN + statut actif + DIRIGEANT.
-// Source officielle gratuite (data.gouv) : ni token Pappers, ni scraping.
-export async function lookupByName(
-  name: string,
-): Promise<{ found: boolean; siren?: string; name?: string; dirigeant?: string; active?: boolean; city?: string; naf?: string; effectif?: string; website?: string }> {
+/**
+ * Résultat d'une vérification par nom.
+ *
+ * RÉTROCOMPATIBLE : `found` garde exactement le sens qu'il avait — « j'ai UNE
+ * entreprise, et c'est celle-là ». Les appelants existants qui testent
+ * `if (v.found)` restent corrects sans modification, et deviennent même plus
+ * sûrs : une ambiguïté rend désormais `found: false`.
+ */
+export interface CompanyLookup {
+  found: boolean
+  siren?: string
+  name?: string
+  dirigeant?: string
+  active?: boolean
+  city?: string
+  naf?: string
+  effectif?: string
+  website?: string
+  /** Plusieurs entreprises portent ce nom : AUCUNE n'a été choisie. */
+  ambiguous?: boolean
+  /** Les candidates, pour que l'appelant fasse trancher l'utilisateur. */
+  candidates?: CompanyMatch[]
+}
+
+/**
+ * Normalisation SIMPLE pour comparer deux raisons sociales.
+ *
+ * Accents, casse, ponctuation et espaces — rien d'autre. Aucun rapprochement
+ * approximatif : pas de distance d'édition, pas de préfixe, pas de retrait de
+ * forme juridique. Un rapprochement agressif rendrait la résolution automatique
+ * plus fréquente, donc les collisions silencieuses plus fréquentes — l'inverse
+ * du but.
+ */
+function normaliserRaisonSociale(v: string): string {
+  return (v || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+}
+
+/**
+ * Vérifie une entreprise par son NOM → SIREN + statut actif + DIRIGEANT.
+ * Source officielle gratuite (data.gouv) : ni token Pappers, ni scraping.
+ *
+ * ── LE DÉFAUT FERMÉ (ENTITY-RESOLUTION-001, P0) ─────────────────────────────
+ * Cette fonction interrogeait l'API avec `per_page=1` et prenait `results[0]`
+ * pour vérité. Or l'API rend un CLASSEMENT de pertinence, pas une réponse
+ * unique : « OVHcloud » remonte plusieurs sociétés, et le premier résultat
+ * était `OVHCLOUD OCT1`. Le SIREN, le NAF, le dirigeant et l'effectif d'une
+ * entité sans rapport étaient alors écrits sur le lead — silencieusement, et
+ * avec l'autorité d'une « vérification data.gouv ».
+ *
+ * Une donnée fausse portant un tampon officiel est pire qu'une donnée absente :
+ * elle contamine l'ingestion, les fiches, les listes et tout ce qui s'appuiera
+ * plus tard sur ce SIREN.
+ *
+ * ⚠️ ON NE DEVINE PLUS. Une résolution automatique n'a lieu que si UNE SEULE
+ * candidate porte exactement le nom demandé, après normalisation simple. Dans
+ * tous les autres cas : `found: false`, `ambiguous: true`, et les candidates
+ * sont rendues pour que l'UTILISATEUR tranche.
+ */
+export async function lookupByName(name: string): Promise<CompanyLookup> {
   const n = (name || '').trim()
   if (n.length < 2) return { found: false }
-  const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(n)}&page=1&per_page=1`
-  try {
-    const res = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'Prospector/1.0' } })
-    if (!res.ok) return { found: false }
-    const data = await res.json()
-    const r = (data.results || [])[0]
-    if (!r) return { found: false }
-    const dir = (r.dirigeants || []).find((d: any) => d && d.nom)
-    return {
-      found: true,
-      siren: String(r.siren),
-      name: r.nom_complet || r.nom_raison_sociale || n,
-      dirigeant: dir ? `${String(dir.prenoms || '').split(' ')[0]} ${dir.nom}`.trim() : undefined,
-      active: r.etat_administratif ? r.etat_administratif === 'A' : undefined,
-      city: r.siege?.libelle_commune || '',
-      naf: r.activite_principale || '',
-      effectif: TRANCHE[r.tranche_effectif_salarie] || undefined,
-      website: extractWebsite(r),
-    }
-  } catch {
-    return { found: false }
-  }
+
+  // Une fenêtre de 10 : voir les homonymes est la condition même pour les
+  // détecter. `per_page=1` rendait l'ambiguïté structurellement invisible.
+  const candidates = await searchCandidates(n, 10)
+
+  if (candidates.length === 0) return { found: false }
+  if (candidates.length === 1) return { found: true, ...candidates[0] }
+
+  const cible = normaliserRaisonSociale(n)
+  const exacts = candidates.filter((c) => normaliserRaisonSociale(c.name) === cible)
+
+  // Exactement UNE correspondance stricte : le nom désigne sans équivoque.
+  if (exacts.length === 1) return { found: true, ...exacts[0] }
+
+  // Zéro correspondance stricte (que des approchants) OU plusieurs entités
+  // portant le même nom : dans les deux cas, choisir serait deviner.
+  return { found: false, ambiguous: true, candidates }
 }
 
 export interface CompanyMatch { siren: string; name: string; dirigeant?: string; active?: boolean; city: string; naf: string; effectif?: string; website?: string }

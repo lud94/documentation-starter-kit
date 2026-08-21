@@ -3,7 +3,7 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, PERSONAS , takeWriteRejections, rejectionLabel} from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, ambiguityLabel, PERSONAS , takeWriteRejections, rejectionLabel} from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
@@ -129,7 +129,14 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
   const verify = async () => {
     if (!account) return
     setBusy(true); const r = await verifyLeadCompany(account.id); setBusy(false); setDetail(null); await loadDetail()
-    flash(r?.found ? 'Entreprise vérifiée (data.gouv).' : 'Entreprise introuvable sur data.gouv — précise le nom.')
+    // AMBIGU ≠ INTROUVABLE. Le message « introuvable » disait le contraire de la
+    // vérité : il n'y a pas zéro société, il y en a plusieurs. Aucun champ du
+    // compte n'a été modifié dans ce cas.
+    flash(
+      r?.found ? 'Entreprise vérifiée (data.gouv).'
+      : r?.ambiguous ? ambiguityLabel(account?.company || company, r.candidates, "Aucun champ n'a été modifié.")
+      : 'Entreprise introuvable sur data.gouv — précise le nom.',
+    )
   }
   const getWebsite = async () => {
     if (!account) return

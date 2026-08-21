@@ -4,7 +4,7 @@
 import { callClaude, parseJson, cacheKey } from './llm'
 import type { TenantContext } from './tenant'
 import { getKey } from './keystore'
-import { lookupByName, fetchCompanyDetail, fetchCompanies } from './datagouv'
+import { lookupByName, fetchCompanyDetail, fetchCompanies, type CompanyMatch } from './datagouv'
 import { identifyLead, enrichCompanyWeb } from './identify'
 import { resolveLeadEntity, entityLabel } from './entityResolver'
 import { resolveTimeExpression } from './timeResolver'
@@ -273,13 +273,52 @@ export const WRITE_ACTIONS = ['add_company', 'add_person', 'add_to_list', 'add_t
 // Le sourcing n'est une écriture QUE s'il importe les résultats.
 export const isWrite = (a: any) => !!a && (WRITE_ACTIONS.includes(a.type) || (a.type === 'source_companies' && a.import))
 
-async function accountLeadFrom(company: string): Promise<Lead> {
+/**
+ * Résolution d'un nom d'entreprise vers un COMPTE — ou constat d'ambiguïté.
+ *
+ * ⚠️ ENTITY-RESOLUTION-001. Cette fonction rendait toujours un `Lead`, en
+ * recopiant ce que `lookupByName` avait bien voulu choisir. Quand data.gouv
+ * remonte plusieurs sociétés pour « OVHcloud », il n'existe PAS de compte à
+ * rendre : il existe une question à poser. Le type le dit désormais, si bien
+ * qu'aucun appelant ne peut plus ignorer le cas par inadvertance.
+ */
+type AccountLeadResult =
+  | { kind: 'lead'; lead: Lead }
+  | { kind: 'ambiguous'; candidates: CompanyMatch[] }
+
+async function accountLeadFrom(company: string): Promise<AccountLeadResult> {
   const v = await lookupByName(company)
+
+  // Plusieurs entreprises portent ce nom : on ne fabrique AUCUN compte.
+  if (v.ambiguous) return { kind: 'ambiguous', candidates: v.candidates || [] }
+
   return {
-    id: newId(), kind: 'account', firstName: '', lastName: '', title: '', company: v.name || company,
-    score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
-    siren: v.siren, active: v.active, naf: v.naf, city: v.city, dirigeant: v.dirigeant, effectif: v.effectif, website: v.website,
+    kind: 'lead',
+    lead: {
+      id: newId(), kind: 'account', firstName: '', lastName: '', title: '', company: v.name || company,
+      score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
+      siren: v.siren, active: v.active, naf: v.naf, city: v.city, dirigeant: v.dirigeant, effectif: v.effectif, website: v.website,
+    },
   }
+}
+
+/**
+ * Message d'ambiguïté commun aux trois chemins.
+ *
+ * Au plus cinq candidates — nom, SIREN, ville — et une phrase qui dit
+ * explicitement que RIEN n'a été écrit. Une ambiguïté silencieuse laisserait
+ * croire à un échec technique ; ici l'utilisateur voit pourquoi, et quoi faire.
+ */
+function ambiguityMessage(query: string, candidates: CompanyMatch[], action: string): string {
+  const lignes = candidates.slice(0, 5).map(
+    (c) => `• ${c.name} — SIREN ${c.siren}${c.city ? ` · ${c.city}` : ''}`,
+  )
+  return [
+    `« ${query} » correspond à plusieurs entreprises sur data.gouv. Je ne choisis pas à ta place.`,
+    ...lignes,
+    candidates.length > 5 ? `… et ${candidates.length - 5} autre(s).` : '',
+    `${action} Précise la raison sociale exacte ou donne-moi le SIREN.`,
+  ].filter(Boolean).join('\n')
 }
 
 async function personOrAccountLead(tenant: TenantContext, name: string, url: string): Promise<Lead> {
@@ -553,6 +592,11 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
 
     case 'explain_company': {
       const v = await lookupByName(action.company)
+      // Ambiguïté : on ne dépense PAS d'appel d'enrichissement web sur une
+      // entreprise choisie au hasard — le résumé produit serait faux et coûteux.
+      if (v.ambiguous) {
+        return ambiguityMessage(action.company, v.candidates || [], 'Aucune fiche n\'a été affichée.')
+      }
       if (!v.found) return `Je n'ai pas trouvé « ${action.company} » sur data.gouv.`
       const web = await enrichCompanyWeb(tenant, v.name || action.company, v.city, v.siren)
       return [
@@ -564,7 +608,11 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
     }
 
     case 'add_company': {
-      const acc = await accountLeadFrom(action.company)
+      const resolu = await accountLeadFrom(action.company)
+      if (resolu.kind === 'ambiguous') {
+        return ambiguityMessage(action.company, resolu.candidates, "Aucun compte n'a été créé.")
+      }
+      const acc = resolu.lead
       const saved = await upsertLeadChecked(acc, ws)
       // Si le compte n'a pas été enregistré, on ne crée AUCUN contact rattaché :
       // ils pointeraient vers un compte inexistant.
@@ -603,7 +651,21 @@ Si des ENTREPRISES pertinentes ressortent, liste-les en fin de réponse sous la 
       const hits = await findExisting(ws, q)
       let target = hits[0]
       if (!target) {
-        target = action.company ? await accountLeadFrom(action.company) : await personOrAccountLead(tenant, action.name, ctxUrl)
+        // Le lead n'existe pas : il faut le créer. Si la résolution est
+        // ambiguë, on n'invente pas de compte — et on ne touche PAS à la liste.
+        if (action.company) {
+          const resolu = await accountLeadFrom(action.company)
+          if (resolu.kind === 'ambiguous') {
+            return ambiguityMessage(
+              action.company,
+              resolu.candidates,
+              "Aucun compte n'a été créé et la liste n'a pas été modifiée.",
+            )
+          }
+          target = resolu.lead
+        } else {
+          target = await personOrAccountLead(tenant, action.name, ctxUrl)
+        }
         const created = await upsertLeadChecked(target, ws)
         if (!created.ok) return writeFailure(created, `Création de « ${q} »`)
       }

@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson, saveResearchNotes, verifyLeadCompany, enrichCompanyWebsite } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson, saveResearchNotes, verifyLeadCompany, enrichCompanyWebsite, ambiguityLabel } from '../../lib/prospector/capabilities'
 import AskExternalAI from '../../components/AskExternalAI'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
@@ -163,12 +163,26 @@ useEffect(() => {
   const enrichCompany = async () => {
     if (typeof id !== 'string') return
     setCompanyBusy(true); setCompanyMsg(null)
-    await verifyLeadCompany(id)
+    const v = await verifyLeadCompany(id)
+
+    // ⚠️ AMBIGUÏTÉ : aucun champ n'a été écrit par `verifyLeadCompany`. On
+    // s'arrête ici — enchaîner sur l'agent web laisserait croire à une
+    // vérification réussie, et dépenserait des jetons sur une entreprise
+    // indéterminée.
+    if (v?.ambiguous) {
+      setCompanyBusy(false)
+      setCompanyMsg(ambiguityLabel(lead?.company || '', v.candidates, "Aucun champ n'a été modifié."))
+      setTimeout(() => setCompanyMsg(null), 8000)
+      return
+    }
+
     const r = await enrichCompanyWebsite(id)
     setCompanyBusy(false)
     setCompanyMsg(r.mode === 'off'
       ? 'Agent web non configuré (Admin → Connexions → clé Anthropic).'
-      : (r.website || r.summary) ? 'Entreprise enrichie.' : 'Vérifiée sur data.gouv — rien de plus trouvé sur le web.')
+      : (r.website || r.summary) ? 'Entreprise enrichie.'
+      : v?.found ? 'Vérifiée sur data.gouv — rien de plus trouvé sur le web.'
+      : 'Entreprise non vérifiée sur data.gouv — rien de plus trouvé sur le web.')
     setTimeout(() => setCompanyMsg(null), 4000)
     reload()
   }

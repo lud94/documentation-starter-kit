@@ -518,11 +518,23 @@ export async function purgeLeadFromCollections(ids: string[]): Promise<void> {
 }
 
 // Vérifie l'entreprise du lead via data.gouv → SIREN + actif + dirigeant (gratuit, sans token).
-export async function verifyLeadCompany(id: string): Promise<{ found: boolean; active?: boolean; dirigeant?: string } | undefined> {
+export async function verifyLeadCompany(id: string): Promise<{
+  found: boolean
+  active?: boolean
+  dirigeant?: string
+  ambiguous?: boolean
+  candidates?: CompanyCandidate[]
+} | undefined> {
   const l = LEADS[id]
   if (!l || !l.company || l.company === '—') return { found: false }
   try {
     const v = await fetch(`/api/company/verify?name=${encodeURIComponent(l.company)}`).then((r) => r.json())
+    // ⚠️ AMBIGUÏTÉ : AUCUN champ du lead n'est touché. Écrire le SIREN d'une
+    // société choisie au hasard serait pire que ne rien écrire — la fiche
+    // paraîtrait vérifiée.
+    if (v.ambiguous) {
+      return { found: false, ambiguous: true, candidates: v.candidates || [] }
+    }
     if (v.found) {
       l.company = v.name || l.company; l.siren = v.siren; l.active = v.active; l.naf = v.naf; l.city = v.city; l.dirigeant = v.dirigeant
       if (v.effectif) l.effectif = v.effectif
@@ -1199,23 +1211,112 @@ export async function importCompaniesToPipeline(companies: SourcedCompany[]) {
 // au lead → l'accroche devient actionnable (fiche + pré-remplissage 1er message).
 // La vérification data.gouv se fait ICI (à l'ajout), pas pendant la recherche :
 // un seul appel, uniquement pour les entreprises réellement retenues.
-export async function importSignalToPipeline(hit: SignalHit) {
-  const key = hit.siren || `sig-${hit.company}`
-  if (importedPlaceholders[key]) return { added: 0, id: importedPlaceholders[key] }
+/**
+ * Résultat d'un import de signal.
+ *
+ * ⚠️ `ambiguous` EST UN TROISIÈME ÉTAT, pas une variante d'échec. « Plusieurs
+ * sociétés portent ce nom » et « aucune société ne porte ce nom » appellent des
+ * décisions opposées : la première demande à l'utilisateur de trancher, la
+ * seconde constate une absence. Les confondre — comme le faisait l'appelant qui
+ * n'avait que `found` — affichait « entreprise introuvable » alors que le
+ * problème était l'inverse : il y en avait trop.
+ */
+export interface SignalImportResult {
+  added: number
+  id?: string
+  verified?: boolean
+  siren?: string
+  ambiguous?: boolean
+  company?: string
+  candidates?: CompanyCandidate[]
+}
+
+export interface CompanyCandidate { siren: string; name: string; city?: string }
+
+/**
+ * Libellé commun d'une résolution ambiguë, partagé par les écrans.
+ *
+ * ⚠️ Il ne dit JAMAIS « introuvable ». Il nomme le vrai problème — il y a
+ * plusieurs sociétés — et il dit explicitement ce qui n'a PAS été écrit.
+ * Une ambiguïté silencieuse laisserait croire à un import réussi.
+ */
+export function ambiguityLabel(
+  company: string,
+  candidates: CompanyCandidate[] = [],
+  consequence = "Aucun compte n'a été créé.",
+): string {
+  const listees = candidates.slice(0, 5).map(
+    (c) => `${c.name} (SIREN ${c.siren}${c.city ? ` · ${c.city}` : ''})`,
+  )
+  const reste = candidates.length > 5 ? ` … et ${candidates.length - 5} autre(s).` : ''
+  return [
+    `« ${company} » correspond à plusieurs entreprises sur data.gouv.`,
+    consequence,
+    listees.length ? `${listees.join(' · ')}${reste}` : '',
+    'Sélectionne la bonne société ou renseigne son SIREN.',
+  ].filter(Boolean).join(' ')
+}
+
+export async function importSignalToPipeline(hit: SignalHit): Promise<SignalImportResult> {
+  // ⚠️ CLÉ PROVISOIRE, JAMAIS LE SIREN DU SIGNAL.
+  //
+  // `hit.siren` vient d'un signal produit par un LLM : c'est un CANDIDAT, pas
+  // une identité. L'ancienne clé `hit.siren || \`sig-${hit.company}\`` en
+  // faisait la clé canonique de déduplication AVANT toute vérification — un
+  // SIREN halluciné devenait donc l'identité d'un compte, et bloquait ensuite
+  // l'import de la vraie entreprise portant ce SIREN.
+  //
+  // Avant vérification, on ne dédoublonne que sur le NOM. Le SIREN ne devient
+  // une clé qu'une fois confirmé par data.gouv.
+  const cleProvisoire = `sig-${hit.company}`
+  if (importedPlaceholders[cleProvisoire]) return { added: 0, id: importedPlaceholders[cleProvisoire] }
 
   // Vérification SIREN + enrichissement (dirigeant, effectif, site, NAF, ville).
   // Aucun champ n'est prérempli si data.gouv ne renvoie rien.
+  //
+  // ⚠️ LE SIREN PRIME SUR LE NOM (ENTITY-RESOLUTION-001). Un SIREN est un
+  // identifiant : il désigne UNE entité, sans ambiguïté possible. Résoudre par
+  // nom alors qu'on tient déjà un identifiant, c'est remplacer une certitude
+  // par un classement de pertinence — et rouvrir la collision qu'on ferme.
   let dg: any = null
+  let ambigu: any = null
   try {
-    const r = await fetch(`/api/company/verify?name=${encodeURIComponent(hit.company)}`)
+    const url = hit.siren
+      ? `/api/company/verify?siren=${encodeURIComponent(hit.siren)}`
+      : `/api/company/verify?name=${encodeURIComponent(hit.company)}`
+    const r = await fetch(url)
     const j = await r.json()
     if (j?.found) dg = j
+    else if (j?.ambiguous) ambigu = j
   } catch { /* réseau : on importe sans vérification */ }
 
-  const siren = dg?.siren || hit.siren
+  // ⚠️ RETOUR AVANT TOUTE ÉCRITURE. Aucun identifiant n'est tiré, aucune entrée
+  // n'est posée dans LEADS ni dans importedPlaceholders, aucun persistLead.
+  // Un compte créé sur une identité indéterminée serait un faux compte, et il
+  // porterait le tampon « vérifié data.gouv ».
+  if (ambigu) {
+    return {
+      added: 0,
+      ambiguous: true,
+      company: hit.company,
+      candidates: ambigu.candidates || [],
+    }
+  }
+
+  // ⚠️ SIREN CANDIDAT ≠ SIREN CANONIQUE. `dg?.siren || hit.siren` recopiait le
+  // SIREN du signal quand data.gouv ne le confirmait PAS : un échec de
+  // vérification se muait alors en validation implicite, et le lead portait un
+  // SIREN non vérifié indiscernable d'un SIREN officiel.
+  //
+  // Seul data.gouv fait autorité. Non confirmé — introuvable, ou vérification
+  // en échec — ⇒ AUCUN SIREN. Le compte reste importable (comportement
+  // NOT_FOUND inchangé pour ce lot), simplement sans identité canonique ni
+  // métadonnées officielles.
+  const siren: string | undefined = dg?.siren || undefined
   if (siren && importedPlaceholders[siren]) return { added: 0, id: importedPlaceholders[siren] }
   const id = newLeadId()
-  importedPlaceholders[key] = id
+  importedPlaceholders[cleProvisoire] = id
+  // Seul un SIREN VÉRIFIÉ devient une clé de déduplication canonique.
   if (siren) importedPlaceholders[siren] = id
   const lead: Lead = {
     id, kind: 'account', firstName: '', lastName: '', title: '',
