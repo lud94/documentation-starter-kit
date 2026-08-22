@@ -13,6 +13,11 @@ vi.mock('../lib/supabase/client', () => ({
 }))
 vi.mock('../lib/env', () => ({ writeAllowed: () => true }))
 
+import {
+  TEST_BUSINESS_CONTEXT,
+  TEST_RECOMMENDATION_CONTEXT,
+  TEST_SITUATION_PROVENANCE,
+} from './helpers/proactiveContext'
 import type { Lead } from '../types/prospector'
 import {
   evaluate,
@@ -49,7 +54,7 @@ function lead(patch: Partial<Lead> = {}): Lead {
 }
 
 function run(patch: Partial<ProactiveEvaluationInput> = {}) {
-  return evaluate({ leads: [lead()], now: NOW, tasks: COMPLET, ...patch })
+  return evaluate({ leads: [lead()], now: NOW, tasks: COMPLET, businessContext: TEST_BUSINESS_CONTEXT, ...patch })
 }
 
 beforeEach(() => {
@@ -89,8 +94,8 @@ describe('A. Chaîne end-to-end déterministe', () => {
     const a = lead({ id: 'ld_1' })
     const b = lead({ id: 'ld_2', firstName: 'Bruno', company: 'Beta SARL', siren: '552100555' })
 
-    const ordre1 = evaluate({ leads: [a, b], now: NOW, tasks: COMPLET })
-    const ordre2 = evaluate({ leads: [b, a], now: NOW, tasks: COMPLET })
+    const ordre1 = evaluate({ leads: [a, b], now: NOW, tasks: COMPLET, businessContext: TEST_BUSINESS_CONTEXT })
+    const ordre2 = evaluate({ leads: [b, a], now: NOW, tasks: COMPLET, businessContext: TEST_BUSINESS_CONTEXT })
 
     expect(ordre1.situations.map((s) => s.id)).toEqual(ordre2.situations.map((s) => s.id))
     expect(ordre1.recommendations.map((r) => r.id)).toEqual(ordre2.recommendations.map((r) => r.id))
@@ -111,6 +116,7 @@ describe('B. NO_ACTION est un résultat, pas un échec', () => {
     // relations sont individuelles — bloquer Alice parce que Bruno a un
     // rendez-vous reviendrait à confondre le compte et la personne.
     const out = evaluate({
+      businessContext: TEST_BUSINESS_CONTEXT,
       leads: [
         lead({ id: 'ld_1', stage: 'in_sequence' }),
         lead({ id: 'ld_2', firstName: 'Bruno', stage: 'meeting' }),
@@ -164,6 +170,7 @@ describe('B. NO_ACTION est un résultat, pas un échec', () => {
 describe('C. Les situations non soutenues par les données restent VIDES', () => {
   it('sales_scale_up n\'est jamais atteinte depuis les données actuelles', () => {
     const out = evaluate({
+      businessContext: TEST_BUSINESS_CONTEXT,
       leads: [
         lead({ signal: 'levée de 12M€ et recrute un Head of Sales', effectif: '50 à 99' }),
         lead({ id: 'ld_2', signal: 'nouveau VP Sales', firstName: 'Bruno' }),
@@ -176,6 +183,7 @@ describe('C. Les situations non soutenues par les données restent VIDES', () =>
 
   it('strong_signal_low_context n\'est jamais atteinte non plus', () => {
     const out = evaluate({
+      businessContext: TEST_BUSINESS_CONTEXT,
       leads: [lead({
         signal: 'levée de 12M€', email: null, phone: null,
         linkedinUrl: undefined, summary: undefined,
@@ -188,6 +196,7 @@ describe('C. Les situations non soutenues par les données restent VIDES', () =>
 
   it('aucune evidence ⇒ aucune situation, aucune recommandation, sans erreur', () => {
     const out = evaluate({
+      businessContext: TEST_BUSINESS_CONTEXT,
       leads: [lead({ temperature: 'cold', status: 'froid', stage: 'to_invite' })],
       now: NOW,
       tasks: { complete: false },
@@ -207,7 +216,7 @@ describe('D. Aucune action métier', () => {
   it('les leads d\'entrée ne sont jamais modifiés', () => {
     const entree = [lead(), lead({ id: 'ld_2', firstName: 'Bruno' })]
     const copie = JSON.parse(JSON.stringify(entree))
-    evaluate({ leads: entree, now: NOW, tasks: COMPLET })
+    evaluate({ leads: entree, now: NOW, tasks: COMPLET, businessContext: TEST_BUSINESS_CONTEXT })
     expect(entree).toEqual(copie)
   })
 

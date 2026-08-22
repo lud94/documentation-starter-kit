@@ -20,6 +20,18 @@
 // doctrine MT-0 a fermé exactement ce repli ailleurs dans le dépôt, et une
 // couche de persistance ne doit pas le rouvrir par commodité.
 //
+// ── ÉTAT MATÉRIALISÉ, PAS DECISION LEDGER ───────────────────────────────────
+// ⚠️ À NE PAS CONFONDRE, ET LA CONFUSION SERAIT COÛTEUSE. La clé primaire
+// `(kind, id, workspace_id)` fait qu'une réécriture du MÊME identifiant
+// REMPLACE la ligne. C'est précisément ce qui donne l'idempotence — réévaluer
+// trois fois ne crée pas trois recommandations — et c'est exactement ce qui
+// interdit d'y lire un historique : la valeur précédente n'existe plus.
+//
+// Ce module offre donc « le dernier état connu », jamais « ce qui a été décidé
+// le 12 mars ». Une auditabilité historique exige un journal append-only, qui
+// n'existe PAS dans ce dépôt. Le prétendre reviendrait à promettre une preuve
+// que la base ne peut pas produire.
+//
 // ── CE MODULE N'EST PAS UNE ROUTE ───────────────────────────────────────────
 // Il ne lit aucune requête HTTP et ne résout aucun tenant. L'espace lui est
 // FOURNI par un appelant qui, lui, est passé par `resolveTenantFromRequest`.
@@ -32,6 +44,9 @@ import {
   deleteItem,
   type StrictRead,
 } from '../../supabase/store'
+import { rulePackById } from './packs/registry'
+import { isLensId } from './lens/registry'
+import { AUTHORIZED_MOTIONS } from './motions'
 import type {
   EvidenceEvent,
   Outcome,
@@ -154,6 +169,35 @@ export function isEvidenceEvent(value: any): value is EvidenceEvent {
  *                     l'ignorer, sans quoi elle finirait par être lue quelque
  *                     part.
  */
+/**
+ * ARCH-RULEPACK-001 — VALIDATION DES IDENTIFIANTS DE REGISTRE À L'EXÉCUTION.
+ *
+ * ⚠️ LE TYPAGE NE PROTÈGE PAS CETTE FRONTIÈRE. `RulePackId` et `LensId` sont
+ * fermés à la COMPILATION, mais ce qui remonte de `prospector_store` est du
+ * JSON : une ligne ancienne, corrompue ou écrite par une version future porte
+ * un `rulePackId` que le compilateur n'a jamais vu. Prétendre le contraire
+ * serait confondre une garantie de type avec une garantie de donnée.
+ *
+ * `rulePackById` et `isLensId` s'appuient sur `hasOwnProperty` : `__proto__`,
+ * `constructor` et `toString` sont donc refusés comme n'importe quelle autre
+ * chaîne inconnue, et non résolus via la chaîne de prototypes.
+ */
+function packEtTypeConnus(rulePackId: unknown, type: unknown): boolean {
+  if (typeof rulePackId !== 'string' || typeof type !== 'string') return false
+  const pack = rulePackById(rulePackId)
+  if (!pack) return false
+  // Le type doit être DÉCLARÉ PAR CE PACK. Un type valide chez un autre pack
+  // ne l'est pas ici : c'est la résolution du play qui en dépend.
+  return pack.declaredSituationTypes.includes(type)
+}
+
+function motionsConnues(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every((m) => typeof m === 'string' && (AUTHORIZED_MOTIONS as readonly string[]).includes(m))
+  )
+}
+
 function temporaliteCoherente(value: any): boolean {
   if (value.temporality === 'dated_event') return validDate(value.occurredAt)
   if (value.temporality === 'undated_state') return value.occurredAt === undefined
@@ -175,6 +219,23 @@ export function isSituation(value: any): value is Situation {
     typeof value.rationale === 'string' &&
     nonEmpty(value.ruleId) &&
     nonEmpty(value.ruleVersion) &&
+    // ARCH-RULEPACK-001 — PROVENANCE EXIGÉE, PAS SEULEMENT TOLÉRÉE.
+    //
+    // Une situation dont on ignore quel pack et quelle lens l'ont produite
+    // n'est pas attribuable, donc pas auditable. L'accepter « parce qu'elle
+    // ressemble à une situation » rouvrirait le fail-open que tout ce lot
+    // ferme : le play, le controlFloor et la reproductibilité se résolvent
+    // TOUS depuis `rulePackId`. Sans lui, le moteur de recommandation ne peut
+    // rien conclure — mieux vaut le refuser à la frontière.
+    nonEmpty(value.rulePackId) &&
+    nonEmpty(value.rulePackVersion) &&
+    nonEmpty(value.lensId) &&
+    nonEmpty(value.lensVersion) &&
+    // Le pack doit exister ICI, et déclarer CE type. Sans quoi la situation
+    // n'est pas résoluble : `plays[type]` serait vide et la recommandation
+    // retomberait en `no_action` sans que rien n'explique pourquoi.
+    packEtTypeConnus(value.rulePackId, value.type) &&
+    isLensId(value.lensId) &&
     validDate(value.createdAt) &&
     validDate(value.lastEvaluatedAt) &&
     optionalDate(value.expiresAt)
@@ -198,6 +259,20 @@ export function isRecommendation(value: any): value is Recommendation {
     optionalString(value.recommendedAction) &&
     nonEmpty(value.ruleId) &&
     nonEmpty(value.ruleVersion) &&
+    // ARCH-RULEPACK-001 — LE CONTRÔLE HUMAIN N'EST PAS OPTIONNEL.
+    //
+    // `control` absent serait lu comme « rien à signaler », c'est-à-dire
+    // autonome : exactement l'inverse du fail-closed. Une recommandation dont
+    // le niveau de contrôle est inconnu ne doit pas exister en base.
+    (value.control === 'autonomous' ||
+      value.control === 'approval_required' ||
+      value.control === 'blocked') &&
+    typeof value.controlReason === 'string' &&
+    motionsConnues(value.requiredMotions) &&
+    // `contextId` entre dans l'identité de la ligne : sans lui, l'idempotence
+    // n'a plus de sens (deux contextes différents écraseraient la même ligne).
+    nonEmpty(value.contextId) &&
+    nonEmpty(value.contextVersion) &&
     validDate(value.createdAt) &&
     optionalDate(value.expiresAt) &&
     // Un `no_action` qui porte un play serait contradictoire : il annoncerait

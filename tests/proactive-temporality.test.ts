@@ -1,3 +1,4 @@
+import { TEST_BUSINESS_CONTEXT } from './helpers/proactiveContext'
 // JARVIS-PROACTIVE-01D (red-team) — INCONNU N'EST PAS RÉCENT.
 //
 // ── LES DEUX DÉFAUTS ÉPROUVÉS ICI ───────────────────────────────────────────
@@ -29,7 +30,9 @@ const CONTEXTE = {
   now: NOW,
   accountId: 'acc_1',
   personId: 'p_1',
-  relevance: 0.9,
+  lensId: 'sales-default',
+      lensVersion: 'v0.1',
+      relevance: 0.9,
 }
 
 /** Paire d'evidences suffisante pour produire `commercial_momentum_stalled`. */
@@ -198,7 +201,7 @@ describe('C. Le bridge marque TOUT ce qu\'il produit comme non daté', () => {
 
 describe('D. Bout en bout : aucune urgence fabriquée ne remonte jusqu\'à la décision', () => {
   it('la situation issue de données Prospector a une urgence NULLE', () => {
-    const out = evaluate({ leads: [lead()], now: NOW, tasks: COMPLET })
+    const out = evaluate({ leads: [lead()], now: NOW, tasks: COMPLET, businessContext: TEST_BUSINESS_CONTEXT })
 
     expect(out.situations).toHaveLength(1)
     expect(out.situations[0].urgency).toBe(0)
@@ -208,7 +211,7 @@ describe('D. Bout en bout : aucune urgence fabriquée ne remonte jusqu\'à la d�
     // Score 90 ⇒ relevance 0.9. Avant le correctif, urgency valait 1 et la
     // recommandation ressortait en priorité HAUTE sur la seule foi d'un état
     // dont personne ne connaît la date.
-    const out = evaluate({ leads: [lead({ score: 90 })], now: NOW, tasks: COMPLET })
+    const out = evaluate({ leads: [lead({ score: 90 })], now: NOW, tasks: COMPLET, businessContext: TEST_BUSINESS_CONTEXT })
 
     expect(out.recommendations).toHaveLength(1)
     expect(out.recommendations[0].priority).toBe('low')

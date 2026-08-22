@@ -1,3 +1,8 @@
+import {
+  TEST_BUSINESS_CONTEXT,
+  TEST_RECOMMENDATION_CONTEXT,
+  TEST_SITUATION_PROVENANCE,
+} from './helpers/proactiveContext'
 // JARVIS-PROACTIVE-01D — persistance du Decision Model.
 //
 // La couche testée ici est RÉELLE : `lib/supabase/store` est exercé pour de
@@ -48,6 +53,7 @@ const EVIDENCE: EvidenceEvent = {
 }
 
 const SITUATION: Situation = {
+  ...TEST_SITUATION_PROVENANCE,
   id: 'sit_acc_siren_123_ld_1_commercial_momentum_stalled',
   accountId: 'acc_siren_123',
   personId: 'ld_1',
@@ -65,6 +71,11 @@ const SITUATION: Situation = {
 }
 
 const RECOMMENDATION: Recommendation = {
+  control: 'autonomous',
+  controlReason: 'Toutes les capacités requises sont accordées.',
+  requiredMotions: ['prepare_outreach', 'contact_prospect'],
+  contextId: 'test-sales',
+  contextVersion: 'v0.1',
   id: `rec_${SITUATION.id}`,
   situationId: SITUATION.id,
   accountId: 'acc_siren_123',

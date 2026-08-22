@@ -1,3 +1,5 @@
+import type { AuthorizedMotion, HumanControl } from './motions'
+
 // JARVIS-PROACTIVE V0
 // Contrats métier du Decision Model.
 // Chaîne cible : EvidenceEvent -> Situation -> Eligibility -> Recommendation -> Outcome.
@@ -15,16 +17,19 @@ export type AssertionType =
   | 'inference'
   | 'assumption'
 
-export type EvidenceType =
-  | 'recent_funding'
-  | 'sales_hiring'
-  | 'new_sales_leader'
-  | 'headcount_acceleration'
-  | 'positive_reply'
-  | 'hot_lead'
-  | 'no_next_step'
-  | 'relationship_inactive'
-  | 'missing_context'
+/**
+ * ⚠️ LE CATALOGUE DES TYPES NE VIT PLUS ICI (ARCH-RULEPACK-001).
+ *
+ * `EvidenceType` et `SituationType` sont DÉRIVÉS des rule packs enregistrés,
+ * dans `./catalog`. Ce module reste volontairement générique pour une seule
+ * raison, mais elle est décisive : `catalog` importe `packs/registry`, qui
+ * importe les packs, qui importent ce fichier. Fermer les types ICI créerait
+ * un cycle d'imports à l'exécution.
+ *
+ * La fermeture réelle est appliquée aux frontières de production via
+ * `KnownEvidenceEvent` / `SituationType` de `./catalog`. Le paramètre générique
+ * n'est pas une échappatoire : c'est ce qui permet au catalogue d'exister.
+ */
 
 export interface EvidenceSource {
   provider: string
@@ -61,7 +66,7 @@ export interface EvidenceSource {
 export type EvidenceTemporality = 'dated_event' | 'undated_state'
 
 /** Champs communs aux deux natures temporelles. */
-interface EvidenceBase {
+interface EvidenceBase<T extends string = string> {
   id: string
 
   // ACCOUNT reste la racine métier.
@@ -69,7 +74,7 @@ interface EvidenceBase {
   personId?: string
 
   scope: EvidenceScope
-  type: EvidenceType
+  type: T
 
   // Valeur observable associée à l'événement.
   value?: string | number | boolean
@@ -95,7 +100,7 @@ interface EvidenceBase {
 }
 
 /** Un fait daté : la date de survenue est connue, et elle est exigée. */
-export interface DatedEventEvidence extends EvidenceBase {
+export interface DatedEventEvidence<T extends string = string> extends EvidenceBase<T> {
   temporality: 'dated_event'
 
   // Quand l'événement a RÉELLEMENT eu lieu. Obligatoire : un événement daté
@@ -111,24 +116,28 @@ export interface DatedEventEvidence extends EvidenceBase {
  * état non daté. L'ancienne version y recopiait `now`, et c'est exactement ce
  * qui faisait passer une fiche vieille de dix-huit mois pour un fait du jour.
  */
-export interface UndatedStateEvidence extends EvidenceBase {
+export interface UndatedStateEvidence<T extends string = string> extends EvidenceBase<T> {
   temporality: 'undated_state'
   occurredAt?: never
 }
 
-export type EvidenceEvent = DatedEventEvidence | UndatedStateEvidence
-
-export type SituationType =
-  | 'sales_scale_up'
-  | 'commercial_momentum_stalled'
-  | 'strong_signal_low_context'
+export type EvidenceEvent<T extends string = string> =
+  | DatedEventEvidence<T>
+  | UndatedStateEvidence<T>
 
 export interface Situation {
   id: string
   accountId: string
   personId?: string
 
-  type: SituationType
+  /**
+   * Type métier de la situation.
+   *
+   * ⚠️ Volontairement `string` ICI, fermé dans `./catalog` — ce module ne peut
+   * pas importer les packs sans créer un cycle. La fermeture s'applique aux
+   * frontières de production, où `SituationType` du catalogue est employé.
+   */
+  type: string
 
   // Les EvidenceEvent qui justifient cette interprétation.
   evidenceIds: string[]
@@ -145,9 +154,20 @@ export interface Situation {
   // Explication déterministe / auditable.
   rationale: string
 
-  // Traçabilité de la règle ayant produit la situation.
+  // ── PROVENANCE COMPLÈTE (ARCH-RULEPACK-001) ───────────────────────────────
+  // Une Situation n'est plus produite par « le moteur » : elle l'est par UNE
+  // règle, d'UN pack, lu à travers UNE lens. Sans ces quatre-là, une situation
+  // persistée est irreproductible — `relevance` dépend de la lens, et on ne
+  // saurait plus quelle politique l'a calculée.
+  //
+  // ⚠️ Les VERSIONS sont de la provenance, jamais de l'identité. Une montée de
+  // version REMPLACE la ligne courante, elle n'en crée pas une seconde.
+  rulePackId: string
+  rulePackVersion: string
   ruleId: string
   ruleVersion: string
+  lensId: string
+  lensVersion: string
 
   createdAt: string
   lastEvaluatedAt: string
@@ -163,6 +183,13 @@ export type RecommendationPriority =
   | 'medium'
   | 'high'
 
+/**
+ * PLAY — ce que Jarvis RECOMMANDE de faire, sur le fond commercial.
+ *
+ * ⚠️ À ne pas confondre avec `AuthorizedMotion`, qui dit ce qu'on a le DROIT
+ * de faire. Un play pertinent peut rester interdit ; une capacité accordée ne
+ * rend aucun play pertinent. Voir `./motions`.
+ */
 export type PlayType =
   | 'engage_or_reengage'
   | 'follow_up'
@@ -190,6 +217,26 @@ export interface Recommendation {
 
   ruleId: string
   ruleVersion: string
+
+  // ── CONTRÔLE HUMAIN — ORTHOGONAL À `decision` (ARCH-RULEPACK-001) ─────────
+  //
+  // ⚠️ `decision` et `control` répondent à DEUX questions différentes :
+  //   decision : « faut-il agir ? »        → recommend | no_action
+  //   control  : « qui a le droit d'agir ? » → autonomous | approval_required | blocked
+  //
+  // Les fondre interdirait le cas le plus utile du vertical immobilier :
+  // `decision: 'recommend'` + `control: 'approval_required'` — la situation
+  // justifie d'agir, mais un humain valide d'abord.
+  control: HumanControl
+  /** Pourquoi ce niveau de contrôle. Jamais un score, toujours une raison. */
+  controlReason: string
+  /** Capacités que le play exige. Vide lorsque `decision = no_action`. */
+  requiredMotions: readonly AuthorizedMotion[]
+
+  // Provenance du Business Context. `contextId` entre dans l'identité,
+  // `contextVersion` non — même doctrine que les versions de règle.
+  contextId: string
+  contextVersion: string
 
   createdAt: string
   expiresAt?: string

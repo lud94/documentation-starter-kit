@@ -11,6 +11,8 @@
 //
 // La seule fonction impure du fichier est `persistEvaluation()`, isolée en fin
 // de module et nommée pour qu'on ne l'appelle pas par accident.
+import { LENS_REGISTRY } from './lens/registry'
+import { validateBusinessContext, type BusinessContextV0 } from './lens/context'
 import type { Lead } from '../../../types/prospector'
 import {
   accountIdForLead,
@@ -68,6 +70,17 @@ export interface ProactiveEvaluationInput {
    * BLOQUER une recommandation, jamais en autoriser une.
    */
   eligibilityFor?: (target: EvaluationTarget) => Partial<EligibilityContext>
+
+  /**
+   * BUSINESS CONTEXT — OBLIGATOIRE, sans valeur par défaut.
+   *
+   * ⚠️ Il n'est PAS optionnel, et aucun contexte « default » n'est synthétisé
+   * lorsqu'il manque. Fabriquer un contexte reviendrait à décider à la place de
+   * l'appelant quelles capacités il détient — exactement ce que l'invariant
+   * d'autorité interdit. Un contexte absent ou invalide rend une évaluation
+   * VIDE : fail closed.
+   */
+  businessContext: BusinessContextV0
 }
 
 export interface ProactiveEvaluation {
@@ -184,6 +197,18 @@ export function evaluate(input: ProactiveEvaluationInput): ProactiveEvaluation {
   if (!input || !Array.isArray(input.leads)) return VIDE
   if (!input.now || !Number.isFinite(input.now.getTime())) return VIDE
 
+  // ⚠️ FAIL CLOSED SUR LE CONTEXTE. Un contexte absent, une lens inconnue ou
+  // une version de lens qui ne correspond pas au registre ⇒ AUCUNE évaluation.
+  // Utiliser silencieusement une version plus récente attribuerait des
+  // situations à une politique qui ne les a pas produites.
+  const validation = validateBusinessContext(
+    input.businessContext,
+    (id) => LENS_REGISTRY[id].lensVersion,
+  )
+  if (!validation.ok) return VIDE
+  const ctx = validation.context
+  const lens = LENS_REGISTRY[ctx.lensId]
+
   const evidence = evidenceFromLeads(input.leads, {
     now: input.now,
     tasks: input.tasks,
@@ -204,12 +229,18 @@ export function evaluate(input: ProactiveEvaluationInput): ProactiveEvaluation {
       ? clampScore(input.relevanceFor(cible))
       : (connu?.relevance ?? 0)
 
-    const trouvees = evaluateSituations(evidence, {
-      now: input.now,
-      accountId: cible.accountId,
-      personId: cible.personId,
-      relevance,
-    })
+    const trouvees = evaluateSituations(
+      evidence,
+      {
+        now: input.now,
+        accountId: cible.accountId,
+        personId: cible.personId,
+        relevance,
+        lensId: lens.lensId,
+        lensVersion: lens.lensVersion,
+      },
+      lens.rulePacks,
+    )
 
     for (const situation of trouvees) {
       situations.push(situation)
@@ -224,6 +255,13 @@ export function evaluate(input: ProactiveEvaluationInput): ProactiveEvaluation {
           now: input.now,
           meetingScheduled:
             fourni.meetingScheduled ?? connu?.meetingScheduled ?? false,
+          // Le contexte n'est jamais fourni par le résolveur d'éligibilité :
+          // il vient de l'entrée validée, hors de portée d'un appelant partiel.
+          businessContext: {
+            contextId: ctx.contextId,
+            contextVersion: ctx.contextVersion,
+            authorizedMotions: ctx.authorizedMotions,
+          },
         }),
       )
     }

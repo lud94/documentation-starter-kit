@@ -1,3 +1,8 @@
+import {
+  TEST_BUSINESS_CONTEXT,
+  TEST_RECOMMENDATION_CONTEXT,
+  TEST_SITUATION_PROVENANCE,
+} from './helpers/proactiveContext'
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_CONTACT_COOLDOWN_HOURS,
@@ -6,6 +11,7 @@ import {
 import type { Situation } from '../lib/prospector/proactive/types'
 
 const BASE_SITUATION: Situation = {
+  ...TEST_SITUATION_PROVENANCE,
   id: 'sit_1',
   accountId: 'acc_1',
   personId: 'person_1',

@@ -51,8 +51,8 @@ import type {
   AssertionType,
   EvidenceEvent,
   EvidenceScope,
-  EvidenceType,
 } from './types'
+import type { EvidenceType } from './catalog'
 
 export const BRIDGE_VERSION = 'v0.1'
 

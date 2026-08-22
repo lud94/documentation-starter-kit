@@ -6,8 +6,8 @@ import {
 } from '../lib/prospector/proactive/situationEngine'
 import type {
   EvidenceEvent,
-  EvidenceType,
 } from '../lib/prospector/proactive/types'
+import type { EvidenceType } from '../lib/prospector/proactive/catalog'
 
 const NOW = new Date('2026-08-18T12:00:00.000Z')
 
@@ -43,7 +43,9 @@ function evidence(
 const BASE_CONTEXT = {
   now: NOW,
   accountId: 'acc_1',
-  relevance: 0.9,
+  lensId: 'sales-default',
+      lensVersion: 'v0.1',
+      relevance: 0.9,
 }
 
 describe('JARVIS-PROACTIVE-01B — situation engine', () => {
@@ -62,6 +64,8 @@ describe('JARVIS-PROACTIVE-01B — situation engine', () => {
       accountId: 'acc_1',
       type: 'sales_scale_up',
       evidenceIds: ['ev_1', 'ev_2'],
+      lensId: 'sales-default',
+      lensVersion: 'v0.1',
       relevance: 0.9,
       ruleId: 'sales-scale-up',
       ruleVersion: SITUATION_RULE_VERSION,
@@ -398,7 +402,9 @@ describe('JARVIS-PROACTIVE-01B — situation engine', () => {
       ],
       {
         ...BASE_CONTEXT,
-        relevance: 1.5,
+        lensId: 'sales-default',
+      lensVersion: 'v0.1',
+      relevance: 1.5,
       },
     )
 

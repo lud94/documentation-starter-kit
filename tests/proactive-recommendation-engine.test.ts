@@ -1,3 +1,9 @@
+import {
+  TEST_BUSINESS_CONTEXT,
+  TEST_RECOMMENDATION_CONTEXT,
+  TEST_CONTEXT_APPROVAL,
+  TEST_SITUATION_PROVENANCE,
+} from './helpers/proactiveContext'
 import { describe, expect, it } from 'vitest'
 import {
   RECOMMENDATION_RULE_VERSION,
@@ -11,6 +17,7 @@ function situation(
   patch: Partial<Situation> = {},
 ): Situation {
   return {
+    ...TEST_SITUATION_PROVENANCE,
     id: 'sit_acc_1_person_1_sales_scale_up',
     accountId: 'acc_1',
     personId: 'person_1',
@@ -34,7 +41,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
   it('mappe SALES_SCALE_UP vers ENGAGE_OR_REENGAGE', () => {
     const recommendation = recommendationDecision(
       situation(),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation).toMatchObject({
@@ -52,7 +59,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
         type: 'commercial_momentum_stalled',
         ruleId: 'commercial-momentum-stalled',
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation).toMatchObject({
@@ -68,7 +75,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
         type: 'strong_signal_low_context',
         ruleId: 'strong-signal-low-context',
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation).toMatchObject({
@@ -84,7 +91,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
         relevance: 0.8,
         urgency: 0.8,
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation.priority).toBe('high')
@@ -96,7 +103,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
         relevance: 0.7,
         urgency: 0.6,
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation.priority).toBe('medium')
@@ -108,7 +115,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
         relevance: 0.59,
         urgency: 0.9,
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation.priority).toBe('low')
@@ -120,7 +127,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
         confidence: 0.92,
         relevance: 0.74,
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation.confidence).toBe(0.74)
@@ -130,6 +137,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
     const recommendation = recommendationDecision(
       situation(),
       {
+        businessContext: TEST_RECOMMENDATION_CONTEXT,
         now: NOW,
         optedOut: true,
       },
@@ -150,6 +158,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
     const recommendation = recommendationDecision(
       situation(),
       {
+        businessContext: TEST_RECOMMENDATION_CONTEXT,
         now: NOW,
         meetingScheduled: true,
       },
@@ -165,6 +174,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
     const recommendation = recommendationDecision(
       situation(),
       {
+        businessContext: TEST_RECOMMENDATION_CONTEXT,
         now: NOW,
         actionScheduled: true,
       },
@@ -180,6 +190,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
     const recommendation = recommendationDecision(
       situation(),
       {
+        businessContext: TEST_RECOMMENDATION_CONTEXT,
         now: NOW,
         activeRecommendationExists: true,
       },
@@ -195,6 +206,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
     const recommendation = recommendationDecision(
       situation(),
       {
+        businessContext: TEST_RECOMMENDATION_CONTEXT,
         now: NOW,
         lastContactAt: '2026-08-17T12:00:00.000Z',
       },
@@ -217,6 +229,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
         expiresAt: '2026-08-19T12:00:00.000Z',
       }),
       {
+        businessContext: TEST_RECOMMENDATION_CONTEXT,
         now: NOW,
         lastContactAt: '2026-08-17T12:00:00.000Z',
       },
@@ -233,6 +246,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
         expiresAt: '2026-08-18T11:59:59.000Z',
       }),
       {
+        businessContext: TEST_RECOMMENDATION_CONTEXT,
         now: NOW,
       },
     )
@@ -248,7 +262,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
       situation({
         confidence: 1.2,
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation).toMatchObject({
@@ -263,7 +277,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
       situation({
         relevance: -0.1,
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation).toMatchObject({
@@ -278,7 +292,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
       situation({
         urgency: Number.NaN,
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation).toMatchObject({
@@ -291,6 +305,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
     const recommendation = recommendationDecision(
       situation(),
       {
+        businessContext: TEST_RECOMMENDATION_CONTEXT,
         now: new Date('invalid'),
       },
     )
@@ -304,20 +319,63 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
   it('conserve un identifiant stable pour une même Situation', () => {
     const first = recommendationDecision(
       situation(),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     const second = recommendationDecision(
       situation(),
       {
+        businessContext: TEST_RECOMMENDATION_CONTEXT,
         now: new Date('2026-08-18T13:00:00.000Z'),
       },
     )
 
+    // PROPRIÉTÉ MÉTIER — inchangée : même Situation + même Business Context
+    // ⇒ même identifiant. C'est elle que ce test protège.
     expect(first.id).toBe(second.id)
+
+    // ⚠️ ASSERTION LITTÉRALE MISE À JOUR (ARCH-RULEPACK-001), par décision de
+    // contrat et non pour faire passer un test. L'identité de Recommendation
+    // inclut désormais le `contextId` : `control` dépend des capacités
+    // accordées, donc deux contextes produisent deux recommandations
+    // différentes. Sans cela, la seconde écraserait la première dans
+    // `prospector_store`, dont la clé est `(kind, id, workspace_id)`.
+    //
+    // L'encodage est à longueur préfixée — injectif, donc sans collision
+    // possible entre deux couples (situation, contexte) distincts.
     expect(first.id).toBe(
-      'rec_sit_acc_1_person_1_sales_scale_up',
+      'rec_33:sit_acc_1_person_1_sales_scale_up|10:test-sales',
     )
+  })
+
+  it('un contextId DIFFÉRENT produit une recommandation DIFFÉRENTE', () => {
+    // Le pendant du test précédent : sans cette propriété, deux configurations
+    // — par exemple un profil autonome et un profil soumis à approbation —
+    // écriraient sur la même ligne, et la dernière évaluation effacerait
+    // silencieusement le verdict de l'autre.
+    const autonome = recommendationDecision(situation(), {
+      businessContext: TEST_RECOMMENDATION_CONTEXT,
+      now: NOW,
+    })
+
+    const approbation = recommendationDecision(situation(), {
+      businessContext: {
+        contextId: TEST_CONTEXT_APPROVAL.contextId,
+        contextVersion: TEST_CONTEXT_APPROVAL.contextVersion,
+        authorizedMotions: TEST_CONTEXT_APPROVAL.authorizedMotions,
+      },
+      now: NOW,
+    })
+
+    expect(approbation.id).not.toBe(autonome.id)
+    expect(approbation.contextId).toBe('test-sales-approval')
+
+    // `decision` et `control` sont ORTHOGONAUX : la situation justifie
+    // toujours d'agir, mais un humain doit valider.
+    expect(autonome.decision).toBe('recommend')
+    expect(approbation.decision).toBe('recommend')
+    expect(autonome.control).toBe('autonomous')
+    expect(approbation.control).toBe('approval_required')
   })
 
   it('conserve la durée de vie de la Situation pour une recommandation active', () => {
@@ -325,7 +383,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
       situation({
         expiresAt: '2026-08-24T12:00:00.000Z',
       }),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation.expiresAt).toBe(
@@ -336,7 +394,7 @@ describe('JARVIS-PROACTIVE-01C — recommendation engine', () => {
   it('trace la règle et génère une justification non vide', () => {
     const recommendation = recommendationDecision(
       situation(),
-      { now: NOW },
+      { businessContext: TEST_RECOMMENDATION_CONTEXT, now: NOW },
     )
 
     expect(recommendation.ruleId).toBe(

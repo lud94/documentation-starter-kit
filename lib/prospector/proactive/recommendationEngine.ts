@@ -20,41 +20,43 @@ import type {
   Recommendation,
   RecommendationPriority,
   Situation,
-  SituationType,
 } from './types'
+import { stableId } from './ruleKit'
+import { rulePackById } from './packs/registry'
+import type { RecommendationRule } from './rulePack'
+import {
+  resolveMotionControl,
+  strictest,
+  type AuthorizedMotion,
+  type HumanControl,
+  type MotionControl,
+} from './motions'
 
 export const RECOMMENDATION_RULE_VERSION = 'v0.1'
 
-interface RecommendationRule {
-  play: PlayType
-  recommendedAction: string
-  reason: string
+/**
+ * ⚠️ LA TABLE `RULES` EXHAUSTIVE A DISPARU (ARCH-RULEPACK-001).
+ *
+ * Elle était un `Record<SituationType, …>` : ajouter un vertical cassait la
+ * compilation de ce fichier, ce qui obligeait à modifier le moteur à chaque
+ * pack. Le play est désormais lu sur le PACK qui a produit la situation, via
+ * `situation.rulePackId`. Deux packs peuvent donc déclarer le même
+ * `situationType` sans ambiguïté de résolution.
+ */
+function playForSituation(situation: Situation): RecommendationRule | null {
+  const pack = rulePackById(situation.rulePackId)
+  if (!pack) return null
+  return pack.plays[situation.type] ?? null
 }
 
-const RULES: Record<SituationType, RecommendationRule> = {
-  sales_scale_up: {
-    play: 'engage_or_reengage',
-    recommendedAction:
-      'Engager ou réengager le compte avec une approche contextualisée.',
-    reason:
-      'Le compte présente plusieurs éléments cohérents avec une phase d’accélération commerciale.',
-  },
-
-  commercial_momentum_stalled: {
-    play: 'follow_up',
-    recommendedAction:
-      'Relancer la relation et obtenir un prochain engagement explicite.',
-    reason:
-      'Un intérêt commercial existe mais la relation risque de perdre son momentum.',
-  },
-
-  strong_signal_low_context: {
-    play: 'investigate',
-    recommendedAction:
-      'Enrichir le compte et le contexte relationnel avant toute prise de contact.',
-    reason:
-      'Un signal commercial intéressant existe mais les informations disponibles sont insuffisantes pour recommander une approche directe.',
-  },
+/**
+ * Plancher de contrôle déclaré par le pack pour ce type de situation.
+ *
+ * ⚠️ Un contexte peut le DURCIR, jamais l'assouplir — voir `resolveControl`.
+ */
+function controlFloorFor(situation: Situation): HumanControl | null {
+  const pack = rulePackById(situation.rulePackId)
+  return pack?.controlFloor?.[situation.type] ?? null
 }
 
 const ELIGIBILITY_REASON: Record<EligibilityReason, string> = {
@@ -83,8 +85,24 @@ const ELIGIBILITY_REASON: Record<EligibilityReason, string> = {
     'Le contexte disponible est invalide ou insuffisant pour produire une recommandation fiable.',
 }
 
-export interface RecommendationContext
-  extends EligibilityContext {}
+/**
+ * Contexte de décision.
+ *
+ * ⚠️ `businessContext` est OBLIGATOIRE et n'a AUCUNE valeur par défaut. Un
+ * contexte absent ne se synthétise pas : ni `contextId: 'default'`, ni
+ * capacités devinées. « L'appelant a oublié son contexte » ne doit jamais se
+ * traduire par « on lui en fabrique un ».
+ */
+export interface RecommendationContext extends EligibilityContext {
+  businessContext: RecommendationBusinessContext
+}
+
+/** Part du Business Context dont le moteur a réellement besoin. */
+export interface RecommendationBusinessContext {
+  contextId: string
+  contextVersion: string
+  authorizedMotions: Readonly<Partial<Record<AuthorizedMotion, MotionControl>>>
+}
 
 function validScore(value: number): boolean {
   return (
@@ -98,10 +116,28 @@ function roundScore(value: number): number {
   return Math.round(value * 100) / 100
 }
 
+/**
+ * IDENTITÉ CONTEXTUALISÉE (ARCH-RULEPACK-001).
+ *
+ * ⚠️ `rec_${situation.id}` NE SUFFISAIT PLUS. `control` dépend des capacités
+ * accordées par le Business Context : deux contextes produisent deux
+ * recommandations DIFFÉRENTES pour la même situation. Sans `contextId` dans
+ * l'identité, la seconde écraserait silencieusement la première dans
+ * `prospector_store`, dont la clé est `(kind, id, workspace_id)`.
+ *
+ * `contextVersion` reste hors identité : une évolution de politique REMPLACE
+ * la ligne courante, elle n'en crée pas une seconde — même doctrine que
+ * `ruleVersion`.
+ *
+ * Encodage à longueur préfixée, comme pour `Situation` : non ambigu, donc
+ * injectif. Une concaténation naïve permettrait à deux couples distincts de
+ * produire le même identifiant.
+ */
 function stableRecommendationId(
   situation: Situation,
+  contextId: string,
 ): string {
-  return `rec_${situation.id}`
+  return stableId('rec', [situation.id, contextId])
 }
 
 function priorityForSituation(
@@ -179,12 +215,22 @@ const nowIso = Number.isFinite(nowMs)
     : '1970-01-01T00:00:00.000Z'
 
   return {
-    id: stableRecommendationId(situation),
+    id: stableRecommendationId(situation, context.businessContext.contextId),
     situationId: situation.id,
     accountId: situation.accountId,
     personId: situation.personId,
 
     decision: 'no_action',
+
+    // Aucune action n'est recommandée : aucune capacité n'est requise, et le
+    // contrôle est sans objet. `blocked` serait trompeur — rien n'est bloqué,
+    // il n'y a simplement rien à faire.
+    control: 'autonomous',
+    controlReason: 'Aucune action recommandée : aucune capacité n’est engagée.',
+    requiredMotions: [],
+
+    contextId: context.businessContext.contextId,
+    contextVersion: context.businessContext.contextVersion,
 
     reason: ELIGIBILITY_REASON[eligibilityReason],
 
@@ -252,17 +298,45 @@ export function recommendationDecision(
     )
   }
 
-  const rule = RULES[situation.type]
+  const rule = playForSituation(situation)
+
+  // Un type de situation sans play déclaré par son pack n'est pas actionnable.
+  // Fail closed : on ne devine pas quoi recommander.
+  if (!rule) {
+    return noActionRecommendation(situation, context, 'invalid_context')
+  }
 
   const nowIso = context.now.toISOString()
 
+  // ── CONTRÔLE HUMAIN — le plus STRICT de deux sources ──────────────────────
+  // 1. les capacités accordées par le Business Context ;
+  // 2. le plancher éventuellement imposé par le pack.
+  // Un contexte ne peut jamais assouplir un plancher de pack.
+  const verdict = resolveMotionControl(rule.play, context.businessContext.authorizedMotions)
+  const floor = controlFloorFor(situation)
+  const control = floor ? strictest(verdict.control, floor) : verdict.control
+  const controlReason =
+    floor && control === floor && floor !== verdict.control
+      ? `Plancher de contrôle imposé par le pack « ${situation.rulePackId} » pour « ${situation.type} ».`
+      : verdict.reason
+
   return {
-    id: stableRecommendationId(situation),
+    id: stableRecommendationId(situation, context.businessContext.contextId),
     situationId: situation.id,
     accountId: situation.accountId,
     personId: situation.personId,
 
     decision: 'recommend',
+
+    // ⚠️ `decision` et `control` sont ORTHOGONAUX. `recommend` +
+    // `approval_required` est un état parfaitement valide : la situation
+    // justifie d'agir, un humain valide d'abord.
+    control,
+    controlReason,
+    requiredMotions: verdict.requiredMotions,
+
+    contextId: context.businessContext.contextId,
+    contextVersion: context.businessContext.contextVersion,
 
     reason: rule.reason,
 
