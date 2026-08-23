@@ -200,7 +200,10 @@ describe('B. Fail closed — aucune entrée invalide ne produit de résultat', (
   })
 
   it('lens inconnue ⇒ REFUS', () => {
-    expect(codes(clone((c) => { c.businessContext.lensId = 'fabel-broker' })))
+    // ⚠️ `fabel-broker` était la valeur témoin ; elle est devenue une lens
+    // ENREGISTRÉE avec FABEL-RULEPACK-001. La fixture désigne donc désormais
+    // une lens qui n'existe réellement pas.
+    expect(codes(clone((c) => { c.businessContext.lensId = 'procurement-default' })))
       .toContain('business_context_lens_unknown')
   })
 

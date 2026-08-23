@@ -38,8 +38,13 @@ const packFauteDeFrappe: RulePackId = 'sales-cor'
 // ── 2. SITUATION TYPE INVALIDE ──────────────────────────────────────────────
 const situationConnue: SituationType = 'sales_scale_up'
 
+// ⚠️ FABEL-RULEPACK-001 — `space_expansion` était la valeur témoin ici. Elle
+// est devenue VALIDE dès l'enregistrement de `real-estate-fabel` : le catalogue
+// dérivé s'est étendu tout seul, sans qu'une ligne du cœur bouge. C'est
+// exactement l'effet recherché, et cette fixture doit donc désigner un type qui
+// reste inconnu de TOUS les packs enregistrés.
 // @ts-expect-error — type de situation non déclaré par un pack enregistré.
-const situationInconnue: SituationType = 'space_expansion'
+const situationInconnue: SituationType = 'warehouse_relocation'
 
 // @ts-expect-error — faute de frappe sur un type pourtant déclaré.
 const situationFauteDeFrappe: SituationType = 'sales_scale_upp'
@@ -86,8 +91,9 @@ const evenementInvalide: KnownEvidenceEvent = {
 // désigner du code qui n'existe pas dans le dépôt.
 const lensConnue: LensId = 'sales-default'
 
+// ⚠️ Même raison : `fabel-broker` est désormais une lens enregistrée.
 // @ts-expect-error — aucune lens de ce nom n'est enregistrée.
-const lensInconnue: LensId = 'fabel-broker'
+const lensInconnue: LensId = 'procurement-default'
 
 const contexteInvalide: BusinessContextV0 = {
   contextId: 'x',
@@ -153,8 +159,11 @@ describe('Preuves de typage — les frontières fermées le sont vraiment', () =
     // Le typage ferme la compilation ; ces listes ferment l'exécution. Les
     // deux doivent décrire le même monde.
     expect(SITUATION_TYPES).toContain('sales_scale_up')
-    expect(SITUATION_TYPES).not.toContain('space_expansion')
+    // Étendu par `real-estate-fabel`, sans modification du cœur.
+    expect(SITUATION_TYPES).toContain('space_expansion')
+    expect(SITUATION_TYPES).not.toContain('warehouse_relocation')
     expect(EVIDENCE_TYPES).toContain('recent_funding')
+    expect(EVIDENCE_TYPES).toContain('real_estate.flex_occupancy_observed')
     expect(EVIDENCE_TYPES).not.toContain('lease_expiry')
   })
 })

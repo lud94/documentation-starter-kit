@@ -23,6 +23,8 @@ import { EVIDENCE_TYPES } from '../catalog'
 import { isEvidenceEvent } from '../validators'
 import { evidenceMatchesTarget } from '../situationEngine'
 import { resolveBusinessContext, targetInScope } from '../decisionKernel'
+import { LENS_REGISTRY } from '../lens/registry'
+import { PACK_REGISTRY } from '../packs/registry'
 import type { BusinessContextV0 } from '../lens/context'
 import type { KernelTarget } from '../decisionKernel'
 import type { EvidenceEvent } from '../types'
@@ -96,6 +98,35 @@ function dateValide(value: unknown): boolean {
 
 function cleTarget(accountId: string, personId?: string): string {
   return `${accountId}::${personId ?? ''}`
+}
+
+/**
+ * FABEL-RULEPACK-001 (M.1) — TYPES D'EVIDENCE ACTIFS POUR **CETTE** LENS.
+ *
+ * ── LE TROU QUE CECI FERME ──────────────────────────────────────────────────
+ * `EVIDENCE_TYPES` est l'union PLATE de tous les packs enregistrés. Tant qu'il
+ * n'existait qu'un pack, valider contre cette union revenait au même. Avec un
+ * second vertical, ce n'est plus vrai : un cas déclarant `lensId:
+ * 'sales-default'` acceptait une evidence `real_estate.flex_occupancy_observed`
+ * — globalement connue, mais qu'AUCUN pack de cette lens ne lit jamais.
+ *
+ * Elle n'était pas orpheline au sens de l'intégrité référentielle (le compte
+ * correspond), elle était simplement INERTE : le cas s'exécutait, ne produisait
+ * rien de cette evidence, et rendait un résultat parfaitement valide en
+ * apparence. C'est exactement le silence que ce runner existe pour supprimer.
+ */
+function typesActifsPourLens(lensId: string): Set<string> | null {
+  const lens = (LENS_REGISTRY as any)[lensId]
+  if (!lens) return null
+
+  const actifs = new Set<string>()
+  for (const packId of lens.rulePacks ?? []) {
+    const pack = (PACK_REGISTRY as any)[packId]
+    if (!pack) continue
+    for (const type of pack.declaredEvidenceTypes) actifs.add(type)
+  }
+
+  return actifs
 }
 
 /**
@@ -179,6 +210,14 @@ export function validateEvalCase(input: unknown): EvalCaseValidation {
   }
 
   // ── evidence ──────────────────────────────────────────────────────────────
+  // Les types actifs ne sont calculables que si la lens est elle-même valide :
+  // reprocher « inactif pour la lens » à cause d'une lens inconnue masquerait
+  // la vraie erreur, déjà signalée plus haut.
+  const typesActifs =
+    c.businessContext && typeof c.businessContext === 'object'
+      ? typesActifsPourLens(c.businessContext.lensId)
+      : null
+
   if (!Array.isArray(c.evidence)) {
     add('evidence_not_array', 'evidence', '`evidence` doit être un tableau (éventuellement vide).')
   } else {
@@ -197,6 +236,23 @@ export function validateEvalCase(input: unknown): EvalCaseValidation {
           'evidence_type_unknown',
           `evidence[${i}].type`,
           `Type d’evidence « ${item.type} » déclaré par aucun Rule Pack enregistré.`,
+        )
+        return
+      }
+
+      // ── DEUX REFUS DISTINCTS, ET LA DISTINCTION COMPTE ───────────────────
+      //   `evidence_type_unknown`          → le type n'existe nulle part
+      //   `evidence_type_inactive_for_lens` → il existe, mais aucun pack de la
+      //                                       lens active ne le lit
+      // Les confondre priverait l'auteur d'une fixture de l'information qui
+      // lui manque réellement : s'est-il trompé de nom, ou de lens ?
+      if (typesActifs && !typesActifs.has(item.type)) {
+        add(
+          'evidence_type_inactive_for_lens',
+          `evidence[${i}].type`,
+          `Type d’evidence « ${item.type} » connu du catalogue, mais déclaré par aucun ` +
+            `Rule Pack de la lens « ${c.businessContext?.lensId} ». Il serait INERTE : ` +
+            'accepté, puis jamais lu, en rendant un résultat vide d’apparence valide.',
         )
       }
     })

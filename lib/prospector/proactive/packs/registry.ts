@@ -8,10 +8,12 @@
 // Ce module n'importe QUE des packs. Il n'importe ni le catalogue, ni le
 // moteur, ni les lenses : c'est ce qui le maintient en amont du graphe.
 import { SALES_CORE } from './sales-core'
+import { REAL_ESTATE_FABEL } from './real-estate-fabel'
 import type { AnyRulePack } from '../rulePack'
 
 export const PACK_REGISTRY = {
   'sales-core': SALES_CORE,
+  'real-estate-fabel': REAL_ESTATE_FABEL,
 } as const
 
 /**

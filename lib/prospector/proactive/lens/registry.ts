@@ -57,8 +57,39 @@ export const SALES_DEFAULT_LENS: LensDefinition = {
   },
 }
 
+/**
+ * Lens Fabel — courtage en bureaux.
+ *
+ * ⚠️ `sales-core` N'EST PAS ACTIVÉ, et c'est un choix, pas un oubli. Un courtier
+ * ne veut pas de `sales_scale_up` dans sa file. Les deux packs LISENT les mêmes
+ * evidences transverses (`recent_funding`, `headcount_acceleration`) — une
+ * evidence peut être comprise par plusieurs packs sans qu'une lens doive les
+ * activer ensemble.
+ *
+ * C'est l'invariant « mêmes faits → interprétations distinctes » : `lensId` et
+ * `rulePackId` entrent tous deux dans l'identité d'une Situation, donc les deux
+ * lectures coexistent sans collision, et aucune ne modifie la vérité.
+ */
+export const FABEL_BROKER_LENS: LensDefinition = {
+  lensId: 'fabel-broker',
+  lensVersion: 'v0.1',
+  rulePacks: ['real-estate-fabel'],
+  relevance() {
+    // DORMANTE, comme celle de `sales-default`. Le runner d'évaluation exige
+    // `target.relevance` explicitement (EVAL-RUNNER-001a) ; aucun scoring ICP
+    // Fabel n'est construit ici, et brancher cette fonction serait un
+    // changement de politique déguisé en implémentation.
+    return {
+      value: 0.5,
+      explanation:
+        'Pertinence neutre par défaut (lens fabel-broker v0.1) : aucune politique ICP n’est définie.',
+    }
+  },
+}
+
 export const LENS_REGISTRY = {
   'sales-default': SALES_DEFAULT_LENS,
+  'fabel-broker': FABEL_BROKER_LENS,
 } as const
 
 export type LensId = keyof typeof LENS_REGISTRY
