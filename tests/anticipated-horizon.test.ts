@@ -375,6 +375,10 @@ describe('E. Persistance — l’horizon est validé s’il existe, optionnel si
     ruleId: 'r',
     ruleVersion: 'v0.1',
     ...TEST_SITUATION_PROVENANCE,
+    // ARCH-HORIZON-001a — `expiresAt` est désormais EXIGÉ dès qu'un horizon
+    // existe, et doit être ≤ `anticipated.at`. La fixture le porte donc ;
+    // aucune assertion n'a été affaiblie pour autant.
+    expiresAt: '2026-06-01T00:00:00.000Z',
     createdAt: '2026-03-01T00:00:00.000Z',
     lastEvaluatedAt: '2026-03-01T00:00:00.000Z',
   }
@@ -505,5 +509,141 @@ describe('G. NON-RÉGRESSION — sans `anticipated`, RIEN ne change', () => {
 
     expect(urgencyFromHorizon(HORIZON, new Date(juste_ouvert))).toBeLessThan(0.05)
     expect(s.urgency).toBe(1)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('H. READ BOUNDARY — une Situation relue est une ENTRÉE, pas une valeur de confiance', () => {
+  // ⚠️ LE DÉFAUT QUE CE BLOC FERME, REPRODUIT AVANT CORRECTION :
+  //
+  //     anticipated.at = 2026-01-01   (passé)
+  //     expiresAt      = 2027-01-01   (encore futur)
+  //     now            = 2026-08-23
+  //
+  //   → validateur : ACCEPTÉE
+  //   → éligibilité : eligible
+  //   → recommandation : recommend / engage_or_reengage / autonomous
+  //
+  // Une recommandation ACTIVE sur une échéance périmée depuis huit mois. Le
+  // contrôle d'expiration n°1 la laissait passer, puisqu'il ne regarde que
+  // `expiresAt` — futur — et jamais l'horizon lui-même.
+  //
+  // Le clamp de `buildSituation` ne protégeait rien ici : l'objet n'avait pas
+  // été fabriqué par lui. C'est précisément l'hypothèse que le cœur ne doit
+  // jamais faire.
+
+  const NOW_LECTURE = '2026-08-23T00:00:00.000Z'
+
+  function persistee(patch: Record<string, any> = {}) {
+    return {
+      id: 'sit_relue',
+      accountId: 'acc_1',
+      type: 'sales_scale_up',
+      evidenceIds: ['ev_start'],
+      confidence: 0.9,
+      relevance: 0.9,
+      urgency: 0.9,
+      rationale: 'peu importe',
+      ruleId: 'r',
+      ruleVersion: 'v0.1',
+      ...TEST_SITUATION_PROVENANCE,
+      anticipated: HORIZON_ECHU,
+      expiresAt: '2026-12-01T00:00:00.000Z',
+      createdAt: '2025-07-01T00:00:00.000Z',
+      lastEvaluatedAt: '2025-07-01T00:00:00.000Z',
+      ...patch,
+    } as any
+  }
+
+  const HORIZON_ECHU: AnticipatedHorizon = {
+    at: '2026-01-01T00:00:00.000Z',
+    actionWindowOpensAt: '2025-07-01T00:00:00.000Z',
+    assertionType: 'inference',
+    derivedFrom: ['ev_start'],
+  }
+
+  it('CASE A — `anticipated.at` passé mais `expiresAt` futur ⇒ validateur REFUSE', () => {
+    const corrompue = persistee({
+      anticipated: HORIZON_ECHU,
+      expiresAt: '2027-01-01T00:00:00.000Z',
+    })
+    expect(isSituation(corrompue)).toBe(false)
+  })
+
+  it('CASE B — DÉFENSE EN PROFONDEUR : même si le validateur est contourné', () => {
+    // Un appelant peut très bien n'avoir jamais appelé `isSituation`.
+    // L'Eligibility Engine doit refuser SEUL.
+    const corrompue = persistee({
+      anticipated: HORIZON_ECHU,
+      expiresAt: '2027-01-01T00:00:00.000Z',
+    })
+
+    const e = eligibilityDecision(corrompue, { now: new Date(NOW_LECTURE) })
+    expect(e.eligible).toBe(false)
+    expect(e.reason).toBe('situation_expired')
+
+    const r = reco(corrompue, NOW_LECTURE)
+    expect(r.decision).toBe('no_action')
+    expect(r.play).toBeUndefined()
+    expect(r.recommendedAction).toBeUndefined()
+  })
+
+  it('CASE B bis — `expiresAt` ABSENT ne vaut pas « valide sans limite »', () => {
+    const sansExpiration = persistee({ anticipated: HORIZON_ECHU })
+    delete sansExpiration.expiresAt
+
+    // Le validateur l'exige dès qu'un horizon existe.
+    expect(isSituation(sansExpiration)).toBe(false)
+
+    // Et l'éligibilité refuse quand même, sans dépendre de `expiresAt`.
+    const e = eligibilityDecision(sansExpiration, { now: new Date(NOW_LECTURE) })
+    expect(e.eligible).toBe(false)
+    expect(e.reason).toBe('situation_expired')
+  })
+
+  it('CASE C — `expiresAt < anticipated.at` ⇒ ACCEPTÉE', () => {
+    const saine = persistee({
+      anticipated: HORIZON,
+      expiresAt: '2026-06-01T00:00:00.000Z', // < AT (2026-07-01)
+    })
+    expect(isSituation(saine)).toBe(true)
+  })
+
+  it('CASE D — `expiresAt === anticipated.at` ⇒ ACCEPTÉE', () => {
+    const limite = persistee({ anticipated: HORIZON, expiresAt: AT })
+    expect(isSituation(limite)).toBe(true)
+  })
+
+  it('`expiresAt` strictement postérieur à l’horizon ⇒ REFUSÉE, même d’une milliseconde', () => {
+    const juste_apres = persistee({
+      anticipated: HORIZON,
+      expiresAt: '2026-07-01T00:00:00.001Z',
+    })
+    expect(isSituation(juste_apres)).toBe(false)
+  })
+
+  it('une Situation HISTORIQUE sans `anticipated` reste strictement inchangée', () => {
+    // Aucune exigence nouvelle ne lui est appliquée : `expiresAt` reste
+    // optionnel, et aucun blocage d'horizon ne la concerne.
+    const historique = persistee()
+    delete historique.anticipated
+    delete historique.expiresAt
+
+    expect(isSituation(historique)).toBe(true)
+
+    const e = eligibilityDecision(historique, { now: new Date(NOW_LECTURE) })
+    expect(e.eligible).toBe(true)
+    expect(e.reason).toBe('eligible')
+    expect(reco(historique, NOW_LECTURE).decision).toBe('recommend')
+  })
+
+  it('un objet fabriqué par `buildSituation` satisfait TOUJOURS le garde', () => {
+    // Le chemin normal et le garde de lecture doivent être d'accord : sinon le
+    // moteur refuserait ses propres sorties.
+    for (const now of ['2026-01-15T00:00:00.000Z', '2026-06-20T00:00:00.000Z']) {
+      const s = situationAvecHorizon(now)
+      expect(isSituation(s)).toBe(true)
+      expect(Date.parse(s.expiresAt!)).toBeLessThanOrEqual(Date.parse(s.anticipated!.at))
+    }
   })
 })

@@ -133,7 +133,11 @@ function packEtTypeConnus(rulePackId: unknown, type: unknown): boolean {
  */
 const ASSERTION_TYPES: readonly string[] = ['fact', 'inference', 'assumption']
 
-function horizonValide(value: any, evidenceIds: unknown): boolean {
+function horizonValide(
+  value: any,
+  evidenceIds: unknown,
+  expiresAt: unknown,
+): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
 
   if (!validDate(value.at)) return false
@@ -155,6 +159,22 @@ function horizonValide(value: any, evidenceIds: unknown): boolean {
   if (!Array.isArray(evidenceIds)) return false
   const retenues = new Set(evidenceIds as string[])
   if (!value.derivedFrom.every((id: string) => retenues.has(id))) return false
+
+  // ── COHÉRENCE ENTRE LES DEUX BORNES (ARCH-HORIZON-001a) ──────────────────
+  //
+  //     anticipated.at  = borne MÉTIER maximale
+  //     expiresAt       = borne de VALIDITÉ de l'interprétation
+  //
+  // Une interprétation anticipée ne peut pas être déclarée valide au-delà de
+  // son propre horizon : `expiresAt > anticipated.at` décrit un objet qui
+  // affirme rester pertinent après la disparition de la raison qui le
+  // justifiait. C'est cette incohérence qui, relue depuis la base, produisait
+  // une recommandation active sur une échéance périmée.
+  //
+  // `expiresAt` devient donc OBLIGATOIRE dès qu'un horizon existe : absent, il
+  // vaudrait « valide sans limite », soit le fail-open exact qu'on ferme ici.
+  if (!validDate(expiresAt)) return false
+  if (Date.parse(expiresAt as string) > Date.parse(value.at)) return false
 
   return true
 }
@@ -208,7 +228,7 @@ export function isSituation(value: any): value is Situation {
     // validé intégralement. Un horizon à moitié correct serait pire qu'absent :
     // il produirait une urgence et une expiration calculées sur du sable.
     (value.anticipated === undefined ||
-      horizonValide(value.anticipated, value.evidenceIds)) &&
+      horizonValide(value.anticipated, value.evidenceIds, value.expiresAt)) &&
     validDate(value.createdAt) &&
     validDate(value.lastEvaluatedAt) &&
     optionalDate(value.expiresAt)

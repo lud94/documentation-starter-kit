@@ -138,6 +138,31 @@ export function eligibilityDecision(
         blockedUntil: new Date(opensMs).toISOString(),
       }
     }
+
+    // ── BORNE DROITE, PORTÉE DIRECTEMENT ICI (ARCH-HORIZON-001a) ────────────
+    //
+    // ⚠️ DÉFENSE EN PROFONDEUR, ET ELLE N'EST PAS REDONDANTE. Le clamp de
+    // `buildSituation` garantit `expiresAt ≤ anticipated.at` pour tout objet
+    // que NOUS fabriquons. Mais une Situation relue depuis la persistance est
+    // une ENTRÉE, pas une valeur de confiance : elle a pu être écrite par une
+    // version antérieure du code, corrompue, ou forgée à la main.
+    //
+    // Le cas reproduit avant correction :
+    //     anticipated.at = 2026-01-01   (passé)
+    //     expiresAt      = 2027-01-01   (encore futur)
+    //     now            = 2026-08-23
+    // passait le contrôle d'expiration n°1 — puisque `expiresAt` est futur —
+    // et produisait une recommandation ACTIVE sur une échéance périmée depuis
+    // huit mois.
+    //
+    // Le Decision Kernel ne doit jamais supposer que tout objet entrant a été
+    // fabriqué par la version courante de `buildSituation()`.
+    if (nowMs >= atMs) {
+      return {
+        eligible: false,
+        reason: 'situation_expired',
+      }
+    }
   }
 
   // 4. Ne pas recommander une action qui entre en collision

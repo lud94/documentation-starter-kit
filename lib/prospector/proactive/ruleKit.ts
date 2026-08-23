@@ -266,11 +266,23 @@ export function buildSituation(input: BuildSituationInput): Situation {
   // après cette opportunité — c'est exactement la nature d'une borne de
   // validité.
   //
-  // C'est ce clamp qui fait respecter, DANS LE CŒUR, l'invariant « une
-  // situation d'opportunité ne reste pas active après son échéance » :
-  // `eligibilityDecision` rend `situation_expired` dès `now ≥ expiresAt`. Le
-  // pack porte la borne gauche (il n'émet pas trop tôt), le cœur porte la
-  // borne droite. Aucune des deux ne repose sur la vigilance de l'autre.
+  // ── RÉPARTITION DES RESPONSABILITÉS (corrigée en ARCH-HORIZON-001a) ──────
+  // Une version antérieure de ce commentaire attribuait la borne gauche au
+  // Rule Pack. C'est FAUX depuis ARCH-HORIZON-001 : les deux bornes sont
+  // portées par le cœur, et aucune ne dépend de la vigilance d'un pack.
+  //
+  //   Eligibility (cœur)        → borne GAUCHE : `anticipated_window_not_open`
+  //                               tant que `now < actionWindowOpensAt`
+  //   Eligibility (cœur)        → borne DROITE, en DIRECT : `situation_expired`
+  //                               dès `now ≥ anticipated.at`, même si
+  //                               `expiresAt` relu est incohérent
+  //   buildSituation (ici)      → borne de VALIDITÉ persistée : le clamp
+  //                               ci-dessous, plus le garde de `validators.ts`
+  //                               qui exige `expiresAt ≤ anticipated.at`
+  //
+  // Ce clamp reste donc nécessaire — il produit des objets cohérents — mais il
+  // n'est plus la SEULE protection : un objet relu depuis la base n'a pas
+  // forcément été fabriqué par la version courante de cette fonction.
   const expiryReglementaire = situationExpiry(evidence, context.now, input.ttlDays)
   const horizonMs = horizon ? validDateMs(horizon.at) : null
   const expiresAt =
