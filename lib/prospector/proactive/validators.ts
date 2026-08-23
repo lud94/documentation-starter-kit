@@ -116,6 +116,49 @@ function packEtTypeConnus(rulePackId: unknown, type: unknown): boolean {
   return pack.declaredSituationTypes.includes(type)
 }
 
+/**
+ * ARCH-HORIZON-001 — VALIDATION D'UN HORIZON ANTICIPÉ.
+ *
+ * ⚠️ N'EST APPELÉE QUE SI LE CHAMP EST PRÉSENT. Une Situation sans
+ * `anticipated` — c'est-à-dire l'immense majorité, et TOUTES les situations
+ * antérieures à ce lot — reste valide exactement comme avant. La
+ * rétrocompatibilité n'est pas une tolérance : le champ est optionnel par
+ * conception.
+ *
+ * ⚠️ `derivedFrom ⊆ evidenceIds` est l'invariant qui compte vraiment. Il
+ * garantit que la date dérivée ne s'appuie que sur des preuves déjà retenues,
+ * donc déjà passées par le filtre temporel du moteur. Sans lui, un horizon
+ * pourrait citer une evidence écartée — ou inexistante — et le rejeu d'un cas
+ * historique à `now = T` cesserait d'être fidèle.
+ */
+const ASSERTION_TYPES: readonly string[] = ['fact', 'inference', 'assumption']
+
+function horizonValide(value: any, evidenceIds: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+
+  if (!validDate(value.at)) return false
+  if (!validDate(value.actionWindowOpensAt)) return false
+
+  // Fenêtre dégénérée ou inversée : refusée. Une fenêtre vide n'a aucun sens
+  // métier, et diviser par sa durée n'en aurait pas davantage.
+  if (Date.parse(value.actionWindowOpensAt) >= Date.parse(value.at)) return false
+
+  if (typeof value.assertionType !== 'string') return false
+  if (!ASSERTION_TYPES.includes(value.assertionType)) return false
+
+  if (!Array.isArray(value.derivedFrom) || value.derivedFrom.length === 0) {
+    return false
+  }
+  if (!value.derivedFrom.every((id: any) => nonEmpty(id))) return false
+
+  // Sous-ensemble strict des evidences retenues par la situation.
+  if (!Array.isArray(evidenceIds)) return false
+  const retenues = new Set(evidenceIds as string[])
+  if (!value.derivedFrom.every((id: string) => retenues.has(id))) return false
+
+  return true
+}
+
 function motionsConnues(value: unknown): boolean {
   return (
     Array.isArray(value) &&
@@ -161,6 +204,11 @@ export function isSituation(value: any): value is Situation {
     // retomberait en `no_action` sans que rien n'explique pourquoi.
     packEtTypeConnus(value.rulePackId, value.type) &&
     isLensId(value.lensId) &&
+    // ARCH-HORIZON-001 — l'horizon est optionnel, mais s'il existe il est
+    // validé intégralement. Un horizon à moitié correct serait pire qu'absent :
+    // il produirait une urgence et une expiration calculées sur du sable.
+    (value.anticipated === undefined ||
+      horizonValide(value.anticipated, value.evidenceIds)) &&
     validDate(value.createdAt) &&
     validDate(value.lastEvaluatedAt) &&
     optionalDate(value.expiresAt)

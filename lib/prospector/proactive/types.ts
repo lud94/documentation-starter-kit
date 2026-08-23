@@ -125,6 +125,69 @@ export type EvidenceEvent<T extends string = string> =
   | DatedEventEvidence<T>
   | UndatedStateEvidence<T>
 
+/**
+ * ARCH-HORIZON-001 — ÉCHÉANCE MÉTIER ANTICIPÉE.
+ *
+ * ── LE MANQUE QUE CETTE PRIMITIVE COMBLE ────────────────────────────────────
+ * Le moteur savait mesurer la FRAÎCHEUR d'un événement passé — une urgence qui
+ * DÉCROÎT avec le temps. Il ne savait pas représenter une échéance FUTURE dont
+ * l'urgence CROÎT à mesure qu'on s'en approche. Aucune composition des
+ * primitives existantes ne produit cette forme.
+ *
+ * ── UNIVERSELLE, ET DÉLIBÉRÉMENT SANS VOCABULAIRE DE DOMAINE ────────────────
+ * Renouvellement de contrat, reconduction SaaS, date limite d'appel d'offres,
+ * expiration de certification, fin de garantie : cinq domaines indépendants,
+ * une seule forme — « une date future connue à laquelle il devient opportun
+ * d'agir ». Aucun terme de bail, de bureau ni d'immobilier n'entre ici.
+ */
+export interface AnticipatedHorizon {
+  /**
+   * Date métier ANTICIPÉE — observée ou dérivée.
+   *
+   * ⚠️ N'EST JAMAIS `Situation.expiresAt`. Celui-ci borne la validité de
+   * l'INTERPRÉTATION ; celle-ci décrit un fait métier attendu. Les confondre
+   * ferait passer une échéance commerciale pour une durée de cache.
+   */
+  at: string
+
+  /**
+   * Début de la fenêtre d'action. OBLIGATOIRE, sans valeur par défaut.
+   *
+   * ⚠️ LE CŒUR NE CONNAÎT AUCUN DÉLAI RAISONNABLE UNIVERSEL. Six mois avant une
+   * fin de bail, trente jours avant une certification, deux ans avant un
+   * renouvellement d'infrastructure : c'est une politique métier, elle
+   * appartient au Rule Pack. Un défaut du core en ferait une vérité qu'il n'a
+   * aucun moyen de connaître. Absent ⇒ horizon INVALIDE, jamais « toujours
+   * ouvert ».
+   */
+  actionWindowOpensAt: string
+
+  /**
+   * Statut épistémique de CETTE DATE — vocabulaire existant du moteur.
+   *
+   * `fact` UNIQUEMENT si la date elle-même a été observée. Une date calculée
+   * (début + durée) est une `inference`, et le rester est ce qui empêche la
+   * promotion silencieuse d'une estimation en vérité.
+   *
+   * ⚠️ Le cœur vérifie la STRUCTURE, pas la SINCÉRITÉ de cette étiquette : un
+   * pack qui écrirait `fact` sur une date calculée produirait une donnée
+   * structurellement valide et épistémiquement fausse. Cette responsabilité
+   * appartient au pack et à ses tests.
+   */
+  assertionType: AssertionType
+
+  /**
+   * EvidenceIds ayant servi au calcul. NON VIDE.
+   *
+   * Doit être un SOUS-ENSEMBLE de `Situation.evidenceIds` : la dérivation ne
+   * peut s'appuyer que sur des preuves déjà retenues, donc déjà passées par le
+   * filtre temporel du moteur. C'est ce qui rend la date recomputable par un
+   * auditeur — et ce qui garantit qu'un rejeu à `now = T` n'utilise que ce qui
+   * était connaissable à T.
+   */
+  derivedFrom: readonly string[]
+}
+
 export interface Situation {
   id: string
   accountId: string
@@ -168,6 +231,14 @@ export interface Situation {
   ruleVersion: string
   lensId: string
   lensVersion: string
+
+  /**
+   * Échéance métier anticipée — ABSENTE pour l'immense majorité des situations.
+   *
+   * ⚠️ N'ENTRE PAS DANS L'IDENTITÉ. Une échéance recalculée REMPLACE la ligne
+   * courante, elle n'en crée pas une seconde — même doctrine que les versions.
+   */
+  anticipated?: AnticipatedHorizon
 
   createdAt: string
   lastEvaluatedAt: string

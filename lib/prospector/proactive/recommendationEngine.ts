@@ -81,6 +81,9 @@ const ELIGIBILITY_REASON: Record<EligibilityReason, string> = {
   recent_contact:
     'Le contact est trop récent ; Jarvis applique un délai avant de recommander une nouvelle sollicitation.',
 
+  anticipated_window_not_open:
+    'L’échéance anticipée est connue, mais sa fenêtre d’action n’est pas encore ouverte ; agir maintenant serait prématuré.',
+
   invalid_context:
     'Le contexte disponible est invalide ou insuffisant pour produire une recommandation fiable.',
 }
@@ -234,11 +237,13 @@ const nowIso = Number.isFinite(nowMs)
 
     reason: ELIGIBILITY_REASON[eligibilityReason],
 
-    whyNow:
-      eligibilityReason === 'recent_contact' &&
-      blockedUntil
-        ? `Ne pas agir maintenant. Réévaluation possible après ${blockedUntil}.`
-        : 'Aucune action commerciale ne doit être recommandée dans le contexte actuel.',
+    // Tout blocage DATÉ dit quand réévaluer, quelle qu'en soit la raison.
+    // La condition portait sur `recent_contact` ; elle porte désormais sur la
+    // présence d'une date, ce qui couvre aussi la fenêtre d'action non encore
+    // ouverte. Le texte des cas existants est INCHANGÉ.
+    whyNow: blockedUntil
+      ? `Ne pas agir maintenant. Réévaluation possible après ${blockedUntil}.`
+      : 'Aucune action commerciale ne doit être recommandée dans le contexte actuel.',
 
     priority: 'low',
 

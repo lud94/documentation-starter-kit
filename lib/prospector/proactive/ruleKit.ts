@@ -15,6 +15,7 @@
 // à l'identique. Toute divergence de comportement serait un défaut, pas une
 // amélioration : les 158 tests existants sont l'oracle d'équivalence.
 import type {
+  AnticipatedHorizon,
   DatedEventEvidence,
   EvidenceEvent,
   Situation,
@@ -157,6 +158,48 @@ export function urgencyFromEvidence(
   )
 }
 
+/**
+ * ARCH-HORIZON-001 — URGENCE D'UNE ÉCHÉANCE FUTURE.
+ *
+ * Miroir exact de `freshnessScore`, qui regarde le PASSÉ et décroît. Celle-ci
+ * regarde l'AVENIR et croît.
+ *
+ * ── AUCUN SEUIL DANS LE CŒUR ────────────────────────────────────────────────
+ * Une première version proposait des paliers 30/60/90 jours. C'était une
+ * politique métier déguisée en primitive : trente jours avant une fin de bail
+ * et trente jours avant une expiration de certificat n'ont pas la même
+ * signification. La progression est donc NORMALISÉE sur la fenêtre que le pack
+ * déclare — la forme de la montée appartient au pack, le calcul appartient au
+ * cœur.
+ *
+ *     now < opensAt      → 0     (la fenêtre n'est pas ouverte)
+ *     opensAt ≤ now < at → (now - opensAt) / (at - opensAt)   ∈ [0,1)
+ *     now ≥ at           → 0     (l'échéance est atteinte : plus une anticipation)
+ *
+ * FAIL CLOSED : dates illisibles ou fenêtre dégénérée ⇒ 0. Une urgence ne se
+ * déduit jamais d'une donnée qu'on n'a pas su lire.
+ */
+export function urgencyFromHorizon(
+  horizon: AnticipatedHorizon,
+  now: Date,
+): number {
+  if (!horizon) return 0
+
+  const openMs = validDateMs(horizon.actionWindowOpensAt)
+  const atMs = validDateMs(horizon.at)
+  const nowMs = now.getTime()
+
+  if (openMs === null || atMs === null || !Number.isFinite(nowMs)) return 0
+
+  // Fenêtre dégénérée ou inversée : refusée plutôt qu'interprétée.
+  if (atMs <= openMs) return 0
+
+  if (nowMs < openMs) return 0
+  if (nowMs >= atMs) return 0
+
+  return roundScore((nowMs - openMs) / (atMs - openMs))
+}
+
 export function situationExpiry(
   evidence: readonly EvidenceEvent[],
   now: Date,
@@ -192,6 +235,8 @@ export interface BuildSituationInput {
   rulePackVersion: string
   ttlDays: number
   rationale: string
+  /** Échéance métier anticipée, déclarée par le pack. Optionnelle. */
+  anticipated?: AnticipatedHorizon
 }
 
 /**
@@ -211,6 +256,27 @@ export interface BuildSituationInput {
 export function buildSituation(input: BuildSituationInput): Situation {
   const { context, evidence } = input
   const nowIso = context.now.toISOString()
+  const horizon = input.anticipated
+
+  // ── VALIDITÉ DE L'INTERPRÉTATION, BORNÉE PAR L'ÉCHÉANCE MÉTIER ────────────
+  // Ce n'est PAS un détournement de `expiresAt`, et la distinction tient à qui
+  // décide : `anticipated.at` est une ENTRÉE déclarée par le pack, `expiresAt`
+  // reste une SORTIE calculée par le cœur. Celui-ci se borne à constater qu'une
+  // interprétation fondée sur une opportunité future ne peut pas rester valide
+  // après cette opportunité — c'est exactement la nature d'une borne de
+  // validité.
+  //
+  // C'est ce clamp qui fait respecter, DANS LE CŒUR, l'invariant « une
+  // situation d'opportunité ne reste pas active après son échéance » :
+  // `eligibilityDecision` rend `situation_expired` dès `now ≥ expiresAt`. Le
+  // pack porte la borne gauche (il n'émet pas trop tôt), le cœur porte la
+  // borne droite. Aucune des deux ne repose sur la vigilance de l'autre.
+  const expiryReglementaire = situationExpiry(evidence, context.now, input.ttlDays)
+  const horizonMs = horizon ? validDateMs(horizon.at) : null
+  const expiresAt =
+    horizonMs !== null && horizonMs < Date.parse(expiryReglementaire)
+      ? new Date(horizonMs).toISOString()
+      : expiryReglementaire
 
   return {
     id: stableId('sit', [
@@ -226,7 +292,13 @@ export function buildSituation(input: BuildSituationInput): Situation {
     evidenceIds: evidence.map((item) => item.id),
     confidence: averageConfidence(evidence),
     relevance: roundScore(context.relevance),
-    urgency: urgencyFromEvidence(evidence, context.now),
+    // ⚠️ `max`, jamais un remplacement : une evidence récente ne doit pas
+    // perdre l'urgence qu'elle justifie parce qu'une échéance est lointaine.
+    // Le composant horizon ne peut qu'AJOUTER de l'urgence.
+    urgency: Math.max(
+      urgencyFromEvidence(evidence, context.now),
+      horizon ? urgencyFromHorizon(horizon, context.now) : 0,
+    ),
     rationale: input.rationale,
     rulePackId: input.rulePackId,
     rulePackVersion: input.rulePackVersion,
@@ -234,8 +306,9 @@ export function buildSituation(input: BuildSituationInput): Situation {
     ruleVersion: input.ruleVersion,
     lensId: context.lensId,
     lensVersion: context.lensVersion,
+    ...(horizon ? { anticipated: horizon } : {}),
     createdAt: nowIso,
     lastEvaluatedAt: nowIso,
-    expiresAt: situationExpiry(evidence, context.now, input.ttlDays),
+    expiresAt,
   }
 }

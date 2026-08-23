@@ -20,6 +20,12 @@ export type EligibilityReason =
   | 'action_already_scheduled'
   | 'active_recommendation_exists'
   | 'recent_contact'
+  /**
+   * ARCH-HORIZON-001 — la fenêtre d'action n'est pas encore ouverte.
+   *
+   * Blocage TEMPORAIRE et daté : `blockedUntil` porte `actionWindowOpensAt`.
+   */
+  | 'anticipated_window_not_open'
   | 'invalid_context'
 
 export interface EligibilityContext {
@@ -92,7 +98,49 @@ export function eligibilityDecision(
     }
   }
 
-  // 3. Ne pas recommander une action qui entre en collision
+  // 3. ARCH-HORIZON-001 — LA FENÊTRE D'ACTION N'EST PAS ENCORE OUVERTE.
+  //
+  // ⚠️ CE GARDE-FOU EST INDISPENSABLE, ET IL APPARTIENT AU CŒUR.
+  // `urgency` vaut `max(urgenceEvidence, urgenceHorizon)`. Une evidence très
+  // récente peut donc porter une urgence de 1 alors que `now` précède encore
+  // `actionWindowOpensAt`. Sans ce blocage, Jarvis produirait une
+  // recommandation ACTIVE avant l'ouverture de la fenêtre — en contradiction
+  // directe avec le champ qui la déclare. Le laisser à la discipline du Rule
+  // Pack reviendrait à espérer que chaque pack y pense.
+  //
+  // Placé APRÈS l'opt-out : celui-ci est un veto absolu, et répondre « revenez
+  // à telle date » à un compte qui a demandé à ne plus être sollicité serait
+  // faux. Placé AVANT les collisions d'agenda : inutile d'invoquer un
+  // rendez-vous déjà pris pour une action qui n'est de toute façon pas encore
+  // permise.
+  //
+  // Le cas `now >= anticipated.at` n'est PAS traité ici : le clamp d'`expiresAt`
+  // dans `buildSituation` le fait déjà tomber en `situation_expired` au
+  // contrôle n°1. Le dupliquer créerait deux définitions de la même règle.
+  if (situation.anticipated) {
+    const horizon = situation.anticipated
+    const opensMs = validDateMs(horizon.actionWindowOpensAt)
+    const atMs = validDateMs(horizon.at)
+
+    // Dates illisibles ou fenêtre dégénérée : refus structurel, jamais une
+    // interprétation « au mieux ».
+    if (opensMs === null || atMs === null || opensMs >= atMs) {
+      return {
+        eligible: false,
+        reason: 'invalid_context',
+      }
+    }
+
+    if (nowMs < opensMs) {
+      return {
+        eligible: false,
+        reason: 'anticipated_window_not_open',
+        blockedUntil: new Date(opensMs).toISOString(),
+      }
+    }
+  }
+
+  // 4. Ne pas recommander une action qui entre en collision
   //    avec un engagement déjà prévu.
   if (context.meetingScheduled) {
     return {
@@ -108,7 +156,7 @@ export function eligibilityDecision(
     }
   }
 
-  // 4. Anti-spam / anti-duplication.
+  // 5. Anti-spam / anti-duplication.
   if (context.activeRecommendationExists) {
     return {
       eligible: false,
@@ -116,7 +164,7 @@ export function eligibilityDecision(
     }
   }
 
-  // 5. Cooldown relationnel.
+  // 6. Cooldown relationnel.
   if (context.lastContactAt) {
     const lastContactMs = validDateMs(context.lastContactAt)
     const cooldownHours =
