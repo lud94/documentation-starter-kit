@@ -47,20 +47,44 @@ export {
  * décider qu'une evidence périmée ou datée du futur est acceptable. Les
  * invariants temporels ne sont pas un choix métier.
  */
+/**
+ * L'evidence CONCERNE-T-ELLE cette cible ? — prédicat de CIBLAGE seul.
+ *
+ * ⚠️ EXTRAIT DE `evidenceIsUsable`, SANS MODIFICATION. Trois règles, et elles
+ * décident à elles seules de la sémantique Evidence ↔ Target :
+ *
+ *   1. le compte doit correspondre ;
+ *   2. une evidence PORTANT un `personId` ne vaut QUE pour cette personne —
+ *      elle n'est donc jamais consommée par une cible « compte » ;
+ *   3. une evidence de portée `person` SANS `personId` ne vaut pas pour une
+ *      cible personne (on ignore de qui elle parle), mais reste valable au
+ *      niveau compte.
+ *
+ * Exporté pour que le validateur du runner puisse vérifier qu'aucune evidence
+ * n'est orpheline EN UTILISANT CETTE RÈGLE-CI, et non une reformulation qui
+ * finirait par diverger. Le filtrage TEMPOREL, lui, reste hors de ce prédicat :
+ * une evidence expirée est légitimement présente, simplement inexploitable.
+ */
+export function evidenceMatchesTarget(
+  evidence: EvidenceEvent,
+  target: { accountId: string; personId?: string },
+): boolean {
+  if (!evidence || !evidence.id || !evidence.accountId) return false
+  if (evidence.accountId !== target.accountId) return false
+  if (evidence.personId && evidence.personId !== target.personId) return false
+  if (target.personId && evidence.scope === 'person' && !evidence.personId) {
+    return false
+  }
+  return true
+}
+
 function evidenceIsUsable(
   evidence: EvidenceEvent,
   context: SituationEvaluationContext,
 ): boolean {
   const nowMs = context.now.getTime()
 
-  if (!evidence || !evidence.id || !evidence.accountId) return false
-  if (evidence.accountId !== context.accountId) return false
-
-  // Une evidence de relation ne vaut que pour LA personne évaluée.
-  if (evidence.personId && evidence.personId !== context.personId) return false
-  if (context.personId && evidence.scope === 'person' && !evidence.personId) {
-    return false
-  }
+  if (!evidenceMatchesTarget(evidence, context)) return false
 
   if (!validScore(evidence.confidence)) return false
   if (evidence.confidence < MIN_EVIDENCE_CONFIDENCE_VALUE) return false

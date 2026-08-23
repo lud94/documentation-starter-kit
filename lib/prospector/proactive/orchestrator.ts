@@ -11,8 +11,12 @@
 //
 // La seule fonction impure du fichier est `persistEvaluation()`, isolée en fin
 // de module et nommée pour qu'on ne l'appelle pas par accident.
-import { LENS_REGISTRY } from './lens/registry'
-import { validateBusinessContext, type BusinessContextV0 } from './lens/context'
+import type { BusinessContextV0 } from './lens/context'
+import {
+  evaluateEvidence,
+  resolveBusinessContext,
+  type KernelTarget,
+} from './decisionKernel'
 import type { Lead } from '../../../types/prospector'
 import {
   accountIdForLead,
@@ -20,8 +24,6 @@ import {
   personIdForLead,
   type TaskSnapshot,
 } from './dataBridge'
-import { evaluateSituations } from './situationEngine'
-import { recommendationDecision } from './recommendationEngine'
 import type { EligibilityContext } from './eligibility'
 import type {
   EvidenceEvent,
@@ -197,17 +199,15 @@ export function evaluate(input: ProactiveEvaluationInput): ProactiveEvaluation {
   if (!input || !Array.isArray(input.leads)) return VIDE
   if (!input.now || !Number.isFinite(input.now.getTime())) return VIDE
 
-  // ⚠️ FAIL CLOSED SUR LE CONTEXTE. Un contexte absent, une lens inconnue ou
-  // une version de lens qui ne correspond pas au registre ⇒ AUCUNE évaluation.
-  // Utiliser silencieusement une version plus récente attribuerait des
-  // situations à une politique qui ne les a pas produites.
-  const validation = validateBusinessContext(
-    input.businessContext,
-    (id) => LENS_REGISTRY[id].lensVersion,
-  )
+  // ⚠️ FAIL CLOSED SUR LE CONTEXTE, ET AVANT TOUT TRAVAIL. Un contexte
+  // invalide doit rendre une évaluation VIDE — evidences comprises. Valider
+  // seulement dans le kernel rendrait `evidence` non vide alors que rien n'a
+  // été évalué : une sortie à moitié vraie, ce qui est pire que rien.
+  //
+  // La RÈGLE de validation n'est pas recopiée ici : `resolveBusinessContext`
+  // est celle-là même que le kernel applique.
+  const validation = resolveBusinessContext(input.businessContext)
   if (!validation.ok) return VIDE
-  const ctx = validation.context
-  const lens = LENS_REGISTRY[ctx.lensId]
 
   const evidence = evidenceFromLeads(input.leads, {
     now: input.now,
@@ -217,55 +217,35 @@ export function evaluate(input: ProactiveEvaluationInput): ProactiveEvaluation {
   if (evidence.length === 0) return { ...VIDE, evidence: [] }
 
   const index = buildIndex(input.leads)
-  const cibles = targetsFromEvidence(evidence)
 
-  const situations: Situation[] = []
-  const recommendations: Recommendation[] = []
-
-  for (const cible of cibles) {
+  // ── LA PART PROPRE À PROSPECTOR ───────────────────────────────────────────
+  // Construire les cibles À PARTIR DE LEADS : c'est ici, et nulle part
+  // ailleurs, que `Lead.score` devient une pertinence. Le kernel reçoit des
+  // cibles déjà constituées et n'a aucune idée de ce qu'est un lead.
+  const targets: KernelTarget[] = targetsFromEvidence(evidence).map((cible) => {
     const connu = index.get(indexKey(cible))
+    const fourni = input.eligibilityFor ? input.eligibilityFor(cible) : {}
 
-    const relevance = input.relevanceFor
-      ? clampScore(input.relevanceFor(cible))
-      : (connu?.relevance ?? 0)
-
-    const trouvees = evaluateSituations(
-      evidence,
-      {
-        now: input.now,
-        accountId: cible.accountId,
-        personId: cible.personId,
-        relevance,
-        lensId: lens.lensId,
-        lensVersion: lens.lensVersion,
+    return {
+      accountId: cible.accountId,
+      personId: cible.personId,
+      relevance: input.relevanceFor
+        ? clampScore(input.relevanceFor(cible))
+        : (connu?.relevance ?? 0),
+      eligibility: {
+        ...fourni,
+        meetingScheduled:
+          fourni.meetingScheduled ?? connu?.meetingScheduled ?? false,
       },
-      lens.rulePacks,
-    )
-
-    for (const situation of trouvees) {
-      situations.push(situation)
-
-      const fourni = input.eligibilityFor ? input.eligibilityFor(cible) : {}
-
-      recommendations.push(
-        recommendationDecision(situation, {
-          // `now` reste sous notre contrôle : un appelant ne doit pas pouvoir
-          // décaler l'horloge d'éligibilité en passant un contexte partiel.
-          ...fourni,
-          now: input.now,
-          meetingScheduled:
-            fourni.meetingScheduled ?? connu?.meetingScheduled ?? false,
-          // Le contexte n'est jamais fourni par le résolveur d'éligibilité :
-          // il vient de l'entrée validée, hors de portée d'un appelant partiel.
-          businessContext: {
-            contextId: ctx.contextId,
-            contextVersion: ctx.contextVersion,
-            authorizedMotions: ctx.authorizedMotions,
-          },
-        }),
-      )
     }
-  }
+  })
+
+  const { situations, recommendations } = evaluateEvidence({
+    now: input.now,
+    businessContext: input.businessContext,
+    evidence,
+    targets,
+  })
 
   return { evidence, situations, recommendations }
 }
