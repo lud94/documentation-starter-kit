@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "prospector-v3-policies/0.1",
+  "bundleVersion": "0.1",
+  "lens": {
+    "id": "FABEL",
+    "version": "0.1",
+    "motion": "ACQUIRE",
+    "role": "BUSINESS_DEVELOPER"
+  },
+  "hypotheses": [
+    "SPACE_EXPANSION",
+    "SPACE_CONTRACTION",
+    "FLEX_REMOVE_WINDOW"
+  ],
+  "temporal": {
+    "version": "temporal-0.1",
+    "precision": [
+      "DATETIME",
+      "DATE",
+      "MONTH",
+      "QUARTER",
+      "YEAR",
+      "RANGE",
+      "UNKNOWN"
+    ],
+    "invariants": [
+      "WORLD_TIME_NE_KNOWLEDGE_TIME",
+      "NO_HINDSIGHT",
+      "NO_FALSE_PRECISION",
+      "VALID_UNTIL_NE_EXPIRED_AT",
+      "DETECTED_AT_NOT_FRESHNESS",
+      "DERIVED_TIME_MARKED"
+    ]
+  },
+  "ranking": {
+    "version": "attention-0.1",
+    "sections": [
+      "ACT_NOW",
+      "REVIEW_NOW",
+      "RESEARCH_NOW",
+      "BLOCKED_WAITING",
+      "MONITOR",
+      "EXCLUDED"
+    ],
+    "priorityTiers": [
+      "HIGH",
+      "MEDIUM",
+      "LOW",
+      "NONE"
+    ],
+    "sortKey": [
+      "section",
+      "priority",
+      "timing",
+      "fit",
+      "actionability",
+      "confidence",
+      "evidenceCoverage",
+      "latestMaterialWorldTime",
+      "accountId"
+    ],
+    "hardExclusions": [
+      "OUT_OF_LENS",
+      "STALE",
+      "RESOLVED",
+      "NO_ACTIVE_HYPOTHESIS"
+    ],
+    "noProbability": true
+  },
+  "humanControl": {
+    "version": "human-control-0.1",
+    "states": [
+      "AUTO",
+      "REVIEW_WHEN_NEEDED",
+      "APPROVAL_REQUIRED"
+    ],
+    "sensitiveContractionOutbound": "APPROVAL_REQUIRED"
+  },
+  "pilotGates": {
+    "top5HumanRelevanceCandidate": 0.7,
+    "sensitiveControlCompliance": 1.0,
+    "explainability2of2Candidate": 0.8,
+    "noRecurrentCriticalMissPattern": true,
+    "noProbabilityDiscipline": true
+  }
+}
