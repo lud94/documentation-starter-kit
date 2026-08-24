@@ -19,6 +19,8 @@
 // Couverture + existence sont la forme MÉCANIQUE de « aucune suppression
 // silencieuse » : rien ne s'évapore, rien ne s'invente.
 
+import { createHash } from 'node:crypto'
+
 export interface RawManifestEntry {
   path: string
   sha256: string
@@ -57,13 +59,13 @@ export interface RawDatasetArtifact {
   text: string
 }
 
-import { createHash } from 'node:crypto'
-
 export interface RawIntegrityError {
   code: string
   path: string
   message: string
 }
+
+const SHA256_HEX = /^[0-9a-f]{64}$/
 
 export type RawIntegrityValidation =
   | { ok: true }
@@ -148,8 +150,32 @@ export function validateGoldenCaseAgainstRaw(
     }
   }
 
+  // ── FORME DE L'ARTEFACT — FAIL CLOSED, JAMAIS UNE EXCEPTION ─────────────
+  //
+  // ⚠️ `createHash().update(undefined)` LÈVE. Un artefact malformé faisait donc
+  // remonter une exception au lieu d'un refus : l'appelant recevait un plantage
+  // là où le contrat promet une liste d'erreurs, et un `try/catch` distrait plus
+  // haut aurait pu le lire comme « rien à signaler ».
+  const formeInvalide: string[] = []
+  if (typeof artifact.path !== 'string' || !artifact.path.trim()) formeInvalide.push('path')
+  if (typeof artifact.sha256 !== 'string' || !SHA256_HEX.test(artifact.sha256)) {
+    formeInvalide.push('sha256')
+  }
+  if (typeof artifact.text !== 'string') formeInvalide.push('text')
+
+  if (formeInvalide.length > 0) {
+    add(
+      'raw_artifact_invalid',
+      'artifact',
+      `Artefact malformé : ${formeInvalide.join(', ')}. \`path\` doit être une chaîne non vide, ` +
+        '`sha256` 64 caractères hexadécimaux minuscules, `text` une chaîne. Une forme invalide se ' +
+        'REFUSE, elle ne lève pas.',
+    )
+    return { ok: false, errors }
+  }
+
   // ── L'EMPREINTE EST RECALCULÉE, JAMAIS CRUE SUR PAROLE ──────────────────
-  const empreinteReelle = createHash('sha256').update(artifact.text ?? '', 'utf8').digest('hex')
+  const empreinteReelle = createHash('sha256').update(artifact.text, 'utf8').digest('hex')
 
   if (empreinteReelle !== artifact.sha256) {
     add(
@@ -233,6 +259,56 @@ export function validateGoldenCaseAgainstRaw(
       'rawSource.datasetVersion',
       `Version de dataset déclarée « ${anchor.datasetVersion} » ≠ ` +
         `« ${rawDataset?.datasetVersion} » du dataset.`,
+    )
+  }
+
+  // ── R1 — L'HORLOGE DE REJEU EST CELLE DU SNAPSHOT, PAS UNE AUTRE ────────
+  //
+  // ⚠️ POURQUOI CE CONTRÔLE VIT ICI. La convention « now = observedAt =
+  // dataset.asOf » n'était affirmée que par une CHAÎNE, `source: "dataset.asOf"`,
+  // que rien ne confrontait à la réalité. Un cas pouvait donc déclarer cette
+  // provenance et rejouer à une autre date — décalant la fraîcheur, donc
+  // l'urgence, donc les verdicts, tout en paraissant conforme.
+  //
+  // Seule cette couche détient le dataset AUTHENTIFIÉ : c'est le seul endroit où
+  // la valeur peut être vérifiée plutôt que crue.
+  //
+  // Le dataset dit lui-même de quoi il parle : « expected Prospector behavior
+  // given evidence available as-of ». Rejouer à une autre date, ce serait juger
+  // le moteur sur un monde que le corpus ne décrit pas.
+  const asOf = rawDataset?.asOf
+
+  for (const champ of ['now', 'observedAt'] as const) {
+    const declare = golden?.assumptions?.[champ]
+
+    if (declare?.source !== 'dataset.asOf') {
+      add(
+        'assumption_clock_source_invalid',
+        `assumptions.${champ}.source`,
+        `\`${champ}.source\` doit valoir « dataset.asOf » : RAIL S rejoue le snapshot du dataset, ` +
+          'jamais une horloge choisie cas par cas.',
+      )
+    }
+
+    if (declare?.value !== asOf) {
+      add(
+        'assumption_clock_not_dataset_as_of',
+        `assumptions.${champ}.value`,
+        `\`${champ}.value\` vaut « ${declare?.value} » alors que le dataset authentifié déclare ` +
+          `\`asOf\` = « ${asOf} ». ⚠️ La provenance annoncée ne se croit pas : une horloge décalée ` +
+          'déplace la fraîcheur, donc l’urgence, donc les verdicts — tout en paraissant conforme.',
+      )
+    }
+  }
+
+  // `asOf` est un instantané au JOUR près dans ce schéma V0.1. Annoncer une
+  // précision plus fine reviendrait à prétendre savoir l'heure du snapshot.
+  if (golden?.assumptions?.now?.precision !== 'DAY') {
+    add(
+      'assumption_clock_precision_invalid',
+      'assumptions.now.precision',
+      `\`now.precision\` doit valoir « DAY » : \`dataset.asOf\` (« ${asOf} ») est un instantané ` +
+        'au jour près, et annoncer une précision plus fine prétendrait connaître l’heure du snapshot.',
     )
   }
 

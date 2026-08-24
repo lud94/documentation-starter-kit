@@ -1491,3 +1491,198 @@ describe('GOLDEN-SCHEMA-001a — cohérences de contrat', () => {
     )
   })
 })
+
+// ── R2 — LA VALEUR TEMPORELLE PORTE EXACTEMENT SA PRÉCISION ─────────────────
+//
+// `Date.parse` est permissif : « 2026-05 » y devient `2026-05-01`. Une claim
+// déclarée `DAY` portant « 2026-05 » projetait donc une date au premier du mois
+// — et comme `freshnessScore` lit `occurredAt`, cette normalisation FABRIQUE une
+// fraîcheur, donc une urgence, à partir d'une précision que la source n'a pas.
+
+describe('GOLDEN-SCHEMA-001a — valeur ↔ précision temporelle', () => {
+  /** Cas SIGNÉ dont l'unique claim porte la précision et la valeur données. */
+  function avecTemps(precision: string, occurredAt?: string): any {
+    const c = casSigne()
+    const claim = c.adjudication.rawEvidence[0].claims[0]
+    claim.temporalNature = 'EVENT'
+    claim.temporalPrecision = precision
+    if (occurredAt === undefined) delete claim.occurredAt
+    else claim.occurredAt = occurredAt
+    return c
+  }
+
+  /** Même chose, mais BLOQUÉ — pour les précisions qui ne projettent pas. */
+  function bloqueAvecTemps(precision: string, occurredAt?: string): any {
+    const c = avecTemps(precision, occurredAt)
+    c.executability = 'ADJUDICATED_NON_EXECUTABLE'
+    c.caseStatus = {
+      state: 'BLOCKED',
+      blockers: [
+        {
+          kind: 'TEMPORAL_PRECISION_GAP',
+          rawEvidenceId: 'TEST-ev1',
+          claimIndex: 0,
+          note: 'Précision insuffisante pour projeter.',
+        },
+      ],
+    }
+    return c
+  }
+
+  it('EVENT + DAY + « 2026-05 » → refusé', () => {
+    expect(codes(validateGoldenCaseStructure(avecTemps('DAY', '2026-05')))).toContain(
+      'claim_occurred_at_precision_mismatch',
+    )
+  })
+
+  it('EVENT + DAY + « 2026-05-20 » → accepté', () => {
+    expect(validateGoldenCaseStructure(avecTemps('DAY', '2026-05-20')).ok).toBe(true)
+  })
+
+  it('EVENT + DAY + « 2026-02-31 » → refusé', () => {
+    expect(codes(validateGoldenCaseStructure(avecTemps('DAY', '2026-02-31')))).toContain(
+      'claim_occurred_at_precision_mismatch',
+    )
+  })
+
+  it('EVENT + TIMESTAMP + « 2026-05-20 » → refusé', () => {
+    // Annoncer un horodatage sur une valeur qui ne porte pas d’heure.
+    expect(codes(validateGoldenCaseStructure(avecTemps('TIMESTAMP', '2026-05-20')))).toContain(
+      'claim_occurred_at_precision_mismatch',
+    )
+  })
+
+  it('EVENT + TIMESTAMP + horodatage complet AVEC fuseau → accepté', () => {
+    for (const valeur of ['2026-05-20T14:30:00Z', '2026-05-20T14:30:00.500+02:00']) {
+      const r = validateGoldenCaseStructure(avecTemps('TIMESTAMP', valeur))
+      if (r.ok === false) throw new Error(`${valeur} : ${JSON.stringify(r.errors, null, 2)}`)
+      expect(r.ok).toBe(true)
+    }
+  })
+
+  it('EVENT + TIMESTAMP SANS fuseau → refusé', () => {
+    // Un horodatage sans fuseau est interprété localement : le même fichier
+    // rejoué sur deux machines ne décrirait pas le même instant.
+    expect(
+      codes(validateGoldenCaseStructure(avecTemps('TIMESTAMP', '2026-05-20T14:30:00'))),
+    ).toContain('claim_occurred_at_precision_mismatch')
+  })
+
+  it('EVENT + MONTH + « 2026-05 » → BLOQUÉ VALIDE', () => {
+    const c = bloqueAvecTemps('MONTH', '2026-05')
+    const r = validateGoldenCaseStructure(c)
+    if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+    expect(r.ok).toBe(true)
+    expect(projectGoldenCase(c).ok).toBe(false)
+  })
+
+  it('EVENT + MONTH + « 2026-05-20 » → refusé', () => {
+    expect(codes(validateGoldenCaseStructure(bloqueAvecTemps('MONTH', '2026-05-20')))).toContain(
+      'claim_occurred_at_precision_mismatch',
+    )
+  })
+
+  it('EVENT + YEAR + « 2026 » → BLOQUÉ VALIDE', () => {
+    const c = bloqueAvecTemps('YEAR', '2026')
+    const r = validateGoldenCaseStructure(c)
+    if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+    expect(r.ok).toBe(true)
+    expect(projectGoldenCase(c).ok).toBe(false)
+  })
+
+  it('EVENT + UNKNOWN + occurredAt PRÉSENT → refusé', () => {
+    expect(codes(validateGoldenCaseStructure(bloqueAvecTemps('UNKNOWN', '2026-05-20')))).toContain(
+      'claim_occurred_at_precision_mismatch',
+    )
+  })
+
+  it('EVENT + UNKNOWN + occurredAt ABSENT → BLOQUÉ VALIDE', () => {
+    const c = bloqueAvecTemps('UNKNOWN')
+    const r = validateGoldenCaseStructure(c)
+    if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+    expect(r.ok).toBe(true)
+    expect(projectGoldenCase(c).ok).toBe(false)
+  })
+
+  it('`projectTemporality` reste inchangée', () => {
+    expect(projectTemporality('EVENT', 'MONTH').kind).toBe('gap')
+    expect(projectTemporality('EVENT', 'YEAR').kind).toBe('gap')
+    expect(projectTemporality('EVENT', 'UNKNOWN').kind).toBe('gap')
+    expect(projectTemporality('EVENT', 'DAY').kind).toBe('dated_event')
+    expect(projectTemporality('EVENT', 'TIMESTAMP').kind).toBe('dated_event')
+  })
+
+  it('STATE conserve son interdiction d’`occurredAt`', () => {
+    const c = casSigne()
+    c.adjudication.rawEvidence[0].claims[0].temporalNature = 'STATE'
+    expect(codes(validateGoldenCaseStructure(c))).toContain(
+      'claim_occurred_at_temporality_mismatch',
+    )
+  })
+})
+
+// ── R3 — SURFACES IMBRIQUÉES RESTANTES ──────────────────────────────────────
+
+describe('GOLDEN-SCHEMA-001a — executionContext et attentes fermés', () => {
+  it('refuse une clé inconnue sur `executionContext`', () => {
+    for (const cle of ['evidence', 'now', 'relevance', 'schemaVersion', 'inventé']) {
+      const c = casSigne()
+      c.executionContext[cle] = 'x'
+      expect(codes(validateGoldenCaseStructure(c))).toContain('execution_context_key_unknown')
+    }
+  })
+
+  it('refuse une clé RAIL R NICHÉE dans une attente', () => {
+    // La racine `expected` était fermée ; chaque attente, non. Le pare-feu entre
+    // les deux rails redevenait déclaratif d’un cran plus bas.
+    for (const cle of ['priority', 'confidence', 'control', 'ranking', 'lensFitExpected']) {
+      const c = casSigne()
+      c.expected.situations.space_expansion[cle] = 'HIGH'
+      expect(codes(validateGoldenCaseStructure(c))).toContain('expectation_forbidden_key')
+    }
+  })
+
+  it('préserve `assertion` et `rationale`', () => {
+    expect(validateGoldenCaseStructure(casSigne()).ok).toBe(true)
+  })
+})
+
+// ── R4 — IDENTITÉS DE BLOCAGE EN DOUBLE ─────────────────────────────────────
+
+describe('GOLDEN-SCHEMA-001a — blocages non dupliqués', () => {
+  it('refuse deux lignes STRICTEMENT identiques', () => {
+    const c = casTypeManquant()
+    c.caseStatus.blockers.push({ ...c.caseStatus.blockers[0] })
+    expect(codes(validateGoldenCaseStructure(c))).toContain('blocker_duplicate_identity')
+  })
+
+  it('accepte deux blocages du même genre sur des claims DIFFÉRENTES', () => {
+    // Ce n’est pas une priorité : deux causes distinctes exigent deux lignes.
+    const c = casTypeManquant()
+    c.adjudication.rawEvidence.push({
+      rawEvidenceId: 'TEST-ev4',
+      decompositionStatus: 'COMPLETE',
+      claims: [
+        {
+          claimIndex: 0,
+          semanticClaim: 'Un second fait sans type.',
+          mappingDecision: 'MISSING_TYPE',
+          assertionType: 'fact',
+          temporalNature: 'STATE',
+          temporalPrecision: 'UNKNOWN',
+          rationale: 'Aucun EvidenceType ne le porte.',
+          sourceReview: [{ reviewClass: 'EXTERNAL_REVIEW_EVIDENCE' }],
+        },
+      ],
+    })
+    c.caseStatus.blockers.push({
+      kind: 'EVIDENCE_TYPE_GAP',
+      rawEvidenceId: 'TEST-ev4',
+      claimIndex: 0,
+      note: 'Second trou de taxonomie.',
+    })
+    const r = validateGoldenCaseStructure(c)
+    if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+    expect(r.ok).toBe(true)
+  })
+})

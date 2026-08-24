@@ -225,6 +225,19 @@ const ASSERTION_TYPES: readonly AssertionType[] = ['fact', 'inference', 'assumpt
  */
 const CLES_TARGET = ['accountId', 'personId', 'eligibility'] as const
 
+/** Clés AUTORISÉES sur `executionContext` — le PARENT, resté ouvert jusqu'ici. */
+const CLES_EXECUTION_CONTEXT = ['businessContext', 'targets'] as const
+
+/**
+ * Clés AUTORISÉES sur une attente de Situation.
+ *
+ * ⚠️ RAIL S n'affirme QUE des Situations. La racine `expected` était fermée, mais
+ * chaque attente restait ouverte : un `priority`, un `confidence` ou un
+ * `lensFitExpected` niché à l'intérieur passait sans bruit, et le pare-feu entre
+ * les deux rails redevenait déclaratif au lieu d'être mécanique.
+ */
+const CLES_EXPECTATION = ['assertion', 'rationale'] as const
+
 /**
  * Clés AUTORISÉES sur une claim adjugée — liste FERMÉE.
  *
@@ -508,6 +521,67 @@ const JOUR_ISO = /^\d{4}-\d{2}-\d{2}$/
  * dans le champ qui date l'adjudication elle-même. On reconstruit la date en UTC
  * et l'on exige que ses composantes soient inchangées : un débordement se voit.
  */
+/**
+ * La VALEUR temporelle correspond-elle exactement à la PRÉCISION déclarée ?
+ *
+ * ── LE DÉFAUT QUE CECI FERME ────────────────────────────────────────────────
+ * `Date.parse()` est PERMISSIF : il accepte « 2026-05 » et le normalise
+ * silencieusement en `2026-05-01`. Une claim déclarée `DAY` portant « 2026-05 »
+ * passait donc — et projetait un `occurredAt` au premier du mois. Comme
+ * `freshnessScore` lit `occurredAt`, cette normalisation FABRIQUE une fraîcheur,
+ * donc une urgence, à partir d'une précision que la source n'avait pas.
+ *
+ * Symétriquement, `TIMESTAMP` sur « 2026-05-20 » annonce une heure que la valeur
+ * ne porte pas.
+ *
+ * Une date partielle reste une adjudication LÉGITIME — à sa précision réelle —
+ * mais elle ne projette jamais tant que celle-ci n'est pas DAY ou TIMESTAMP.
+ */
+const ANNEE = /^\d{4}$/
+const MOIS = /^\d{4}-\d{2}$/
+const JOUR = /^\d{4}-\d{2}-\d{2}$/
+// RFC 3339 : date, séparateur, heure, ET fuseau EXPLICITE. Un horodatage sans
+// fuseau est interprété localement — donc différemment selon la machine.
+const HORODATAGE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/
+
+function valeurConformeALaPrecision(
+  precision: TemporalPrecision,
+  valeur: unknown,
+): { ok: true } | { ok: false; attendu: string } {
+  if (precision === 'UNKNOWN') {
+    return valeur === undefined ? { ok: true } : { ok: false, attendu: 'aucune valeur' }
+  }
+
+  if (typeof valeur !== 'string') {
+    return { ok: false, attendu: 'une chaîne' }
+  }
+
+  if (precision === 'YEAR') {
+    return ANNEE.test(valeur) ? { ok: true } : { ok: false, attendu: 'exactement `YYYY`' }
+  }
+
+  if (precision === 'MONTH') {
+    if (!MOIS.test(valeur)) return { ok: false, attendu: 'exactement `YYYY-MM`' }
+    const mois = Number(valeur.slice(5, 7))
+    return mois >= 1 && mois <= 12 ? { ok: true } : { ok: false, attendu: 'un mois de 01 à 12' }
+  }
+
+  if (precision === 'DAY') {
+    if (!JOUR.test(valeur)) return { ok: false, attendu: 'exactement `YYYY-MM-DD`' }
+    return jourCalendaireReel(valeur)
+      ? { ok: true }
+      : { ok: false, attendu: 'un jour EXISTANT au calendrier' }
+  }
+
+  // TIMESTAMP
+  if (!HORODATAGE.test(valeur)) {
+    return { ok: false, attendu: 'un horodatage RFC 3339 avec heure ET fuseau explicite' }
+  }
+  return jourCalendaireReel(valeur.slice(0, 10))
+    ? { ok: true }
+    : { ok: false, attendu: 'un jour EXISTANT au calendrier' }
+}
+
 function jourCalendaireReel(iso: string): boolean {
   const [annee, mois, jour] = iso.split('-').map(Number)
   const d = new Date(Date.UTC(annee, mois - 1, jour))
@@ -792,6 +866,21 @@ export function validateGoldenCaseStructure(input: unknown): GoldenValidation {
   } else {
     const ec = g.executionContext
 
+    // ⚠️ LE PARENT AUSSI. Fermer `targets[]` et les claims laissait
+    // `executionContext.evidence`, `executionContext.now` ou
+    // `executionContext.relevance` entrer sans bruit : la copie d'EvalCase
+    // supprimée en R2 pouvait revenir d'un cran plus haut.
+    for (const cle of Object.keys(ec)) {
+      if (!(CLES_EXECUTION_CONTEXT as readonly string[]).includes(cle)) {
+        add(
+          'execution_context_key_unknown',
+          `executionContext.${cle}`,
+          `Clé « ${cle} » inconnue sur \`executionContext\`. Seuls \`businessContext\` et ` +
+            '`targets` y sont persistés : `now`, `evidence` et `relevance` sont DÉRIVÉS.',
+        )
+      }
+    }
+
     if (!estObjet(ec.businessContext)) {
       add(
         'execution_context_invalid',
@@ -1073,6 +1162,18 @@ export function validateGoldenCaseStructure(input: unknown): GoldenValidation {
         add('expected_invalid', path, 'Chaque attente doit être un objet `{assertion, rationale}`.')
         continue
       }
+
+      for (const cle of Object.keys(valeur)) {
+        if (!(CLES_EXPECTATION as readonly string[]).includes(cle)) {
+          add(
+            'expectation_forbidden_key',
+            `${path}.${cle}`,
+            `Clé « ${cle} » interdite dans une attente. RAIL S n’affirme QUE des Situations : ` +
+              '`priority`, `confidence`, `control`, `ranking` et `lensFitExpected` appartiennent à ' +
+              'RAIL R, et les fermer à la racine ne suffisait pas — ils entraient d’un cran plus bas.',
+          )
+        }
+      }
       if (!(SITUATION_ASSERTIONS as readonly string[]).includes(valeur.assertion)) {
         add(
           'expectation_assertion_unknown',
@@ -1204,6 +1305,23 @@ export function validateGoldenCaseStructure(input: unknown): GoldenValidation {
           // claim, et n'entre donc pas dans cette correspondance.
           b.kind !== 'EXPECTATION_AMBIGUOUS',
       )
+
+      // Deux lignes STRICTEMENT identiques n'ajoutent aucune information et
+      // laisseraient croire à deux causes distinctes. Ce n'est pas une priorité :
+      // c'est un doublon.
+      const vusBlocages = new Set<string>()
+      for (const b of declaresClaims) {
+        const cle = identite(b)
+        if (vusBlocages.has(cle)) {
+          add(
+            'blocker_duplicate_identity',
+            'caseStatus.blockers',
+            `Le blocage « ${cle} » est déclaré deux fois. Un doublon exact n’apporte rien et ` +
+              'laisserait croire à deux causes distinctes.',
+          )
+        }
+        vusBlocages.add(cle)
+      }
 
       const declaresIds = new Set(declaresClaims.map(identite))
       const attendusIds = new Set(blocageAttendu.map(identite))
@@ -1692,12 +1810,12 @@ function validerClaim(claim: any, path: string, ctx: ContexteClaim): void {
     const projection = projectTemporality(claim.temporalNature, claim.temporalPrecision)
 
     if (projection.kind === 'dated_event') {
-      if (!dateValide(claim.occurredAt)) {
+      if (claim.occurredAt === undefined) {
         add(
           'claim_occurred_at_temporality_mismatch',
           `${path}.occurredAt`,
-          'Un événement de précision JOUR ou HORODATAGE exige un `occurredAt` ISO-8601 valide : ' +
-            'annoncer cette précision sans porter la date est une contradiction.',
+          'Un événement de précision JOUR ou HORODATAGE exige un `occurredAt` : annoncer cette ' +
+            'précision sans porter la date est une contradiction.',
         )
       }
     } else if (projection.kind === 'undated_state') {
@@ -1712,6 +1830,26 @@ function validerClaim(claim: any, path: string, ctx: ContexteClaim): void {
       }
     }
     // `gap` : AUCUNE erreur structurelle — état bloqué légitime (cf. ci-dessus).
+
+    // ── R2 — LA VALEUR DOIT PORTER EXACTEMENT LA PRÉCISION DÉCLARÉE ───────
+    //
+    // ⚠️ Vérifié pour un `EVENT` à TOUTE précision, y compris celles qui ne
+    // projettent pas : une date partielle est une adjudication légitime, mais
+    // « DAY » sur « 2026-05 » est un MENSONGE sur ce que la source dit — et
+    // `Date.parse` le normaliserait en `2026-05-01`, fabriquant une fraîcheur.
+    if (claim.temporalNature === 'EVENT') {
+      const conforme = valeurConformeALaPrecision(claim.temporalPrecision, claim.occurredAt)
+      if (conforme.ok === false) {
+        add(
+          'claim_occurred_at_precision_mismatch',
+          `${path}.occurredAt`,
+          `Précision « ${claim.temporalPrecision} » déclarée, mais \`occurredAt\` vaut ` +
+            `« ${claim.occurredAt} » : ${conforme.attendu} est attendu. ⚠️ \`Date.parse\` ` +
+            'normaliserait silencieusement une date partielle (« 2026-05 » → 2026-05-01) et ' +
+            'fabriquerait ainsi une fraîcheur — donc une urgence — que la source ne porte pas.',
+        )
+      }
+    }
   }
 
   // ── NOT_MAPPABLE : la porte de sortie, verrouillée ───────────────────────

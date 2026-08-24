@@ -342,3 +342,115 @@ describe('GOLDEN-SCHEMA-001a — l’artefact fourni EST celui qui est ancré', 
     )
   })
 })
+
+// ── R1 — L'HORLOGE DE REJEU EST CELLE DU SNAPSHOT ───────────────────────────
+//
+// La convention « now = observedAt = dataset.asOf » n'était affirmée que par une
+// CHAÎNE que rien ne confrontait au dataset. Un cas pouvait donc annoncer cette
+// provenance et rejouer à une autre date — déplaçant la fraîcheur, donc
+// l'urgence, donc les verdicts, tout en paraissant conforme.
+
+describe('GOLDEN-SCHEMA-001a — horloge liée à dataset.asOf', () => {
+  it('le dataset authentifié porte bien un `asOf`', () => {
+    // Aucune valeur n'est codée en dur dans le validateur : c'est le dataset qui
+    // fait foi. On la lit ici pour rendre les vecteurs hostiles lisibles.
+    expect(RAW_DATASET.asOf).toBe('2026-08-07')
+  })
+
+  it('les valeurs EXACTES du RAW sont acceptées', () => {
+    const c = casAncre()
+    expect(c.assumptions.now.value).toBe(RAW_DATASET.asOf)
+    const r = validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE)
+    if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+    expect(r.ok).toBe(true)
+  })
+
+  it('HOSTILE : now postérieur au snapshot, source annoncée correcte → REJET', () => {
+    const c = casAncre()
+    c.assumptions.now.value = '2026-08-08'
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
+      'assumption_clock_not_dataset_as_of',
+    )
+  })
+
+  it('HOSTILE : observedAt antérieur au snapshot, source annoncée correcte → REJET', () => {
+    const c = casAncre()
+    c.assumptions.observedAt.value = '2026-08-06'
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
+      'assumption_clock_not_dataset_as_of',
+    )
+  })
+
+  it('refuse une `now.source` autre que « dataset.asOf »', () => {
+    const c = casAncre()
+    c.assumptions.now.source = 'horloge locale'
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
+      'assumption_clock_source_invalid',
+    )
+  })
+
+  it('refuse une `observedAt.source` autre que « dataset.asOf »', () => {
+    const c = casAncre()
+    c.assumptions.observedAt.source = 'date de collecte'
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
+      'assumption_clock_source_invalid',
+    )
+  })
+
+  it('refuse une précision d’horloge plus fine que le JOUR', () => {
+    // `asOf` est un instantané au jour près : annoncer TIMESTAMP prétendrait
+    // connaître l'heure du snapshot.
+    const c = casAncre()
+    c.assumptions.now.precision = 'TIMESTAMP'
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
+      'assumption_clock_precision_invalid',
+    )
+  })
+
+  it('la valeur n’est PAS codée en dur : elle vient du dataset fourni', () => {
+    // Contrôle négatif du contrôle lui-même. On authentifie un dataset dont
+    // l'`asOf` diffère ; le cas, resté à 2026-08-07, doit alors être refusé.
+    const modifie = JSON.parse(ARTEFACT_DATASET.text)
+    modifie.asOf = '2030-01-01'
+    const texte = JSON.stringify(modifie)
+    const autre = {
+      path: CHEMIN_DATASET,
+      text: texte,
+      sha256: createHash('sha256').update(texte, 'utf8').digest('hex'),
+    }
+
+    const c = casAncre()
+    c.rawSource.datasetSha256 = autre.sha256
+    expect(codes(validateGoldenCaseAgainstRaw(c, autre, MANIFESTE))).toContain(
+      'assumption_clock_not_dataset_as_of',
+    )
+  })
+})
+
+// ── R4 — FORME DE L'ARTEFACT : REFUSER, JAMAIS LEVER ────────────────────────
+
+describe('GOLDEN-SCHEMA-001a — artefact malformé', () => {
+  const casse = [
+    { nom: 'text absent', a: { path: CHEMIN_DATASET, sha256: 'a'.repeat(64) } },
+    { nom: 'text non chaîne', a: { path: CHEMIN_DATASET, sha256: 'a'.repeat(64), text: 42 } },
+    { nom: 'sha absent', a: { path: CHEMIN_DATASET, text: '{}' } },
+    { nom: 'sha trop court', a: { path: CHEMIN_DATASET, sha256: 'abc', text: '{}' } },
+    { nom: 'sha non hexadécimal', a: { path: CHEMIN_DATASET, sha256: 'z'.repeat(64), text: '{}' } },
+    { nom: 'sha majuscules', a: { path: CHEMIN_DATASET, sha256: 'A'.repeat(64), text: '{}' } },
+    { nom: 'path vide', a: { path: '   ', sha256: 'a'.repeat(64), text: '{}' } },
+    { nom: 'path absent', a: { sha256: 'a'.repeat(64), text: '{}' } },
+  ]
+
+  for (const { nom, a } of casse) {
+    it(`refuse SANS LEVER — ${nom}`, () => {
+      // ⚠️ `createHash().update(undefined)` LÈVE. Le contrat promet une liste
+      // d'erreurs, pas une exception : un plantage remonterait à l'appelant, et
+      // un `try/catch` distrait pourrait le lire comme « rien à signaler ».
+      let resultat: any
+      expect(() => {
+        resultat = validateGoldenCaseAgainstRaw(casAncre(), a as any, MANIFESTE)
+      }).not.toThrow()
+      expect(codes(resultat)).toContain('raw_artifact_invalid')
+    })
+  }
+})
