@@ -1686,3 +1686,102 @@ describe('GOLDEN-SCHEMA-001a — blocages non dupliqués', () => {
     expect(r.ok).toBe(true)
   })
 })
+
+// ── DOMAINE STRICT DES HORODATAGES ──────────────────────────────────────────
+//
+// ⚠️ LE DÉFAUT QUE CE BLOC VERROUILLE. La forme `\d{2}:\d{2}:\d{2}` comptait les
+// chiffres sans vérifier leur DOMAINE. « 24:00:00 » y passait — et `Date.parse`
+// le NORMALISE vers le JOUR SUIVANT. Un fait du 20 mai serait devenu un fait du
+// 21, avec la fraîcheur — donc l'urgence — qui suit. C'est exactement
+// l'invariant que la vérification valeur↔précision existe pour tenir.
+
+describe('GOLDEN-SCHEMA-001a — horodatages : domaine strict', () => {
+  function avecHorodatage(valeur: string): any {
+    const c = casSigne()
+    const claim = c.adjudication.rawEvidence[0].claims[0]
+    claim.temporalNature = 'EVENT'
+    claim.temporalPrecision = 'TIMESTAMP'
+    claim.occurredAt = valeur
+    return c
+  }
+
+  const acceptes = [
+    '2026-05-20T23:59:59Z',
+    '2026-05-20T00:00:00Z',
+    '2026-05-20T14:30:00.500+02:00',
+  ]
+
+  const refuses: [string, string][] = [
+    ['2026-05-20T24:00:00Z', 'heure 24 — glisse au jour suivant'],
+    ['2026-05-20T23:60:00Z', 'minute 60'],
+    ['2026-05-20T23:59:60Z', 'seconde intercalaire, non rejouable ici'],
+    ['2026-05-20T23:59:59+24:00', 'décalage horaire 24'],
+    ['2026-05-20T23:59:59+14:60', 'minutes de décalage 60'],
+    ['2026-05-20T14:30:00', 'aucun fuseau explicite'],
+    ['2026-02-31T14:30:00Z', 'jour inexistant au calendrier'],
+  ]
+
+  for (const valeur of acceptes) {
+    it(`ACCEPTE ${valeur}`, () => {
+      const r = validateGoldenCaseStructure(avecHorodatage(valeur))
+      if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+      expect(r.ok).toBe(true)
+    })
+  }
+
+  for (const [valeur, motif] of refuses) {
+    it(`REFUSE ${valeur} — ${motif}`, () => {
+      expect(codes(validateGoldenCaseStructure(avecHorodatage(valeur)))).toContain(
+        'claim_occurred_at_precision_mismatch',
+      )
+    })
+  }
+
+  it('RÉGRESSION : Node accepte « 24:00:00Z » et le décale d’un JOUR — le Golden le refuse AVANT', () => {
+    // ⚠️ Ce test documente le vecteur exact, et prouve que la garde Golden est
+    // volontairement PLUS STRICTE que `Date.parse` — et non qu'elle s'appuie
+    // dessus par accident.
+    const vecteur = '2026-05-20T24:00:00Z'
+
+    // 1. Node l'accepte…
+    const parse = Date.parse(vecteur)
+    expect(Number.isFinite(parse)).toBe(true)
+
+    // 2. …en le NORMALISANT vers le jour suivant. C'est là toute la nuisance :
+    //    la valeur ne devient pas invalide, elle devient FAUSSE.
+    expect(new Date(parse).toISOString()).toBe('2026-05-21T00:00:00.000Z')
+    expect(new Date(parse).toISOString().slice(0, 10)).not.toBe('2026-05-20')
+
+    // 3. Le Golden le refuse malgré tout, AVANT toute projection runtime.
+    const c = avecHorodatage(vecteur)
+    expect(codes(validateGoldenCaseStructure(c))).toContain(
+      'claim_occurred_at_precision_mismatch',
+    )
+
+    // ⚠️ Le refus vient de la couche STRUCTURELLE, et c'est le bon endroit :
+    // `validateGoldenCase` valide la structure AVANT de projeter, donc la
+    // projection n'a jamais lieu. `projectGoldenCase` seule, elle, projetterait
+    // — elle est la couche du dessous et ne juge que la NATURE/PRÉCISION, pas la
+    // valeur. Le cas ne peut donc pas atteindre le runtime, ce qui est
+    // exactement l'invariant demandé.
+    expect(validateGoldenCase(c).ok).toBe(false)
+    expect(codes(validateGoldenCase(c))).toContain('claim_occurred_at_precision_mismatch')
+  })
+
+  it('la garde `Date.parse` ne SERT PAS à déterminer la précision', () => {
+    // `2026-05-20` est fini pour `Date.parse`, et pourtant refusé en TIMESTAMP :
+    // c'est la syntaxe Golden qui décide, jamais le moteur permissif.
+    expect(Number.isFinite(Date.parse('2026-05-20'))).toBe(true)
+    expect(codes(validateGoldenCaseStructure(avecHorodatage('2026-05-20')))).toContain(
+      'claim_occurred_at_precision_mismatch',
+    )
+  })
+
+  it('la validation stricte de la DATE reste inchangée', () => {
+    const c = casSigne()
+    c.adjudication.rawEvidence[0].claims[0].occurredAt = '2026-02-31'
+    expect(codes(validateGoldenCaseStructure(c))).toContain(
+      'claim_occurred_at_precision_mismatch',
+    )
+  })
+})

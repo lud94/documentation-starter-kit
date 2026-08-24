@@ -540,9 +540,30 @@ const JOUR_ISO = /^\d{4}-\d{2}-\d{2}$/
 const ANNEE = /^\d{4}$/
 const MOIS = /^\d{4}-\d{2}$/
 const JOUR = /^\d{4}-\d{2}-\d{2}$/
-// RFC 3339 : date, séparateur, heure, ET fuseau EXPLICITE. Un horodatage sans
-// fuseau est interprété localement — donc différemment selon la machine.
-const HORODATAGE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/
+/**
+ * RFC 3339 : date, séparateur, heure, ET fuseau EXPLICITE.
+ *
+ * ⚠️ LES COMPOSANTES SONT CAPTURÉES, PAS SEULEMENT COMPTÉES. Une version
+ * antérieure se contentait de `\d{2}:\d{2}:\d{2}` — la FORME était juste, le
+ * DOMAINE ne l'était pas. Elle acceptait donc :
+ *
+ *     2026-05-20T24:00:00Z   →  Node rend 2026-05-21T00:00:00.000Z
+ *     2026-05-20T23:60:00Z
+ *     2026-05-20T23:59:60Z
+ *     2026-05-20T23:59:59+24:00
+ *
+ * Le premier est le vrai danger : il est ACCEPTÉ par `Date.parse` et NORMALISÉ
+ * vers le JOUR SUIVANT. C'est exactement l'invariant que cette couche existe
+ * pour tenir — une précision temporelle ne doit jamais glisser en silence vers
+ * une autre date métier. Un fait du 20 mai serait devenu un fait du 21, et la
+ * fraîcheur — donc l'urgence — aurait suivi.
+ *
+ * Un fuseau explicite reste exigé : sans lui, l'horodatage est interprété
+ * localement, et le même fichier rejoué sur deux machines ne décrirait pas le
+ * même instant.
+ */
+const HORODATAGE =
+  /^(\d{4}-\d{2}-\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(\.\d+)?([Zz]|([+-])(\d{2}):(\d{2}))$/
 
 function valeurConformeALaPrecision(
   precision: TemporalPrecision,
@@ -574,12 +595,51 @@ function valeurConformeALaPrecision(
   }
 
   // TIMESTAMP
-  if (!HORODATAGE.test(valeur)) {
+  const parts = HORODATAGE.exec(valeur)
+  if (!parts) {
     return { ok: false, attendu: 'un horodatage RFC 3339 avec heure ET fuseau explicite' }
   }
-  return jourCalendaireReel(valeur.slice(0, 10))
-    ? { ok: true }
-    : { ok: false, attendu: 'un jour EXISTANT au calendrier' }
+
+  const [, date, hh, mm, ss, , , , offsetHh, offsetMm] = parts
+
+  if (!jourCalendaireReel(date)) {
+    return { ok: false, attendu: 'un jour EXISTANT au calendrier' }
+  }
+
+  // ── DOMAINE DES COMPOSANTES, PAS SEULEMENT LEUR NOMBRE ────────────────────
+  if (Number(hh) > 23) {
+    return { ok: false, attendu: 'une heure de 00 à 23 (⚠️ « 24:00 » glisse au jour SUIVANT)' }
+  }
+  if (Number(mm) > 59) return { ok: false, attendu: 'des minutes de 00 à 59' }
+
+  // ⚠️ `:60` (seconde intercalaire) est REFUSÉ. RFC 3339 l'autorise, mais le
+  // runtime de ce dépôt ne sait pas le rejouer : `Date.parse` le rend `NaN`. Un
+  // corpus Golden doit ne contenir que des valeurs que le moteur peut réellement
+  // relire de façon déterministe.
+  if (Number(ss) > 59) {
+    return {
+      ok: false,
+      attendu: 'des secondes de 00 à 59 (la seconde intercalaire « :60 » n’est pas rejouable ici)',
+    }
+  }
+
+  if (offsetHh !== undefined) {
+    if (Number(offsetHh) > 23) return { ok: false, attendu: 'un décalage horaire de 00 à 23' }
+    if (Number(offsetMm) > 59) return { ok: false, attendu: 'des minutes de décalage de 00 à 59' }
+  }
+
+  // ── GARDE DE COMPATIBILITÉ RUNTIME ────────────────────────────────────────
+  //
+  // ⚠️ CE N'EST PAS `Date.parse` QUI DÉCIDE DE LA PRÉCISION — les contrôles
+  // ci-dessus s'en chargent, et ils sont PLUS STRICTS que lui. Cette ligne
+  // vérifie seulement l'inverse : qu'une valeur acceptée par le Golden est bien
+  // rejouable par le moteur. Sans elle, on pourrait signer une valeur
+  // syntaxiquement irréprochable que le runtime rendrait `NaN`.
+  if (!Number.isFinite(Date.parse(valeur))) {
+    return { ok: false, attendu: 'un horodatage que le runtime sait relire' }
+  }
+
+  return { ok: true }
 }
 
 function jourCalendaireReel(iso: string): boolean {
