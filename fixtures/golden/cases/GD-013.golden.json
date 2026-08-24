@@ -1,0 +1,148 @@
+{
+  "goldenSchemaVersion": "proactive-golden-v0.1",
+  "caseId": "GD-013",
+  "evaluationProfile": {
+    "rail": "SEMANTIC",
+    "lensId": "fabel-broker",
+    "lensVersion": "v0.1"
+  },
+  "provenance": {
+    "materializationTicket": "GOLDEN-MATERIALIZE-001",
+    "adjudicationProtocol": "GOLDEN-SOURCE-REVIEW-001-R1",
+    "adjudicatedOn": "2026-08-24"
+  },
+  "rawSource": {
+    "datasetPath": "fixtures/golden/raw/prospector-v3-golden-dataset.v0.1.json",
+    "datasetSchemaVersion": "prospector-v3-golden-dataset/0.1",
+    "datasetVersion": "0.1",
+    "datasetSha256": "131236360e882fc60b4dc077923983f7d6b8a071ce9c3b4e76bd253a5fb6803d",
+    "originalCaseId": "GD-013"
+  },
+  "assumptions": {
+    "now": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf",
+      "precision": "DAY"
+    },
+    "observedAt": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf"
+    },
+    "targetRelevance": {
+      "value": 0.5,
+      "rationale": "FIXED_REPLAY_CONSTANT — jamais un lens fit historique."
+    },
+    "evidenceConfidence": {
+      "value": 1,
+      "rationale": "FIXTURE_SEMANTIC_CERTAINTY — la claim est présente dans la fixture ; ce n’est PAS la confiance de la source."
+    },
+    "syntheticRuntimeProvider": {
+      "value": "synthetic-historical-nonfirstparty",
+      "rationale": "Aucune identité de provider d’ingestion historique pour ces faits issus du web. Volontairement hors FIRST_PARTY_PROVIDERS."
+    }
+  },
+  "adjudication": {
+    "rawEvidence": [
+      {
+        "rawEvidenceId": "GD-013-ev1",
+        "decompositionStatus": "COMPLETE",
+        "claims": [
+          {
+            "claimIndex": 0,
+            "semanticClaim": "Dust a bouclé une série B de 40 M$ le 2026-05-18.",
+            "mappingDecision": "MAPPED",
+            "assertionType": "fact",
+            "temporalNature": "EVENT",
+            "temporalPrecision": "DAY",
+            "occurredAt": "2026-05-18",
+            "evidenceType": "recent_funding",
+            "evidenceId": "gd013-ev1",
+            "evidenceScope": "account",
+            "targetAccountId": "gd013-dust",
+            "runtimeSource": {
+              "provider": "synthetic-historical-nonfirstparty",
+              "url": "https://www.startup.eu/investments/dust-40-m-series-b-05-2026"
+            },
+            "sourceReview": [
+              {
+                "reviewClass": "EXTERNAL_REVIEW_EVIDENCE",
+                "sourceUrl": "https://www.startup.eu/investments/dust-40-m-series-b-05-2026",
+                "supportingClaim": "deal date 2026-05-18"
+              },
+              {
+                "reviewClass": "INDEPENDENT_CORROBORATION"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "executability": "EXECUTABLE",
+  "executionContext": {
+    "businessContext": {
+      "contextId": "golden-fabel-semantic",
+      "contextVersion": "v0.1",
+      "role": "business_developer",
+      "scope": {
+        "mode": "workspace"
+      },
+      "authorizedMotions": {},
+      "lensId": "fabel-broker",
+      "lensVersion": "v0.1"
+    },
+    "targets": [
+      {
+        "accountId": "gd013-dust"
+      }
+    ]
+  },
+  "expected": {
+    "situations": {
+      "space_expansion": {
+        "assertion": "FORBIDDEN",
+        "rationale": "Oracle humain signé : contrôle « funding-only ». Une levée seule ne doit jamais établir space_expansion."
+      },
+      "space_contraction": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucune attente de contraction n’a été adjugée."
+      },
+      "flex_remove_window": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucun fait d’occupation ou de flex n’a été revu."
+      }
+    }
+  },
+  "legacyAssessment": {
+    "items": [
+      {
+        "rawRef": "/expected/primaryHypothesis",
+        "scope": "RAIL_S",
+        "status": "NOT_SUPPORTED",
+        "rationale": "Le RAW affirme SPACE_EXPANSION ; une levée seule ne le soutient pas."
+      },
+      {
+        "rawRef": "/whyThisCaseMatters",
+        "scope": "RAIL_S",
+        "status": "SUPPORTED",
+        "rationale": "« Funding-only control » — c’est ce que ce cas signe."
+      },
+      {
+        "rawRef": "/notes",
+        "scope": "RAIL_S",
+        "status": "SUPPORTED",
+        "rationale": "« Do not infer office pressure from funding » — invariant signé."
+      },
+      {
+        "rawRef": "/expected/behavior",
+        "scope": "RAIL_R",
+        "status": "NOT_ADJUDICATED",
+        "rationale": "RESEARCH_ONLY est RAIL R."
+      }
+    ]
+  },
+  "caseStatus": {
+    "state": "SIGNED_SEMANTIC_GOLDEN",
+    "blockers": []
+  }
+}
