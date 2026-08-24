@@ -13,7 +13,10 @@ import {
   situationTypesActifsPourLens,
   validateGoldenCaseStructure,
 } from '../lib/prospector/proactive/eval/goldenSchema'
-import { validateGoldenCase } from '../lib/prospector/proactive/eval/goldenToEvalCase'
+import {
+  projectGoldenCase,
+  validateGoldenCase,
+} from '../lib/prospector/proactive/eval/goldenToEvalCase'
 // ⚠️ Import de pack AUTORISÉ ICI, et seulement ici : test d'intégration de
 // compatibilité (cf. le describe « compatibilité pack pilote » en fin de
 // fichier). L'infrastructure Golden générique, elle, n'importe aucun pack.
@@ -21,7 +24,7 @@ import {
   FIRST_PARTY_PROVIDERS,
   estFirstParty,
 } from '../lib/prospector/proactive/packs/real-estate-fabel/provenance'
-import { casSigne, casTypeManquant, clone } from './golden-fixtures'
+import { casGD025, casSigne, casTypeManquant, clone } from './golden-fixtures'
 
 function codes(resultat: any): string[] {
   return resultat.ok === false ? resultat.errors.map((e: any) => e.code) : []
@@ -317,20 +320,36 @@ describe('GOLDEN-SCHEMA-001a — nature ≠ précision', () => {
   })
 
   it('un ÉVÉNEMENT de date inconnue n’est JAMAIS un état non daté', () => {
-    // Le correctif central de R2. `undated_state` affirme un état constaté
-    // d'ancienneté inconnue ; un événement dont la date nous échappe est autre
-    // chose, et `contradictionBloquante` traite les deux différemment.
-    const c = casSigne()
-    const claim = c.adjudication.rawEvidence[0].claims[0]
-    claim.temporalNature = 'EVENT'
-    claim.temporalPrecision = 'UNKNOWN'
-    delete claim.occurredAt
-    c.executability = 'ADJUDICATED_NON_EXECUTABLE'
-    c.caseStatus = {
-      state: 'BLOCKED',
-      blockers: [{ kind: 'TEMPORAL_PRECISION_GAP', note: 'Date de survenue inconnue.' }],
-    }
-    expect(codes(validateGoldenCaseStructure(c))).toContain('claim_temporal_projection_gap')
+    // `undated_state` affirme un état constaté d'ancienneté inconnue ; un
+    // événement dont la date nous échappe est autre chose, et
+    // `contradictionBloquante` traite les deux différemment.
+    expect(projectTemporality('EVENT', 'UNKNOWN').kind).toBe('gap')
+    expect(projectTemporality('STATE', 'UNKNOWN').kind).toBe('undated_state')
+  })
+
+  it('un trou de précision est un cas BLOQUÉ VALIDE, pas un schéma malformé', () => {
+    // ⚠️ LE DÉFAUT QUE CE TEST VERROUILLE. Une version antérieure émettait une
+    // erreur STRUCTURELLE dès qu'une claim MAPPED ne projetait pas. Elle rendait
+    // invalide un cas parfaitement légitime — GD-025, dont les licenciements
+    // sont un ÉVÉNEMENT réel de date inconnue — et forçait donc l'auteur à
+    // INVENTER un jour pour rendre son fichier acceptable. L'exact contraire de
+    // ce que ce corpus protège.
+    const c = casGD025()
+
+    const r = validateGoldenCaseStructure(c)
+    if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+    expect(r.ok).toBe(true)
+    expect(validateGoldenCase(c).ok).toBe(true)
+
+    // …et la projection, elle, refuse toujours.
+    const projete = projectGoldenCase(c)
+    expect(projete.ok).toBe(false)
+  })
+
+  it('le même cas SANS blocage déclaré est refusé', () => {
+    const c = casGD025()
+    c.caseStatus.blockers = []
+    expect(codes(validateGoldenCaseStructure(c))).toContain('blocker_inconsistent_with_claims')
   })
 
   it('refuse `occurredAt` sur un STATE', () => {
@@ -587,43 +606,16 @@ describe('GOLDEN-SCHEMA-001a — caseStatus', () => {
   it('accepte PLUSIEURS blocages de nature différente, sans priorité', () => {
     // GD-025 dans le monde réel : un trou de taxonomie ET une date
     // inexploitable. Un `primaryStatus` unique en aurait caché un.
-    const c = casTypeManquant()
-    c.adjudication.rawEvidence.push({
-      rawEvidenceId: 'TEST-ev3',
-      decompositionStatus: 'COMPLETE',
-      claims: [
-        {
-          claimIndex: 0,
-          semanticClaim: 'Des licenciements ont eu lieu ; la source ne date pas l’événement.',
-          mappingDecision: 'MAPPED',
-          assertionType: 'fact',
-          temporalNature: 'EVENT',
-          temporalPrecision: 'UNKNOWN',
-          evidenceType: 'workforce_contraction',
-          evidenceId: 'test-ev3',
-          evidenceScope: 'account',
-          targetAccountId: 'test-acct',
-          runtimeSource: { provider: 'synthetic-historical-nonfirstparty' },
-          rationale: 'ÉVÉNEMENT de date inconnue — surtout pas un état non daté.',
-          sourceReview: [{ reviewClass: 'EXTERNAL_REVIEW_EVIDENCE' }],
-        },
-      ],
-    })
-    c.caseStatus.blockers.push({
-      kind: 'TEMPORAL_PRECISION_GAP',
-      rawEvidenceId: 'TEST-ev3',
-      claimIndex: 0,
-      note: 'Aucune date de survenue exploitable.',
-    })
-
+    const c = casGD025()
     const r = validateGoldenCaseStructure(c)
-    expect(r.ok).toBe(false)
-    // La claim MAPPED de précision UNKNOWN est bien signalée…
-    expect(codes(r)).toContain('claim_temporal_projection_gap')
-    // …mais PAS pour incohérence de blocage : les deux causes sont déclarées.
-    expect(codes(r)).not.toContain('blocker_inconsistent_with_claims')
-    expect(codes(r)).not.toContain('case_status_executability_mismatch')
+    if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+    expect(r.ok).toBe(true)
+    expect(c.caseStatus.blockers.map((b: any) => b.kind).sort()).toEqual([
+      'EVIDENCE_TYPE_GAP',
+      'TEMPORAL_PRECISION_GAP',
+    ])
   })
+
 
   it('refuse un genre de blocage inconnu', () => {
     const c = casTypeManquant()
@@ -1271,5 +1263,231 @@ describe('GOLDEN-SCHEMA-001a — doublons sans cycle', () => {
       .flatMap((g: any) => g.claims)
       .filter((cl: any) => cl.exclusionClass !== 'DUPLICATE_OF_CLAIM')
     expect(survivantes.length).toBeGreaterThan(0)
+  })
+})
+
+// ── F2 — BLOCAGES : IDENTITÉ EXACTE DE LA CLAIM ─────────────────────────────
+//
+// Comparer les seuls `kind` laissait passer un blocage attribué à la mauvaise
+// claim, et faisait couvrir DEUX causes par UNE ligne. Celui qui corrigeait la
+// claim nommée retrouvait le cas bloqué, sans motif visible.
+
+describe('GOLDEN-SCHEMA-001a — blocages par identité exacte', () => {
+  /** Cas bloqué par DEUX claims MISSING_TYPE distinctes. */
+  function deuxTypesManquants(): any {
+    const c = casTypeManquant()
+    c.adjudication.rawEvidence.push({
+      rawEvidenceId: 'TEST-ev3',
+      decompositionStatus: 'COMPLETE',
+      claims: [
+        {
+          claimIndex: 0,
+          semanticClaim: 'Une production a été suspendue sur un site industriel.',
+          mappingDecision: 'MISSING_TYPE',
+          assertionType: 'fact',
+          temporalNature: 'STATE',
+          temporalPrecision: 'UNKNOWN',
+          rationale: 'Aucun EvidenceType ne couvre la suspension de capacité industrielle.',
+          sourceReview: [{ reviewClass: 'EXTERNAL_REVIEW_EVIDENCE' }],
+        },
+      ],
+    })
+    return c
+  }
+
+  it('deux claims MISSING_TYPE + UN seul blocage → refusé', () => {
+    const c = deuxTypesManquants()
+    // Un seul blocage déclaré (celui de TEST-ev2) pour deux causes réelles.
+    expect(codes(validateGoldenCaseStructure(c))).toContain('blocker_inconsistent_with_claims')
+  })
+
+  it('un blocage EXACT par claim → accepté', () => {
+    const c = deuxTypesManquants()
+    c.caseStatus.blockers.push({
+      kind: 'EVIDENCE_TYPE_GAP',
+      rawEvidenceId: 'TEST-ev3',
+      claimIndex: 0,
+      note: 'Suspension de capacité industrielle.',
+    })
+    const r = validateGoldenCaseStructure(c)
+    if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+    expect(r.ok).toBe(true)
+  })
+
+  it('bon genre + MAUVAIS rawEvidenceId → refusé', () => {
+    const c = casTypeManquant()
+    c.caseStatus.blockers[0].rawEvidenceId = 'TEST-ev9'
+    expect(codes(validateGoldenCaseStructure(c))).toContain('blocker_inconsistent_with_claims')
+  })
+
+  it('bon genre + MAUVAIS claimIndex → refusé', () => {
+    const c = casTypeManquant()
+    c.caseStatus.blockers[0].claimIndex = 7
+    expect(codes(validateGoldenCaseStructure(c))).toContain('blocker_inconsistent_with_claims')
+  })
+
+  it('`EXPECTATION_AMBIGUOUS` ne référence AUCUNE claim', () => {
+    // Il porte sur l'attente, pas sur un fait : exiger une identité de claim
+    // serait lui inventer une cause qu'il n'a pas.
+    const c = casTypeManquant()
+    c.caseStatus.blockers.push({
+      kind: 'EXPECTATION_AMBIGUOUS',
+      note: 'L’attente n’est pas décidable en l’état.',
+    })
+    expect(validateGoldenCaseStructure(c).ok).toBe(true)
+  })
+})
+
+// ── F3 — ASSERTION TYPE FERMÉ ───────────────────────────────────────────────
+
+describe('GOLDEN-SCHEMA-001a — assertionType fermé', () => {
+  it('refuse « intent » sur une claim MISSING_TYPE BLOQUÉE', () => {
+    // ⚠️ Le cas exact que ce contrat a tranché : une intention ANNONCÉE est un
+    // `fact` observé — l'annonce a eu lieu — et c'est son CONTENU qui est
+    // prospectif. Accepter `intent` rouvrirait la confusion épistémique, et le
+    // ferait d'abord sur les claims bloquées, celles dont la sémantique survit
+    // précisément pour justifier un futur ticket de taxonomie.
+    const c = casTypeManquant()
+    c.adjudication.rawEvidence[1].claims[0].assertionType = 'intent'
+    expect(codes(validateGoldenCaseStructure(c))).toContain('claim_assertion_type_unknown')
+  })
+
+  it('refuse toute valeur hors du catalogue, à TOUTE décision', () => {
+    for (const valeur of ['intent', 'prediction', 'opinion', 'FACT', 'n’importe quoi', '']) {
+      const mappee = casSigne()
+      mappee.adjudication.rawEvidence[0].claims[0].assertionType = valeur
+      expect(codes(validateGoldenCaseStructure(mappee))).toContain('claim_assertion_type_unknown')
+
+      const bloquee = casTypeManquant()
+      bloquee.adjudication.rawEvidence[1].claims[0].assertionType = valeur
+      expect(codes(validateGoldenCaseStructure(bloquee))).toContain('claim_assertion_type_unknown')
+    }
+  })
+
+  it('accepte les trois valeurs du cœur', () => {
+    for (const valeur of ['fact', 'inference', 'assumption']) {
+      const c = casTypeManquant()
+      c.adjudication.rawEvidence[1].claims[0].assertionType = valeur
+      expect(validateGoldenCaseStructure(c).ok).toBe(true)
+    }
+  })
+
+  it('une claim MAPPED exige toujours le champ', () => {
+    const c = casSigne()
+    delete c.adjudication.rawEvidence[0].claims[0].assertionType
+    expect(codes(validateGoldenCaseStructure(c))).toContain('claim_missing_runtime_fields')
+  })
+})
+
+// ── F5 — AUCUN CHAMP RUNTIME DÉRIVÉ NE SE PERSISTE ──────────────────────────
+//
+// Fermer la racine ne suffisait pas : ces champs étaient silencieusement
+// acceptés parce que le projecteur les écrase. Deux valeurs possibles pour une
+// même donnée, dont une seule est lue — la copie d'EvalCase par la porte basse.
+
+describe('GOLDEN-SCHEMA-001a — champs dérivés interdits', () => {
+  it('refuse `relevance` sur une cible', () => {
+    const c = casSigne()
+    c.executionContext.targets[0].relevance = 0.9
+    expect(codes(validateGoldenCaseStructure(c))).toContain(
+      'execution_context_target_key_unknown',
+    )
+  })
+
+  it('refuse `confidence`, `observedAt` et `temporality` sur une claim', () => {
+    for (const [cle, valeur] of [
+      ['confidence', 1],
+      ['observedAt', '2026-08-07'],
+      ['temporality', 'dated_event'],
+    ] as [string, unknown][]) {
+      const c = casSigne()
+      c.adjudication.rawEvidence[0].claims[0][cle] = valeur
+      expect(codes(validateGoldenCaseStructure(c))).toContain('claim_key_unknown')
+    }
+  })
+
+  it('PRÉSERVE les champs sémantiques légitimes', () => {
+    // `occurredAt`, `temporalNature`, `temporalPrecision`, `assertionType`
+    // appartiennent à l'adjudication : les fermer aussi aurait détruit la
+    // sémantique que ce contrat existe pour conserver.
+    const c = casSigne()
+    const claim = c.adjudication.rawEvidence[0].claims[0]
+    expect(claim.occurredAt).toBeTruthy()
+    expect(claim.temporalNature).toBeTruthy()
+    expect(claim.temporalPrecision).toBeTruthy()
+    expect(claim.assertionType).toBeTruthy()
+    expect(validateGoldenCaseStructure(c).ok).toBe(true)
+  })
+
+  it('refuse une clé inventée sur une cible ou une claim', () => {
+    const t = casSigne()
+    t.executionContext.targets[0].scoreIcp = 0.7
+    expect(codes(validateGoldenCaseStructure(t))).toContain(
+      'execution_context_target_key_unknown',
+    )
+
+    const c = casSigne()
+    c.adjudication.rawEvidence[0].claims[0].lensFitExpected = 'LIKELY'
+    expect(codes(validateGoldenCaseStructure(c))).toContain('claim_key_unknown')
+  })
+})
+
+// ── F6 — COHÉRENCES DE CONTRAT ──────────────────────────────────────────────
+
+describe('GOLDEN-SCHEMA-001a — cohérences de contrat', () => {
+  it('refuse `duplicateOf` hors NOT_MAPPABLE / DUPLICATE_OF_CLAIM', () => {
+    const c = casSigne()
+    c.adjudication.rawEvidence[0].claims[0].duplicateOf = {
+      rawEvidenceId: 'TEST-ev1',
+      claimIndex: 0,
+    }
+    expect(codes(validateGoldenCaseStructure(c))).toContain(
+      'claim_duplicate_reference_unexpected',
+    )
+  })
+
+  it('refuse STATE + occurredAt même sur une claim NON MAPPED', () => {
+    const c = casTypeManquant()
+    const claim = c.adjudication.rawEvidence[1].claims[0]
+    claim.temporalNature = 'STATE'
+    claim.occurredAt = '2026-05-20'
+    expect(codes(validateGoldenCaseStructure(c))).toContain(
+      'claim_occurred_at_temporality_mismatch',
+    )
+  })
+
+  it('refuse EVENT + DAY sans occurredAt même sur une claim NON MAPPED', () => {
+    const c = casTypeManquant()
+    delete c.adjudication.rawEvidence[1].claims[0].occurredAt
+    expect(codes(validateGoldenCaseStructure(c))).toContain(
+      'claim_occurred_at_temporality_mismatch',
+    )
+  })
+
+  it('refuse une date d’adjudication qui n’existe pas au calendrier', () => {
+    // La forme ne suffit pas : `2026-02-31` satisfait l'expression régulière, et
+    // `Date.parse` la décale silencieusement. Un contrôle de forme seul
+    // laisserait une date fabriquée dans le champ qui date l'adjudication.
+    for (const jour of ['2026-02-31', '2026-13-01', '2026-00-10', '2026-04-31']) {
+      const c = casSigne()
+      c.provenance.adjudicatedOn = jour
+      expect(codes(validateGoldenCaseStructure(c))).toContain(
+        'provenance_timestamp_over_precise',
+      )
+    }
+  })
+
+  it('accepte un 29 février d’année bissextile', () => {
+    const c = casSigne()
+    c.provenance.adjudicatedOn = '2028-02-29'
+    expect(validateGoldenCaseStructure(c).ok).toBe(true)
+  })
+
+  it('refuse un 29 février d’année NON bissextile', () => {
+    const c = casSigne()
+    c.provenance.adjudicatedOn = '2027-02-29'
+    expect(codes(validateGoldenCaseStructure(c))).toContain(
+      'provenance_timestamp_over_precise',
+    )
   })
 })

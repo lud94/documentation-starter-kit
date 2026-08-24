@@ -196,6 +196,66 @@ export type CaseState = (typeof CASE_STATES)[number]
 
 const EVIDENCE_SCOPES = ['account', 'person', 'relationship'] as const
 
+/**
+ * Valeurs légales d'`AssertionType`, à l'exécution.
+ *
+ * ⚠️ LE TYPAGE NE PROTÈGE PAS CETTE FRONTIÈRE : un cas Golden arrive d'un
+ * fichier JSON, où `assertionType: "intent"` est une chaîne comme une autre.
+ * Une version antérieure n'exigeait qu'une chaîne NON VIDE — exactement la
+ * faiblesse déjà présente dans `isEvidenceEvent` — et « intent », « prediction »
+ * ou « opinion » y seraient passés. Or ce lot a précisément établi qu'une
+ * intention ANNONCÉE est un `fact` observé : accepter `intent` rouvrirait la
+ * confusion épistémique que la doctrine a fermée.
+ *
+ * L'annotation `readonly AssertionType[]` est le lien : si le cœur ajoutait ou
+ * renommait un membre, cette ligne cesserait de compiler.
+ */
+const ASSERTION_TYPES: readonly AssertionType[] = ['fact', 'inference', 'assumption']
+
+/**
+ * Clés AUTORISÉES sur une cible d'`executionContext` — liste FERMÉE.
+ *
+ * ⚠️ `relevance` EN EST ABSENTE, et c'est le cœur du contrat. Elle est DÉRIVÉE
+ * d'`assumptions.targetRelevance`, jamais persistée. Fermer la racine ne
+ * suffisait pas : une `relevance` écrite ici était silencieusement acceptée —
+ * le projecteur l'écrase — et rien n'empêchait un cas de porter une valeur
+ * divergente de la constante déclarée. C'est très exactement la forme que
+ * prendrait une fuite depuis `account.lensFitExpected`, réintroduisant la copie
+ * d'EvalCase que R2 a supprimée.
+ */
+const CLES_TARGET = ['accountId', 'personId', 'eligibility'] as const
+
+/**
+ * Clés AUTORISÉES sur une claim adjugée — liste FERMÉE.
+ *
+ * ⚠️ `confidence`, `observedAt` et `temporality` en sont ABSENTES : toutes trois
+ * sont DÉRIVÉES au moment de la projection. Les accepter parce que le projecteur
+ * les ignore serait le même fail-open — deux vérités possibles pour une valeur,
+ * dont une seule est lue.
+ *
+ * `occurredAt`, `temporalNature`, `temporalPrecision` et `assertionType`, eux,
+ * restent légitimes : ils appartiennent à l'ADJUDICATION, pas au runtime.
+ */
+const CLES_CLAIM = [
+  'claimIndex',
+  'semanticClaim',
+  'mappingDecision',
+  'assertionType',
+  'temporalNature',
+  'temporalPrecision',
+  'occurredAt',
+  'sourceReview',
+  'rationale',
+  'exclusionClass',
+  'duplicateOf',
+  'evidenceType',
+  'evidenceId',
+  'evidenceScope',
+  'targetAccountId',
+  'targetPersonId',
+  'runtimeSource',
+] as const
+
 // ── TYPES DU CONTRAT ────────────────────────────────────────────────────────
 
 export interface EvaluationProfile {
@@ -224,7 +284,7 @@ export interface ReplayAssumptions {
   observedAt: { value: string; source: string }
   targetRelevance: { value: number; rationale: string }
   evidenceConfidence: { value: number; rationale: string }
-  syntheticRuntimeProvider: { value: string; rationale: string }
+  syntheticRuntimeProvider?: { value: string; rationale: string }
 }
 
 export interface SourceReview {
@@ -439,6 +499,23 @@ export function toutesLesClaims(golden: any): AdjudicatedClaim[] {
 
 const JOUR_ISO = /^\d{4}-\d{2}-\d{2}$/
 
+/**
+ * La chaîne désigne-t-elle un jour qui EXISTE ?
+ *
+ * ⚠️ La forme ne suffit pas. `2026-02-31` et `2026-13-01` satisfont l'expression
+ * régulière ; `Date.parse` les accepte ou les DÉCALE silencieusement selon le
+ * moteur. Un contrôle de forme seul laisserait donc entrer une date fabriquée
+ * dans le champ qui date l'adjudication elle-même. On reconstruit la date en UTC
+ * et l'on exige que ses composantes soient inchangées : un débordement se voit.
+ */
+function jourCalendaireReel(iso: string): boolean {
+  const [annee, mois, jour] = iso.split('-').map(Number)
+  const d = new Date(Date.UTC(annee, mois - 1, jour))
+  return (
+    d.getUTCFullYear() === annee && d.getUTCMonth() === mois - 1 && d.getUTCDate() === jour
+  )
+}
+
 function nonVide(value: unknown): boolean {
   return typeof value === 'string' && value.trim().length > 0
 }
@@ -568,7 +645,7 @@ export function validateGoldenCaseStructure(input: unknown): GoldenValidation {
     }
     if (!nonVide(p.adjudicatedOn)) {
       add('provenance_incomplete', 'provenance.adjudicatedOn', '`adjudicatedOn` est requis.')
-    } else if (!JOUR_ISO.test(p.adjudicatedOn)) {
+    } else if (!JOUR_ISO.test(p.adjudicatedOn) || !jourCalendaireReel(p.adjudicatedOn)) {
       add(
         'provenance_timestamp_over_precise',
         'provenance.adjudicatedOn',
@@ -747,16 +824,34 @@ export function validateGoldenCaseStructure(input: unknown): GoldenValidation {
     // appliquée par la sonde. On ne collecte ici que les comptes déclarés, dont
     // les claims ont besoin pour se lier.
     if (Array.isArray(ec.targets)) {
-      for (const t of ec.targets) {
-        if (estObjet(t) && nonVide(t.accountId)) comptesConnus.add(t.accountId)
-      }
+      ec.targets.forEach((t: any, i: number) => {
+        if (!estObjet(t)) return
+        if (nonVide(t.accountId)) comptesConnus.add(t.accountId)
+
+        for (const cle of Object.keys(t)) {
+          if (!(CLES_TARGET as readonly string[]).includes(cle)) {
+            add(
+              'execution_context_target_key_unknown',
+              `executionContext.targets[${i}].${cle}`,
+              `Clé « ${cle} » inconnue sur une cible. ⚠️ \`relevance\` en particulier est DÉRIVÉE ` +
+                'd’`assumptions.targetRelevance` : la persister ici créerait une seconde valeur ' +
+                'possible, écrasée par le projecteur mais lue par un relecteur — la forme même que ' +
+                'prendrait une fuite depuis `account.lensFitExpected`.',
+            )
+          }
+        }
+      })
     }
   }
 
   // ── adjudication ─────────────────────────────────────────────────────────
   const idsEvidence = new Set<string>()
   const clesDeClaim = new Set<string>()
-  const blocageAttendu: BlockerKind[] = []
+  // ⚠️ IDENTITÉ COMPLÈTE, pas seulement le genre. Comparer les seuls `kind`
+  // laissait passer un blocage déclaré sur la MAUVAISE claim, et faisait
+  // couvrir DEUX causes distinctes par UNE seule ligne : le lecteur croyait
+  // qu'un blocage restait, alors qu'il en restait deux.
+  const blocageAttendu: { kind: BlockerKind; rawEvidenceId: string; claimIndex: number }[] = []
   const ciblesConnues: any[] = Array.isArray(g.executionContext?.targets)
     ? g.executionContext.targets.filter((t: any) => estObjet(t) && nonVide(t.accountId))
     : []
@@ -1091,31 +1186,52 @@ export function validateGoldenCaseStructure(input: unknown): GoldenValidation {
         }
       })
 
-      // Les blocages DÉCLARÉS doivent correspondre aux blocages RÉELS.
-      const declares = cs.blockers
-        .map((b: any) => b?.kind)
-        .filter((k: any) => (BLOCKER_KINDS as readonly string[]).includes(k))
+      // ── CORRESPONDANCE PAR IDENTITÉ COMPLÈTE ─────────────────────────────
+      //
+      // ⚠️ LE GENRE SEUL NE SUFFIT PAS. Deux claims `MISSING_TYPE` produisent
+      // DEUX causes distinctes ; une seule ligne `EVIDENCE_TYPE_GAP` les
+      // couvrirait toutes les deux, et celui qui corrigerait la claim nommée
+      // retrouverait le cas bloqué sans motif visible. Symétriquement, un
+      // blocage déclaré sur une claim qui ne l'impose pas désigne le mauvais
+      // travail à faire.
+      const identite = (b: any) => `${b.kind}@${b.rawEvidenceId ?? '—'}#${b.claimIndex ?? '—'}`
 
-      const manquants = blocageAttendu.filter((k) => !declares.includes(k))
-      const surnumeraires = declares.filter(
-        (k: BlockerKind) => !blocageAttendu.includes(k) && k !== 'EXPECTATION_AMBIGUOUS',
+      const declaresClaims = cs.blockers.filter(
+        (b: any) =>
+          estObjet(b) &&
+          (BLOCKER_KINDS as readonly string[]).includes(b.kind) &&
+          // `EXPECTATION_AMBIGUOUS` porte sur l'ATTENTE : il ne désigne aucune
+          // claim, et n'entre donc pas dans cette correspondance.
+          b.kind !== 'EXPECTATION_AMBIGUOUS',
       )
 
-      for (const kind of new Set(manquants)) {
-        add(
-          'blocker_inconsistent_with_claims',
-          'caseStatus.blockers',
-          `Une claim impose le blocage « ${kind} », qui n’est pas déclaré. Un blocage tu rendrait ` +
-            'le cas non exécutable sans motif enregistré.',
-        )
+      const declaresIds = new Set(declaresClaims.map(identite))
+      const attendusIds = new Set(blocageAttendu.map(identite))
+
+      for (const attendu of blocageAttendu) {
+        if (!declaresIds.has(identite(attendu))) {
+          add(
+            'blocker_inconsistent_with_claims',
+            'caseStatus.blockers',
+            `La claim « ${attendu.rawEvidenceId }#${attendu.claimIndex} » impose le blocage ` +
+              `« ${attendu.kind} », qui n’est déclaré pour AUCUNE claim de cette identité. Un ` +
+              'blocage tu — ou attribué à une autre claim — rendrait le cas non exécutable sans ' +
+              'que le travail à faire soit désigné.',
+          )
+        }
       }
-      for (const kind of new Set<BlockerKind>(surnumeraires)) {
-        add(
-          'blocker_inconsistent_with_claims',
-          'caseStatus.blockers',
-          `Le blocage « ${kind} » est déclaré alors qu’aucune claim ne l’impose. ` +
-            '(`EXPECTATION_AMBIGUOUS` fait exception : il porte sur l’attente, pas sur une claim.)',
-        )
+
+      for (const declare of declaresClaims) {
+        if (!attendusIds.has(identite(declare))) {
+          add(
+            'blocker_inconsistent_with_claims',
+            'caseStatus.blockers',
+            `Le blocage « ${declare.kind} » est déclaré pour ` +
+              `« ${declare.rawEvidenceId ?? '—'}#${declare.claimIndex ?? '—'} », qui ne l’impose ` +
+              'pas. (`EXPECTATION_AMBIGUOUS` fait exception : il porte sur l’attente, pas sur une ' +
+              'claim, et ne référence donc aucune identité.)',
+          )
+        }
       }
 
       // ── L'ÉQUIVALENCE, dans les DEUX sens ────────────────────────────────
@@ -1241,7 +1357,7 @@ interface ContexteClaim {
   ciblesConnues: any[]
   idsEvidence: Set<string>
   clesDeClaim: Set<string>
-  blocageAttendu: BlockerKind[]
+  blocageAttendu: { kind: BlockerKind; rawEvidenceId: string; claimIndex: number }[]
   etatSigne: boolean
 }
 
@@ -1267,6 +1383,24 @@ function validerClaim(claim: any, path: string, ctx: ContexteClaim): void {
     ctx.clesDeClaim.add(`${ctx.rawEvidenceId}#${claim.claimIndex}`)
   }
 
+  // ── CLÉS FERMÉES — LA COPIE D'EVALCASE NE DOIT PAS REVENIR PAR LE BAS ────
+  // Fermer la racine ne suffisait pas : `confidence`, `observedAt` et
+  // `temporality` écrits ICI étaient silencieusement acceptés parce que le
+  // projecteur les ignore. Deux vérités possibles pour une même valeur, dont
+  // une seule est lue — précisément la dérive que R2 a supprimée en cessant de
+  // persister `input`.
+  for (const cle of Object.keys(claim)) {
+    if (!(CLES_CLAIM as readonly string[]).includes(cle)) {
+      add(
+        'claim_key_unknown',
+        `${path}.${cle}`,
+        `Clé « ${cle} » inconnue sur une claim. ⚠️ \`confidence\`, \`observedAt\` et ` +
+          '`temporality` sont DÉRIVÉS à la projection : les persister ici créerait une seconde ' +
+          'valeur possible, ignorée par le moteur mais lue par un humain.',
+      )
+    }
+  }
+
   if (!nonVide(claim.semanticClaim)) {
     add(
       'claim_semantic_missing',
@@ -1288,8 +1422,24 @@ function validerClaim(claim: any, path: string, ctx: ContexteClaim): void {
   const mappee = claim.mappingDecision === 'MAPPED'
 
   // ── Sémantique : légale partout, mais VALIDE partout où elle est présente ─
-  if (claim.assertionType !== undefined && !nonVide(claim.assertionType)) {
-    add('claim_assertion_type_invalid', `${path}.assertionType`, '`assertionType` doit être une chaîne non vide.')
+  // ⚠️ CATALOGUE FERMÉ, ET À TOUTE DÉCISION DE MAPPING. Une chaîne « non vide »
+  // laissait entrer `intent`, `prediction`, `opinion`. Or ce contrat a établi
+  // qu'une intention ANNONCÉE est un `fact` observé — ce qui est prospectif,
+  // c'est son CONTENU. Accepter `intent` rouvrirait la confusion épistémique
+  // fermée en R2, et le ferait sur les claims BLOQUÉES en premier, celles dont
+  // la sémantique survit précisément pour justifier un futur ticket de taxonomie.
+  if (
+    claim.assertionType !== undefined &&
+    !(ASSERTION_TYPES as readonly string[]).includes(claim.assertionType)
+  ) {
+    add(
+      'claim_assertion_type_unknown',
+      `${path}.assertionType`,
+      `\`assertionType\` « ${claim.assertionType} » inconnu. Attendu : ${ASSERTION_TYPES.join(' | ')}. ` +
+        '⚠️ « intent » n’en fait PAS partie : une intention annoncée est un `fact` observé — ' +
+        'l’annonce a eu lieu — et c’est son CONTENU qui est prospectif. La sémantique prospective ' +
+        'appartient à l’EvidenceType, jamais à l’axe épistémique.',
+    )
   }
   if (
     claim.temporalNature !== undefined &&
@@ -1517,8 +1667,28 @@ function validerClaim(claim: any, path: string, ctx: ContexteClaim): void {
     }
   }
 
-  // ── occurredAt ⟺ projection en `dated_event` ─────────────────────────────
-  if (mappee && nonVide(claim.temporalNature) && nonVide(claim.temporalPrecision)) {
+  // ── COHÉRENCE TEMPORELLE — CONTRADICTIONS SEULEMENT ─────────────────────
+  //
+  // ⚠️ UN TROU DE PRÉCISION N'EST PAS UNE MALFORMATION. Une version antérieure
+  // émettait ici `claim_temporal_projection_gap` dès qu'une claim MAPPED ne
+  // projetait pas : elle rendait STRUCTURELLEMENT INVALIDE un cas parfaitement
+  // légitime — GD-025, dont les licenciements sont un ÉVÉNEMENT réel de date
+  // inconnue. La sémantique y est complète et honnête ; c'est la projection
+  // runtime qui est indisponible, et le contrat a un état exact pour cela :
+  //
+  //     ADJUDICATED_NON_EXECUTABLE + TEMPORAL_PRECISION_GAP
+  //
+  // Refuser le cas aurait forcé l'auteur à inventer un jour pour le rendre
+  // valide — l'exact contraire de ce que ce corpus protège. `projectGoldenCase`
+  // continue, elle, de refuser la projection.
+  //
+  // ⚠️ VÉRIFIÉ AUSSI HORS `MAPPED`. Une claim MISSING_TYPE porte sa sémantique
+  // temporelle ; une contradiction y est tout aussi fausse, et se découvrirait
+  // sinon le jour où le type manquant arrive.
+  if (
+    (TEMPORAL_NATURES as readonly string[]).includes(claim.temporalNature) &&
+    (TEMPORAL_PRECISIONS as readonly string[]).includes(claim.temporalPrecision)
+  ) {
     const projection = projectTemporality(claim.temporalNature, claim.temporalPrecision)
 
     if (projection.kind === 'dated_event') {
@@ -1526,7 +1696,8 @@ function validerClaim(claim: any, path: string, ctx: ContexteClaim): void {
         add(
           'claim_occurred_at_temporality_mismatch',
           `${path}.occurredAt`,
-          'Un événement daté exige un `occurredAt` ISO-8601 valide.',
+          'Un événement de précision JOUR ou HORODATAGE exige un `occurredAt` ISO-8601 valide : ' +
+            'annoncer cette précision sans porter la date est une contradiction.',
         )
       }
     } else if (projection.kind === 'undated_state') {
@@ -1539,13 +1710,8 @@ function validerClaim(claim: any, path: string, ctx: ContexteClaim): void {
             'est une contradiction : on la refuse plutôt que de l’ignorer.',
         )
       }
-    } else {
-      add(
-        'claim_temporal_projection_gap',
-        `${path}.temporalPrecision`,
-        projection.reason,
-      )
     }
+    // `gap` : AUCUNE erreur structurelle — état bloqué légitime (cf. ci-dessus).
   }
 
   // ── NOT_MAPPABLE : la porte de sortie, verrouillée ───────────────────────
@@ -1587,6 +1753,28 @@ function validerClaim(claim: any, path: string, ctx: ContexteClaim): void {
     )
   }
 
+  // `duplicateOf` n'a de sens que pour l'exclusion qui l'exige. Ailleurs, il
+  // désigne un fait « conservé » que personne ne lira : une référence morte,
+  // qui laisse croire à un dédoublonnage jamais appliqué.
+  if (
+    claim.duplicateOf !== undefined &&
+    !(claim.mappingDecision === 'NOT_MAPPABLE' && claim.exclusionClass === 'DUPLICATE_OF_CLAIM')
+  ) {
+    add(
+      'claim_duplicate_reference_unexpected',
+      `${path}.duplicateOf`,
+      '`duplicateOf` n’est légal que sur une claim NOT_MAPPABLE de classe DUPLICATE_OF_CLAIM. ' +
+        'Ailleurs, il désigne un fait « conservé » que rien ne lit : un dédoublonnage apparent, ' +
+        'jamais appliqué.',
+    )
+  }
+
   const blocage = claimEstBloquante(claim as AdjudicatedClaim)
-  if (blocage) ctx.blocageAttendu.push(blocage)
+  if (blocage) {
+    ctx.blocageAttendu.push({
+      kind: blocage,
+      rawEvidenceId: ctx.rawEvidenceId,
+      claimIndex: claim.claimIndex,
+    })
+  }
 }

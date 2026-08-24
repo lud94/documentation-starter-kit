@@ -10,6 +10,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
+import { createHash } from 'node:crypto'
+
 import {
   parseSha256Sums,
   resolveJsonPointer,
@@ -20,7 +22,25 @@ import { casSigne, clone } from './golden-fixtures'
 const REPERTOIRE_RAW = 'fixtures/golden/raw'
 const CHEMIN_DATASET = `${REPERTOIRE_RAW}/prospector-v3-golden-dataset.v0.1.json`
 
-const RAW_DATASET = JSON.parse(readFileSync(join(process.cwd(), CHEMIN_DATASET), 'utf8'))
+const CHEMIN_POLICIES = `${REPERTOIRE_RAW}/prospector-v3-policies.v0.1.json`
+
+/**
+ * Charge un artefact RAW en calculant son empreinte SUR LES OCTETS, AVANT le
+ * parsing. C'est la seule façon honnête de lier identité et contenu — et c'est
+ * le TEST qui fait cette I/O, jamais le validateur.
+ */
+function chargerArtefact(chemin: string) {
+  const texte = readFileSync(join(process.cwd(), chemin), 'utf8')
+  return {
+    path: chemin,
+    sha256: createHash('sha256').update(texte, 'utf8').digest('hex'),
+    text: texte,
+  }
+}
+
+const ARTEFACT_DATASET = chargerArtefact(CHEMIN_DATASET)
+const ARTEFACT_POLICIES = chargerArtefact(CHEMIN_POLICIES)
+const RAW_DATASET: any = JSON.parse(ARTEFACT_DATASET.text)
 
 // Les chemins d'un `SHA256SUMS` coreutils sont RELATIFS au répertoire du
 // manifeste. Le préfixe est fourni par l'appelant — lui seul sait d'où il lit.
@@ -72,28 +92,31 @@ describe('GOLDEN-SCHEMA-001a — dataset RAW committé', () => {
 
 describe('GOLDEN-SCHEMA-001a — ancrage', () => {
   it('accepte un cas correctement ancré', () => {
-    const r = validateGoldenCaseAgainstRaw(casAncre(), RAW_DATASET, MANIFESTE)
+    const r = validateGoldenCaseAgainstRaw(casAncre(), ARTEFACT_DATASET, MANIFESTE)
     if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
     expect(r.ok).toBe(true)
   })
 
-  it('refuse un chemin absent du manifeste', () => {
+  it('refuse un artefact dont le chemin est absent du manifeste', () => {
+    // L'artefact est authentique dans son contenu, mais son chemin n'est pas
+    // enregistré : rien ne prouve qu'il fait partie de l'archive immuable.
+    const inconnu = { ...ARTEFACT_DATASET, path: 'fixtures/golden/raw/autre.json' }
     const c = casAncre()
-    c.rawSource.datasetPath = 'fixtures/golden/raw/autre.json'
-    expect(codes(validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE))).toContain(
+    c.rawSource.datasetPath = inconnu.path
+    expect(codes(validateGoldenCaseAgainstRaw(c, inconnu, MANIFESTE))).toContain(
       'raw_dataset_path_not_in_manifest',
     )
   })
 
-  it('refuse une empreinte qui ne correspond pas AU CHEMIN déclaré', () => {
-    // ⚠️ Le cœur de la vérification par COUPLE. Ici l'empreinte est authentique
-    // — c'est celle du fichier de POLITIQUES — mais elle est associée au
-    // dataset. Une vérification « l'empreinte figure quelque part » laisserait
-    // passer, et l'ancrage n'ancrerait rien.
+  it('refuse un couple chemin+empreinte incohérent avec le manifeste', () => {
+    // ⚠️ Le cœur de la vérification par COUPLE. Contenu du DATASET, mais déclaré
+    // sous le CHEMIN des politiques : l'empreinte recalculée est authentique et
+    // figure bien au manifeste — pour l'AUTRE fichier. Une vérification
+    // « l'empreinte figure quelque part » laisserait passer.
+    const deplace = { ...ARTEFACT_DATASET, path: ARTEFACT_POLICIES.path }
     const c = casAncre()
-    c.rawSource.datasetSha256 =
-      '72c194d8ccfa18eee5ed9abf9b3f5ddc8c345b8d740bba96de00aeea3880b5f3'
-    expect(codes(validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE))).toContain(
+    c.rawSource.datasetPath = ARTEFACT_POLICIES.path
+    expect(codes(validateGoldenCaseAgainstRaw(c, deplace, MANIFESTE))).toContain(
       'raw_sha_mismatch',
     )
   })
@@ -103,7 +126,7 @@ describe('GOLDEN-SCHEMA-001a — ancrage', () => {
     // ancrage qui nettoie l'identifiant qu'il ancre n'ancre plus rien.
     const c = casAncre()
     c.rawSource.datasetSchemaVersion = 'prospector-v3'
-    expect(codes(validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE))).toContain(
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
       'raw_dataset_schema_version_mismatch',
     )
   })
@@ -111,7 +134,7 @@ describe('GOLDEN-SCHEMA-001a — ancrage', () => {
   it('refuse une version de dataset NORMALISÉE', () => {
     const c = casAncre()
     c.rawSource.datasetVersion = 'v0.1'
-    expect(codes(validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE))).toContain(
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
       'raw_dataset_version_mismatch',
     )
   })
@@ -119,7 +142,7 @@ describe('GOLDEN-SCHEMA-001a — ancrage', () => {
   it('refuse un cas RAW inexistant', () => {
     const c = casAncre()
     c.rawSource.originalCaseId = 'GD-999'
-    expect(codes(validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE))).toContain(
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
       'raw_case_id_unknown',
     )
   })
@@ -135,7 +158,7 @@ describe('GOLDEN-SCHEMA-001a — aucune suppression silencieuse', () => {
     c.rawSource.originalCaseId = 'GD-026'
     c.adjudication.rawEvidence[0].rawEvidenceId = 'GD-026-ev1'
 
-    const r = validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE)
+    const r = validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE)
     expect(codes(r)).toContain('raw_evidence_not_covered')
     expect(r.ok === false && r.errors.some((e) => e.message.includes('GD-026-ev2'))).toBe(true)
   })
@@ -143,7 +166,7 @@ describe('GOLDEN-SCHEMA-001a — aucune suppression silencieuse', () => {
   it('refuse une adjudication citant une Evidence inexistante', () => {
     const c = casAncre()
     c.adjudication.rawEvidence[0].rawEvidenceId = 'GD-006-ev42'
-    expect(codes(validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE))).toContain(
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
       'raw_evidence_adjudication_orphan',
     )
   })
@@ -158,7 +181,7 @@ describe('GOLDEN-SCHEMA-001a — aucune suppression silencieuse', () => {
     seconde.evidenceId = 'test-ev1b'
     groupe.claims.push(seconde)
 
-    expect(validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE).ok).toBe(true)
+    expect(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE).ok).toBe(true)
   })
 })
 
@@ -215,7 +238,7 @@ describe('GOLDEN-SCHEMA-001a — JSON Pointer RFC 6901', () => {
   it('refuse une référence historique qui ne résout pas', () => {
     const c = casAncre()
     c.legacyAssessment.items[0].rawRef = '/expected/inexistant'
-    expect(codes(validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE))).toContain(
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
       'legacy_raw_ref_unresolvable',
     )
   })
@@ -225,18 +248,97 @@ describe('GOLDEN-SCHEMA-001a — JSON Pointer RFC 6901', () => {
 
 describe('GOLDEN-SCHEMA-001a — pureté du validateur', () => {
   it('n’effectue aucune I/O : sans manifeste, il refuse au lieu de lire le disque', () => {
-    const r = validateGoldenCaseAgainstRaw(casAncre(), RAW_DATASET, [])
+    const r = validateGoldenCaseAgainstRaw(casAncre(), ARTEFACT_DATASET, [])
     expect(codes(r)).toContain('raw_dataset_path_not_in_manifest')
   })
 
   it('ne mute pas ses entrées', () => {
     const c = casAncre()
     const avantGolden = JSON.stringify(c)
-    const avantDataset = JSON.stringify(RAW_DATASET)
+    const avantArtefact = JSON.stringify(ARTEFACT_DATASET)
 
-    validateGoldenCaseAgainstRaw(c, RAW_DATASET, MANIFESTE)
+    validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE)
 
     expect(JSON.stringify(c)).toBe(avantGolden)
-    expect(JSON.stringify(RAW_DATASET)).toBe(avantDataset)
+    expect(JSON.stringify(ARTEFACT_DATASET)).toBe(avantArtefact)
+  })
+})
+
+// ── LIAISON IDENTITÉ ↔ CONTENU ──────────────────────────────────────────────
+//
+// ⚠️ LE TROU QUE CES TESTS FERMENT. Identité et contenu étaient validés
+// SÉPARÉMENT : le couple chemin+empreinte d'un côté, `schemaVersion` de l'autre.
+// Rien ne prouvait qu'ils décrivaient le même fichier.
+
+describe('GOLDEN-SCHEMA-001a — l’artefact fourni EST celui qui est ancré', () => {
+  it('TEST HOSTILE : identité authentique des POLITIQUES + contenu du DATASET → REJET', () => {
+    // Chemin réel, empreinte réelle, contenu réel — mais pas du même fichier.
+    // Avant la correction, chaque vérification passait isolément.
+    const hostile = {
+      path: ARTEFACT_POLICIES.path,
+      sha256: ARTEFACT_POLICIES.sha256,
+      text: ARTEFACT_DATASET.text,
+    }
+
+    const c = casAncre()
+    c.rawSource.datasetPath = ARTEFACT_POLICIES.path
+    c.rawSource.datasetSha256 = ARTEFACT_POLICIES.sha256
+
+    const r = validateGoldenCaseAgainstRaw(c, hostile, MANIFESTE)
+    expect(r.ok).toBe(false)
+    // Le validateur RECALCULE : le mensonge est inconstructible, pas seulement
+    // improbable.
+    expect(codes(r)).toContain('raw_artifact_sha_not_from_content')
+  })
+
+  it('l’artefact RÉEL passe toujours', () => {
+    const r = validateGoldenCaseAgainstRaw(casAncre(), ARTEFACT_DATASET, MANIFESTE)
+    if (r.ok === false) throw new Error(JSON.stringify(r.errors, null, 2))
+    expect(r.ok).toBe(true)
+  })
+
+  it('refuse une ancre pointant un autre chemin que l’artefact fourni', () => {
+    const c = casAncre()
+    c.rawSource.datasetPath = ARTEFACT_POLICIES.path
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
+      'raw_artifact_path_mismatch',
+    )
+  })
+
+  it('refuse une ancre portant une autre empreinte que l’artefact fourni', () => {
+    const c = casAncre()
+    c.rawSource.datasetSha256 = ARTEFACT_POLICIES.sha256
+    expect(codes(validateGoldenCaseAgainstRaw(c, ARTEFACT_DATASET, MANIFESTE))).toContain(
+      'raw_artifact_sha_mismatch',
+    )
+  })
+
+  it('refuse un contenu non parsable', () => {
+    const casse = {
+      path: CHEMIN_DATASET,
+      text: '{ pas du json',
+      sha256: createHash('sha256').update('{ pas du json', 'utf8').digest('hex'),
+    }
+    expect(codes(validateGoldenCaseAgainstRaw(casAncre(), casse, MANIFESTE))).toContain(
+      'raw_artifact_unparseable',
+    )
+  })
+
+  it('refuse un artefact absent', () => {
+    expect(codes(validateGoldenCaseAgainstRaw(casAncre(), null as any, MANIFESTE))).toContain(
+      'raw_artifact_missing',
+    )
+  })
+
+  it('l’empreinte calculée sur les octets correspond au manifeste committé', () => {
+    // Contrôle négatif de la fonction de chargement elle-même : si elle hachait
+    // autre chose que les octets du fichier, tous les tests ci-dessus seraient
+    // vrais entre eux et faux vis-à-vis de l’archive.
+    expect(ARTEFACT_DATASET.sha256).toBe(
+      '131236360e882fc60b4dc077923983f7d6b8a071ce9c3b4e76bd253a5fb6803d',
+    )
+    expect(ARTEFACT_POLICIES.sha256).toBe(
+      '72c194d8ccfa18eee5ed9abf9b3f5ddc8c345b8d740bba96de00aeea3880b5f3',
+    )
   })
 })

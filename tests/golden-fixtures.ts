@@ -148,3 +148,40 @@ export function casTypeManquant(): any {
   }
   return c
 }
+
+/**
+ * Cas façon GD-025 — DEUX blocages de nature DIFFÉRENTE.
+ *
+ *   • une claim MAPPED dont l'événement est réel mais la date inconnue
+ *     → TEMPORAL_PRECISION_GAP
+ *   • une claim MISSING_TYPE
+ *     → EVIDENCE_TYPE_GAP
+ *
+ * Sa sémantique est COMPLÈTE et honnête ; seule la projection runtime est
+ * indisponible. C'est donc un cas Golden VALIDE, simplement non exécutable — et
+ * la preuve vivante qu'un trou de précision n'est pas une malformation.
+ */
+export function casGD025(): any {
+  const c = casTypeManquant()
+  c.caseId = 'TEST-GD025'
+
+  const claim = c.adjudication.rawEvidence[0].claims[0]
+  claim.semanticClaim =
+    'Des licenciements ont eu lieu ; la source ne date pas l’événement lui-même.'
+  claim.temporalNature = 'EVENT'
+  claim.temporalPrecision = 'UNKNOWN'
+  delete claim.occurredAt
+  claim.evidenceType = 'workforce_contraction'
+  claim.rationale =
+    'ÉVÉNEMENT de date inconnue — surtout pas un état non daté : `undated_state` affirmerait un ' +
+    'état constaté d’ancienneté inconnue, ce qui est un autre fait.'
+
+  c.caseStatus.blockers.push({
+    kind: 'TEMPORAL_PRECISION_GAP',
+    rawEvidenceId: 'TEST-ev1',
+    claimIndex: 0,
+    note: 'Aucune date de survenue exploitable.',
+  })
+
+  return c
+}

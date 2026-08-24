@@ -24,6 +24,41 @@ export interface RawManifestEntry {
   sha256: string
 }
 
+/**
+ * L'ARTEFACT réellement fourni : son identité ET son contenu, ensemble.
+ *
+ * ── LE TROU QUE CETTE STRUCTURE FERME ───────────────────────────────────────
+ * Une version antérieure recevait `rawDataset` (l'objet parsé) et `rawManifest`
+ * SÉPARÉMENT, puis vérifiait d'un côté que le couple chemin+empreinte existait
+ * au manifeste, de l'autre que `schemaVersion`/`datasetVersion` correspondaient
+ * à l'objet. Rien ne liait les deux. Un appelant pouvait donc fournir le chemin
+ * et l'empreinte AUTHENTIQUES du fichier de POLITIQUES avec l'objet parsé du
+ * DATASET : chaque vérification passait isolément, et l'ancrage n'ancrait rien.
+ *
+ * Ici, `path`, `sha256` et `parsed` décrivent UN SEUL artefact. L'appelant —
+ * CLI ou test — calcule l'empreinte sur les OCTETS avant de parser, ce qui est
+ * la seule façon honnête de les lier. Le validateur, lui, reste PUR.
+ */
+export interface RawDatasetArtifact {
+  path: string
+  sha256: string
+  /**
+   * Le CONTENU BRUT du fichier, tel qu'il a été lu.
+   *
+   * ⚠️ PAS L'OBJET DÉJÀ PARSÉ, et c'est décisif. Avec `parsed`, rien ne relie
+   * l'empreinte au contenu : un appelant peut présenter le chemin et l'empreinte
+   * AUTHENTIQUES d'un fichier avec l'objet parsé d'un AUTRE, et aucune fonction
+   * pure ne peut le détecter — elle n'a pas les octets. En recevant le texte, le
+   * validateur RECALCULE l'empreinte lui-même : le mensonge devient
+   * inconstructible.
+   *
+   * Le hachage est du CALCUL, pas de l'I/O : la fonction reste pure.
+   */
+  text: string
+}
+
+import { createHash } from 'node:crypto'
+
 export interface RawIntegrityError {
   code: string
   path: string
@@ -75,15 +110,15 @@ export function resolveJsonPointer(document: unknown, pointer: string): unknown 
 }
 
 /**
- * Vérifie un cas Golden contre le dataset RAW et son manifeste. PURE.
+ * Vérifie un cas Golden contre l'artefact RAW fourni et son manifeste. PURE.
  *
  * @param golden      cas Golden déjà validé structurellement
- * @param rawDataset  contenu parsé de `prospector-v3-golden-dataset.v0.1.json`
+ * @param artifact    l'artefact dataset : chemin, empreinte ET contenu parsé
  * @param rawManifest entrées parsées de `SHA256SUMS`
  */
 export function validateGoldenCaseAgainstRaw(
   golden: any,
-  rawDataset: any,
+  artifact: RawDatasetArtifact,
   rawManifest: readonly RawManifestEntry[],
 ): RawIntegrityValidation {
   const errors: RawIntegrityError[] = []
@@ -100,31 +135,89 @@ export function validateGoldenCaseAgainstRaw(
     }
   }
 
-  // ── LE COUPLE chemin+empreinte, jamais l'empreinte seule ─────────────────
+  if (!artifact || typeof artifact !== 'object') {
+    return {
+      ok: false,
+      errors: [
+        {
+          code: 'raw_artifact_missing',
+          path: 'artifact',
+          message: 'Aucun artefact dataset fourni : rien à ancrer.',
+        },
+      ],
+    }
+  }
+
+  // ── L'EMPREINTE EST RECALCULÉE, JAMAIS CRUE SUR PAROLE ──────────────────
+  const empreinteReelle = createHash('sha256').update(artifact.text ?? '', 'utf8').digest('hex')
+
+  if (empreinteReelle !== artifact.sha256) {
+    add(
+      'raw_artifact_sha_not_from_content',
+      'artifact.sha256',
+      `L’artefact déclare l’empreinte « ${artifact.sha256} », mais son contenu hache ` +
+        `« ${empreinteReelle} ». Identité et contenu ne décrivent pas le même fichier.`,
+    )
+    return { ok: false, errors }
+  }
+
+  let rawDataset: any
+  try {
+    rawDataset = JSON.parse(artifact.text)
+  } catch {
+    add(
+      'raw_artifact_unparseable',
+      'artifact.text',
+      'Le contenu de l’artefact n’est pas un JSON valide.',
+    )
+    return { ok: false, errors }
+  }
+
+  // ── L'ANCRE DÉSIGNE-T-ELLE L'ARTEFACT RÉELLEMENT FOURNI ? ────────────────
   //
-  // ⚠️ Chercher seulement si l'empreinte « figure quelque part » dans le
-  // manifeste laisserait passer un cas qui déclare le fichier de POLITIQUES et
-  // l'empreinte du DATASET : les deux valeurs seraient présentes, le couple
-  // faux, et l'ancrage n'ancrerait rien.
-  const entree = (rawManifest ?? []).find((e) => e && e.path === anchor.datasetPath)
+  // ⚠️ C'est le lien qui manquait. Sans lui, un appelant pouvait présenter le
+  // chemin et l'empreinte AUTHENTIQUES d'un fichier avec le contenu parsé d'un
+  // AUTRE : chaque contrôle passait isolément.
+  if (anchor.datasetPath !== artifact.path) {
+    add(
+      'raw_artifact_path_mismatch',
+      'rawSource.datasetPath',
+      `Le cas ancre « ${anchor.datasetPath} » mais l’artefact fourni est « ${artifact.path} ». ` +
+        'L’identité et le contenu doivent décrire UN SEUL fichier.',
+    )
+  }
+  if (anchor.datasetSha256 !== artifact.sha256) {
+    add(
+      'raw_artifact_sha_mismatch',
+      'rawSource.datasetSha256',
+      `Le cas ancre l’empreinte « ${anchor.datasetSha256} » mais l’artefact fourni porte ` +
+        `« ${artifact.sha256} ».`,
+    )
+  }
+
+  // ── LE COUPLE chemin+empreinte DE L'ARTEFACT, au manifeste ───────────────
+  //
+  // ⚠️ Le couple, jamais l'empreinte seule : « l'empreinte figure quelque part »
+  // laisserait passer le chemin des POLITIQUES avec l'empreinte du DATASET.
+  const entree = (rawManifest ?? []).find((e) => e && e.path === artifact.path)
 
   if (!entree) {
     add(
       'raw_dataset_path_not_in_manifest',
       'rawSource.datasetPath',
-      `Le chemin « ${anchor.datasetPath} » ne figure pas dans le manifeste des sources RAW.`,
+      `Le chemin « ${artifact.path} » ne figure pas dans le manifeste des sources RAW.`,
     )
-  } else if (entree.sha256 !== anchor.datasetSha256) {
+  } else if (entree.sha256 !== artifact.sha256) {
     add(
       'raw_sha_mismatch',
       'rawSource.datasetSha256',
-      `Empreinte déclarée « ${anchor.datasetSha256} » ≠ « ${entree.sha256} » enregistrée pour ` +
-        `« ${anchor.datasetPath} ». L’ancrage ne survit pas à une réécriture de l’archive — c’est ` +
+      `Empreinte « ${artifact.sha256} » ≠ « ${entree.sha256} » enregistrée pour ` +
+        `« ${artifact.path} ». L’ancrage ne survit pas à une réécriture de l’archive — c’est ` +
         'précisément ce qu’il existe pour empêcher.',
     )
   }
 
-  // ── Le dataset FOURNI est-il bien celui que le cas prétend ancrer ? ──────
+  // ── Le CONTENU de l'artefact est-il bien celui que le cas prétend ancrer ? ─
   if (anchor.datasetSchemaVersion !== rawDataset?.schemaVersion) {
     add(
       'raw_dataset_schema_version_mismatch',
