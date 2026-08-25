@@ -172,6 +172,59 @@ export interface SourcedCompany {
   signals: string[]   // ville, effectif… (signaux structurels)
 }
 
+// ── SIGNAL-ACQUISITION-CONTRACT-001 — SÉMANTIQUE STRUCTURÉE DE L'ACQUISITION ─
+//
+// ⚠️ POURQUOI CES CHAMPS EXISTENT. Un futur adaptateur déterministe doit savoir
+// si l'on observe un ÉVÉNEMENT ou un ÉTAT, si l'événement a eu lieu ou est
+// seulement annoncé, et à quelle date métier — SANS jamais lire la prose de
+// `detail`. Analyser une phrase pour retrouver ces distinctions reviendrait à
+// glisser un jugement de langage au cœur d'un moteur qu'on veut déterministe.
+//
+// L'EXTRACTION a le droit de lire la source : c'est son métier. L'ADAPTATEUR
+// n'a le droit de lire que ces champs clos. La frontière est là, et nulle part
+// ailleurs.
+//
+// `UNKNOWN` est une VALEUR PLEINE, jamais un défaut silencieux : « on ne sait
+// pas » doit se distinguer de « on n'a pas rempli le champ ».
+
+/**
+ * Nature de ce qui est observé.
+ *
+ * `EVENT` — un fait discret survenu à une date (une levée, une nomination).
+ * `STATE` — un état constaté maintenant, de début inconnu (un poste ouvert sur
+ *           une page carrière, une politique de présence). Un `STATE` n'a PAS
+ *           de date de survenue, et ne doit jamais s'en voir inventer une.
+ */
+export type SignalClaimNature = 'EVENT' | 'STATE' | 'UNKNOWN'
+
+/** Un `EVENT` a-t-il eu lieu, ou est-il seulement annoncé pour plus tard ? */
+export type SignalEventStatus = 'COMPLETED' | 'ANNOUNCED_FUTURE' | 'UNKNOWN'
+
+/** Précision réelle de `eventDate`. Jamais élargie, jamais rétrécie. */
+export type SignalDatePrecision = 'DAY' | 'MONTH' | 'UNKNOWN'
+
+export type SignalRoleStatus = 'OPEN' | 'FILLED' | 'UNKNOWN'
+
+/**
+ * Fonction du poste. `EXEC_OTHER` couvre une direction NON commerciale (CEO,
+ * CFO, CTO) : elle existe précisément pour qu'une nomination de dirigeant ne
+ * puisse pas être confondue avec l'arrivée d'un responsable Sales.
+ */
+export type SignalRoleFunction = 'SALES' | 'TECH' | 'OFFICE_PEOPLE' | 'EXEC_OTHER' | 'UNKNOWN'
+
+/**
+ * Provenance de l'EXTRACTION — comment ce résultat a été fabriqué.
+ *
+ * ⚠️ CE N'EST PAS UNE PREUVE. Savoir quel modèle a extrait une information ne
+ * dit rien de sa véracité. Ce bloc sert à rejouer et à auditer une acquisition,
+ * jamais à fonder une confiance.
+ */
+export interface SignalExtraction {
+  mode: 'exa+claude' | 'claude-web'
+  promptVersion: string
+  model?: string
+}
+
 // Recherche par SIGNAL : entreprise détectée via une annonce/actu, avec icebreaker.
 export interface SignalHit {
   company: string
@@ -181,12 +234,34 @@ export interface SignalHit {
   icebreaker: string      // accroche prête à l'emploi
   sourceUrl?: string
   sourceName?: string     // média/site d'où vient le signal (jugement de fiabilité)
-  date?: string           // date du signal (fraîcheur)
+  /**
+   * @deprecated AMBIGU — « date du signal » : ni le code ni le prompt n'ont
+   * jamais tranché entre date de publication et date de survenue. Conservé pour
+   * l'affichage existant (`pages/sourcing.tsx`) et pour lui seul.
+   *
+   * ⚠️ UN ADAPTATEUR NE DOIT JAMAIS EN FAIRE UN `occurredAt`. Les champs
+   * `eventDate` / `eventDatePrecision` / `sourcePublishedAt` font autorité.
+   */
+  date?: string
   amount?: string         // montant de la levée si applicable
   role?: string           // poste ouvert si recrutement
   sector?: string
   city?: string
   verified: boolean       // true seulement après vérification data.gouv (à l'import)
+
+  // ── Contrat sémantique structuré (SIGNAL-ACQUISITION-CONTRACT-001) ────────
+  // Toujours présents et toujours explicites : l'absence d'information est
+  // portée par `UNKNOWN` / `null`, jamais par un champ manquant.
+  claimNature: SignalClaimNature
+  eventStatus: SignalEventStatus
+  /** Date de l'ÉVÉNEMENT MÉTIER — jamais la date de publication. */
+  eventDate: string | null
+  eventDatePrecision: SignalDatePrecision
+  /** Date de PUBLICATION de la source — jamais promue en date de survenue. */
+  sourcePublishedAt: string | null
+  roleStatus: SignalRoleStatus
+  roleFunction: SignalRoleFunction
+  extraction: SignalExtraction
 }
 
 // Étape 3 : contact résolu (Pappers dirigeants / Unipile LinkedIn personas).

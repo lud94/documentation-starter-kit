@@ -5,7 +5,15 @@
 // vérification SIREN est un geste d'AJOUT → elle a lieu à l'import.
 // Sans ANTHROPIC_API_KEY : aucune donnée (jamais de mock).
 
-import type { SignalHit } from '../../types/prospector'
+import type {
+  SignalClaimNature,
+  SignalDatePrecision,
+  SignalEventStatus,
+  SignalExtraction,
+  SignalHit,
+  SignalRoleFunction,
+  SignalRoleStatus,
+} from '../../types/prospector'
 import { searchExa, exaConfigured, type ExaDoc } from './exa'
 import { getKey } from './keystore'
 import { withBuild } from '../version'
@@ -95,12 +103,45 @@ RÈGLES STRICTES :
 
 Réponds UNIQUEMENT en JSON valide.`
 
+/**
+ * VERSION DU CONTRAT D'ACQUISITION — pas seulement de `jsonInstruction`.
+ *
+ * ⚠️ À INCRÉMENTER DÈS QU'UNE CONSIGNE STATIQUE PEUT CHANGER LA SORTIE
+ * STRUCTURÉE. Cela couvre au moins :
+ *   • le contrat JSON (`jsonInstruction`) ;
+ *   • la sémantique d'extraction (définition des valeurs closes) ;
+ *   • les règles d'acquisition de `SYSTEM` ;
+ *   • la sémantique de ciblage (`focusInstruction`, `RECALL`).
+ *
+ * Elle a DEUX rôles, et le second est celui qu'on oublie :
+ *   1. elle est persistée dans `extraction.promptVersion` — deux résultats
+ *      produits par deux consignes différentes ne sont pas comparables ;
+ *   2. elle entre dans l'IDENTITÉ DE CACHE. Sans elle, une réponse produite par
+ *      l'ancien contrat serait resservie ET ÉTIQUETÉE de la version courante :
+ *      la provenance mentirait, ce qui est pire qu'un cache manqué.
+ *
+ * Les parties DYNAMIQUES de la requête (thèse, ciblage, sources préférées) ne
+ * relèvent PAS de cette constante : elles entrent dans la clé par leur valeur,
+ * via `semantiqueRequete()`.
+ */
+export const PROMPT_VERSION = 'signal-acquisition-v2'
+
 function jsonInstruction(max: number) {
-  return `Renvoie un objet JSON: {"hits":[{"company","signalType","detail","icebreaker","sector","city","sourceUrl","sourceName","date","amount","role"}]} avec au plus ${max} entrées.
+  return `Renvoie un objet JSON: {"hits":[{"company","signalType","detail","icebreaker","sector","city","sourceUrl","sourceName","date","amount","role","claimNature","eventStatus","eventDate","eventDatePrecision","sourcePublishedAt","roleStatus","roleFunction"}]} avec au plus ${max} entrées.
 signalType ∈ ["recrutement","levée","actu","autre"].
 "detail" = le fait précis et daté (une phrase). "sourceName" = nom du média/site. "date" = date du signal (AAAA-MM ou AAAA-MM-JJ).
 "amount" = montant de la levée si applicable (sinon ""). "role" = poste ouvert si recrutement (sinon "").
-Chaque entrée DOIT avoir sourceUrl et date. Une entrée sans source vérifiable ne doit PAS être incluse.`
+Chaque entrée DOIT avoir sourceUrl et date. Une entrée sans source vérifiable ne doit PAS être incluse.
+
+SÉMANTIQUE STRUCTURÉE — réponds par les valeurs EXACTES ci-dessous, jamais par une phrase.
+Quand la source ne permet pas de trancher, réponds "UNKNOWN" (ou null pour une date). Ne devine JAMAIS.
+"claimNature" ∈ ["EVENT","STATE","UNKNOWN"] — EVENT = fait survenu à une date (levée bouclée, nomination, ouverture réalisée) ; STATE = état constaté aujourd'hui sans date de début connue (poste actuellement ouvert, politique de présence en vigueur, occupation flex).
+"eventStatus" ∈ ["COMPLETED","ANNOUNCED_FUTURE","UNKNOWN"] — COMPLETED = c'est fait ; ANNOUNCED_FUTURE = seulement annoncé/prévu/envisagé. Ne réponds COMPLETED que si la source l'affirme.
+"eventDate" = date de SURVENUE de l'événement métier, "AAAA-MM-JJ" ou "AAAA-MM", sinon null. Ce n'est PAS la date de publication de l'article.
+"eventDatePrecision" ∈ ["DAY","MONTH","UNKNOWN"] — doit correspondre exactement au format de eventDate.
+"sourcePublishedAt" = date de PUBLICATION de la source, "AAAA-MM-JJ", sinon null.
+"roleStatus" ∈ ["OPEN","FILLED","UNKNOWN"] — OPEN = poste ouvert au recrutement ; FILLED = poste pourvu (nomination).
+"roleFunction" ∈ ["SALES","TECH","OFFICE_PEOPLE","EXEC_OTHER","UNKNOWN"] — SALES = commercial ; TECH = technique ; OFFICE_PEOPLE = office/workplace/people/facilities ; EXEC_OTHER = direction NON commerciale (CEO, CFO, CTO).`
 }
 
 // Le SIGNAL DEMANDÉ doit être respecté : c'est la plainte n°1 (« je demande des
@@ -112,6 +153,56 @@ function focusInstruction(q?: SignalQuery): string {
   return `\n\nCONTRAINTE DE CIBLAGE — l'utilisateur a demandé EXCLUSIVEMENT : ${defs.map((d) => d.label).join(', ')}.
 N'inclus AUCUNE entreprise dont le signal ne correspond pas à cette demande, même si elle est intéressante.
 signalType attendu : ${wanted.join(' ou ')}. Si tu ne trouves pas assez d'entreprises correspondantes, renvoie MOINS d'entrées — ne comble jamais avec autre chose.`
+}
+
+/**
+ * SÉMANTIQUE DYNAMIQUE D'UNE REQUÊTE — source UNIQUE du prompt et de la clé.
+ *
+ * ── LE DÉFAUT QUE CETTE FONCTION FERME ──────────────────────────────────────
+ * L'ancienne clé valait `['signal-web', thesis, max, 'v3']`. Deux failles :
+ *
+ *   1. `'v3'` était un jeton versionné À LA MAIN, indépendant du contrat. Une
+ *      consigne d'extraction pouvait changer sans que personne n'y pense, et
+ *      une réponse de l'ancien contrat était resservie ÉTIQUETÉE de la nouvelle
+ *      version. Un cache manqué coûte un appel ; une provenance fausse corrompt
+ *      la vérité en aval.
+ *
+ *   2. `thesis` NE RÉSUME PAS la requête. `buildThesis()` rend la thèse libre
+ *      telle quelle dès que `q.thesis` est fourni — sans y refléter `q.types`.
+ *      Deux recherches de même thèse libre mais de ciblages OPPOSÉS partageaient
+ *      donc une entrée de cache, alors que `focusInstruction(q)` change le
+ *      prompt et `domainsFor(q)` change les sources préférées.
+ *
+ * ⚠️ AUCUNE SECONDE NORMALISATION. On ne réécrit pas « ce que le ciblage veut
+ * dire » pour le cache : on prend les chaînes EXACTES injectées dans le prompt.
+ * Deux dérivations parallèles finiraient par diverger, et la clé cesserait
+ * silencieusement de décrire la requête.
+ *
+ * Fonction PURE — aucun réseau, aucune horloge, aucune clé d'API.
+ */
+export function semantiqueRequete(
+  thesis: string,
+  max: number,
+  q?: SignalQuery,
+): { focus: string; hint: string; cacheParts: string[] } {
+  const focus = focusInstruction(q)
+  const prefer = q ? domainsFor(q) : []
+  const hint = prefer.length
+    ? `\n\nSources à privilégier quand elles couvrent le sujet (non exclusif — le site officiel ou la page carrière de l'entreprise est une source valable) : ${prefer.join(', ')}.`
+    : ''
+
+  return {
+    focus,
+    hint,
+    cacheParts: [
+      'signal-web',        // espace de nom : ne collisionne pas avec un autre appelant
+      PROMPT_VERSION,      // contrat d'acquisition ayant produit la réponse
+      thesis,              // demande, libre ou construite
+      String(max),         // borne de résultats — elle est DANS le prompt
+      focus,               // ciblage exact injecté
+      hint,                // préférences de sources exactes injectées
+    ],
+  }
 }
 
 // web_fetch (ouvrir un article trouvé) n'existe que sur les modèles récents.
@@ -182,16 +273,22 @@ async function callClaude(tenant: TenantContext, thesis: string, max: number, q?
   if (supportsWebFetch(pickModel('research'))) {
     tools.push({ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6, blocked_domains: ['linkedin.com'] })
   }
-  const prefer = q ? domainsFor(q) : []
-  const hint = prefer.length ? `\n\nSources à privilégier quand elles couvrent le sujet (non exclusif — le site officiel ou la page carrière de l'entreprise est une source valable) : ${prefer.join(', ')}.` : ''
+  // UNE SEULE dérivation : le prompt ET la clé de cache lisent les MÊMES
+  // chaînes. Recalculer le ciblage d'un côté seulement rouvrirait exactement la
+  // faille qu'on ferme.
+  const { focus, hint, cacheParts } = semantiqueRequete(thesis, max, q)
   const r = await llmCall({
     tenant, task: 'research', agent: SIGNAL_AGENT, system: SYSTEM, tools,
-    messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}${hint}\n\n${RECALL}\n\n${jsonInstruction(max)}` }],
-    cache: cacheKey(['signal-web', thesis, String(max), 'v3']),
+    messages: [{ role: 'user', content: `Thèse: ${thesis}${focus}${hint}\n\n${RECALL}\n\n${jsonInstruction(max)}` }],
+    cache: cacheKey(cacheParts),
   })
   // Un budget épuisé est une ERREUR, pas « aucun résultat » : on le dit.
   if (r.blocked) throw new Error(r.error || 'Appel IA refusé (budget).')
-  const hits = parseHits(r.text)
+  const hits = parseHits(r.text, {
+    mode: 'claude-web',
+    promptVersion: PROMPT_VERSION,
+    model: pickModel('research'),
+  })
   // Réponse tronquée (plafond de tokens atteint) : le JSON est incomplet, donc
   // parseHits rend peu ou rien. On le signale au lieu d'afficher « 0 résultat ».
   if (!hits.length && r.truncated) throw new Error('Réponse IA tronquée (limite de tokens). Réduis le nombre de critères ou la période.')
@@ -214,10 +311,102 @@ async function extractWithClaude(tenant: TenantContext, thesis: string, docs: Ex
     messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}\n\nExtraits web:\n${corpus}\n\n${jsonInstruction(max)}` }],
   })
   if (r.blocked) throw new Error(r.error || 'Appel IA refusé (budget).')
-  return parseHits(r.text)
+  return parseHits(r.text, {
+    mode: 'exa+claude',
+    promptVersion: PROMPT_VERSION,
+    model: pickModel('research'),
+  })
 }
 
-function parseHits(text: string): SignalHit[] {
+// ── NORMALISATION DU CONTRAT SÉMANTIQUE ─────────────────────────────────────
+//
+// ⚠️ CES FONCTIONS NE LISENT JAMAIS `detail`, `role` NI AUCUNE PROSE. Elles ne
+// font que RECONNAÎTRE une valeur close déjà produite par l'extraction. Une
+// valeur inconnue, absente ou mal formée devient `UNKNOWN` / `null` — jamais une
+// valeur devinée. C'est toute la différence entre normaliser et interpréter :
+// si `parseHits` déduisait « VP Sales » de la phrase, la sémantique serait de
+// nouveau produite par une analyse de langage, à l'endroit exact que ce lot
+// existe pour assainir.
+function valeurClose<T extends string>(valeur: unknown, admises: readonly T[], defaut: T): T {
+  return typeof valeur === 'string' && (admises as readonly string[]).includes(valeur)
+    ? (valeur as T)
+    : defaut
+}
+
+const NATURES: readonly SignalClaimNature[] = ['EVENT', 'STATE', 'UNKNOWN']
+const STATUTS: readonly SignalEventStatus[] = ['COMPLETED', 'ANNOUNCED_FUTURE', 'UNKNOWN']
+const PRECISIONS: readonly SignalDatePrecision[] = ['DAY', 'MONTH', 'UNKNOWN']
+const STATUTS_POSTE: readonly SignalRoleStatus[] = ['OPEN', 'FILLED', 'UNKNOWN']
+const FONCTIONS: readonly SignalRoleFunction[] = [
+  'SALES', 'TECH', 'OFFICE_PEOPLE', 'EXEC_OTHER', 'UNKNOWN',
+]
+
+const JOUR = /^(\d{4})-(\d{2})-(\d{2})$/
+const MOIS = /^(\d{4})-(\d{2})$/
+
+/**
+ * Le jour existe-t-il RÉELLEMENT au calendrier ?
+ *
+ * ⚠️ `Date.parse` ne suffit pas : il est permissif et NORMALISE. `2026-02-30`
+ * y devient le 2 mars, `2026-13-01` échoue mais `2026-08` réussit en donnant le
+ * 1ᵉʳ août — c'est-à-dire une précision au jour qui n'a jamais été observée. On
+ * compare donc les composantes rendues à celles qui ont été écrites.
+ */
+function jourReel(annee: number, mois: number, jour: number): boolean {
+  if (mois < 1 || mois > 12 || jour < 1 || jour > 31) return false
+  const d = new Date(Date.UTC(annee, mois - 1, jour))
+  return (
+    d.getUTCFullYear() === annee && d.getUTCMonth() === mois - 1 && d.getUTCDate() === jour
+  )
+}
+
+/**
+ * Date de survenue et précision, VALIDÉES ENSEMBLE.
+ *
+ * ⚠️ UNE PRÉCISION ANNONCÉE QUI NE CORRESPOND PAS À LA VALEUR EST UNE
+ * CONTRADICTION, PAS UNE APPROXIMATION. `DAY` sur « 2026-08 » n'est pas
+ * « presque juste » : l'extraction s'est contredite, et choisir laquelle des
+ * deux affirmations croire serait deviner. On refuse les deux.
+ *
+ * Un mois n'est JAMAIS promu en jour. Ni le 1ᵉʳ, ni le dernier, ni aujourd'hui,
+ * ni `observedAt`.
+ */
+function normaliserDateEvenement(
+  valeur: unknown,
+  precision: unknown,
+): { eventDate: string | null; eventDatePrecision: SignalDatePrecision } {
+  const refus = { eventDate: null, eventDatePrecision: 'UNKNOWN' as SignalDatePrecision }
+
+  const p = valeurClose(precision, PRECISIONS, 'UNKNOWN')
+  if (p === 'UNKNOWN') return refus
+  if (typeof valeur !== 'string') return refus
+
+  const brut = valeur.trim()
+
+  if (p === 'DAY') {
+    const m = JOUR.exec(brut)
+    if (!m) return refus
+    if (!jourReel(Number(m[1]), Number(m[2]), Number(m[3]))) return refus
+    return { eventDate: brut, eventDatePrecision: 'DAY' }
+  }
+
+  const m = MOIS.exec(brut)
+  if (!m) return refus
+  const mois = Number(m[2])
+  if (mois < 1 || mois > 12) return refus
+  return { eventDate: brut, eventDatePrecision: 'MONTH' }
+}
+
+/** Date de PUBLICATION : jour exact et réel, ou rien. */
+function normaliserDatePublication(valeur: unknown): string | null {
+  if (typeof valeur !== 'string') return null
+  const brut = valeur.trim()
+  const m = JOUR.exec(brut)
+  if (!m) return null
+  return jourReel(Number(m[1]), Number(m[2]), Number(m[3])) ? brut : null
+}
+
+export function parseHits(text: string, extraction: SignalExtraction): SignalHit[] {
   const match = text.match(/\{[\s\S]*\}/)
   if (!match) return []
   let parsed: any
@@ -231,10 +420,20 @@ function parseHits(text: string): SignalHit[] {
     city: h.city || undefined,
     sourceUrl: h.sourceUrl || undefined,
     sourceName: h.sourceName || undefined,
+    // Champ hérité, volontairement inchangé : le réinterpréter ici trancherait
+    // en silence une ambiguïté que personne n'a levée.
     date: h.date || undefined,
     amount: h.amount || undefined,
     role: h.role || undefined,
     verified: false,
+    claimNature: valeurClose(h.claimNature, NATURES, 'UNKNOWN'),
+    eventStatus: valeurClose(h.eventStatus, STATUTS, 'UNKNOWN'),
+    ...normaliserDateEvenement(h.eventDate, h.eventDatePrecision),
+    sourcePublishedAt: normaliserDatePublication(h.sourcePublishedAt),
+    roleStatus: valeurClose(h.roleStatus, STATUTS_POSTE, 'UNKNOWN'),
+    roleFunction: valeurClose(h.roleFunction, FONCTIONS, 'UNKNOWN'),
+    // Copie : deux hits ne doivent pas partager le même objet de provenance.
+    extraction: { ...extraction },
   }))
   // Sans nom d'entreprise ni source vérifiable, un « signal » n'a aucune valeur.
   .filter((h: SignalHit) => h.company && h.sourceUrl)
