@@ -46,6 +46,7 @@
 // réelle — et elles seules pourront produire une urgence et débloquer
 // `sales_scale_up` / `strong_signal_low_context`. Ce pipeline n'appartient pas à
 // 01D et n'est pas commencé ici.
+import { isAccountLead } from '../leadKind'
 import type { Lead } from '../../../types/prospector'
 import type {
   AssertionType,
@@ -144,12 +145,38 @@ export function accountIdForLead(lead: Lead): string | null {
 /**
  * Un lead décrit-il une PERSONNE ?
  *
- * `kind: 'account'` est posé explicitement à l'import par signal : ces fiches
- * n'ont ni prénom ni nom. Une fiche sans identité nominale ne peut pas porter
- * une relation commerciale individuelle.
+ * ⚠️ LA CLASSIFICATION COMPTE/CONTACT N'APPARTIENT PAS À CE MODULE. Elle a une
+ * définition canonique unique — `isAccountLead` de `lib/prospector/leadKind.ts`
+ * — écrite précisément pour supprimer des prédicats concurrents qui classaient
+ * la MÊME ligne différemment selon l'écran.
+ *
+ * Ce fichier testait auparavant `lead.kind === 'account'` en direct.
+ *
+ * ⚠️ HONNÊTETÉ SUR LA PORTÉE DE CE CHANGEMENT : les deux formulations sont
+ * AUJOURD'HUI équivalentes — vérifié exhaustivement sur les 72 combinaisons de
+ * `(kind, firstName, lastName, id)`, zéro divergence. La raison est que le
+ * second critère ci-dessous absorbe le seul cas où l'heuristique legacy
+ * d'`isAccountLead` se distingue : une fiche sans `kind` et sans nom est classée
+ * compte par la définition canonique, et se voit de toute façon refuser un
+ * `personId` faute de nom.
+ *
+ * Ce n'est donc PAS une correction de bug, et le prétendre serait fabriquer une
+ * justification. C'est une correction de DÉPENDANCE : ce module cesse de
+ * redéfinir localement une notion dont le dépôt possède une définition unique.
+ * L'équivalence actuelle est une coïncidence de l'implémentation présente ; le
+ * jour où `leadKind.ts` affinera sa règle — un `kind` supplémentaire, une autre
+ * heuristique legacy — ce fichier suivra au lieu de diverger en silence. C'est
+ * exactement le scénario qui avait rendu `jarvisAgent.ts` et l'UI incohérents
+ * sur la même ligne de la même table.
+ *
+ * Le second critère RESTE nécessaire et ne fait pas doublon : `isAccountLead`
+ * répond « ce lead est-il une entreprise ? », pas « une personne est-elle
+ * nommée ? ». Un lead déclaré `kind: 'contact'` mais dépourvu de prénom et de
+ * nom — forme que `addLeadsFromCsv` sait produire — n'est pas un compte, et ne
+ * porte pourtant aucune identité individuelle.
  */
 export function personIdForLead(lead: Lead): string | undefined {
-  if (lead.kind === 'account') return undefined
+  if (isAccountLead(lead)) return undefined
   if (!nonEmpty(lead.firstName) && !nonEmpty(lead.lastName)) return undefined
   return nonEmpty(lead.id) ? lead.id : undefined
 }

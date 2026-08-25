@@ -7,6 +7,7 @@
 // - plusieurs candidats proches => ambiguïté, jamais de choix arbitraire ;
 // - aucune dépendance au LLM : le résultat est reproductible et testable.
 
+import { isAccountLead } from './leadKind'
 import type { Lead } from '../../types/prospector'
 
 export const ENTITY_PROBABLE_MIN_SCORE = 0.84
@@ -73,13 +74,6 @@ function tokens(value: unknown): string[] {
   return normalizeEntityText(value)
     .split(' ')
     .filter(Boolean)
-}
-
-function isAccount(lead: Lead): boolean {
-  return (
-    lead.kind === 'account' ||
-    (!lead.firstName?.trim() && !lead.lastName?.trim())
-  )
 }
 
 /**
@@ -308,8 +302,16 @@ export function resolveLeadEntity(
 
   const eligible = leads.filter((lead) => {
     if (preference === 'any') return true
-    if (preference === 'account') return isAccount(lead)
-    return !isAccount(lead)
+    // ⚠️ CLASSIFICATION CANONIQUE, JAMAIS LOCALE. Ce module possédait son propre
+    // `isAccount(lead)` = `kind === 'account' || aucun nom`. Il OMETTAIT le
+    // court-circuit `kind === 'contact'` — le défaut exact que `leadKind.ts` a
+    // été écrit pour supprimer, et qui survivait ici. Conséquence réelle : un
+    // lead DÉCLARÉ contact mais sans prénom ni nom — forme que
+    // `addLeadsFromCsv` produit — était éligible sous `preference: 'account'`,
+    // et exclu sous `preference: 'contact'`. La déclaration de l'utilisateur
+    // était contredite sur les deux préférences à la fois.
+    if (preference === 'account') return isAccountLead(lead)
+    return !isAccountLead(lead)
   })
 
   const ranked = eligible

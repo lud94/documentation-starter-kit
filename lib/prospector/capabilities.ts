@@ -5,6 +5,12 @@
 import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, SequenceStep, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../../types/prospector'
 import { ACTION_META, STATUS_META, STAGE_META } from '../../types/prospector'
 import { isAccountLead, isContactLead } from './leadKind'
+// ⚠️ TYPE CANONIQUE, PAS UNE COPIE. `Resolution` appartient à `datagouv.ts`,
+// l'autorité qui PRODUIT ces quatre états. Le littéral était réécrit deux fois
+// ici : deux copies d'une union divergent le jour où un cinquième état apparaît
+// chez le producteur. Import de TYPE uniquement — effacé à la compilation, donc
+// aucun cycle d'exécution possible.
+import type { Resolution } from './datagouv'
 
 export type Period = 'week' | 'month' | 'quarter' | 'year'
 
@@ -361,7 +367,22 @@ function emptyDetail(lead: Lead): LeadDetail {
     company: {
       name: lead.company, size: lead.effectif || '—', location: lead.city || '—',
       website: lead.website || '',
-      sector: lead.naf || '—', funding: lead.ca || '—',
+      sector: lead.naf || '—',
+      // ⚠️ CHIFFRE D'AFFAIRES ≠ LEVÉE DE FONDS.
+      //
+      // Ce champ projetait `lead.ca` — le chiffre d'affaires — dans un emplacement
+      // dont la sémantique est le FINANCEMENT. La donnée était pourtant réelle :
+      // c'est précisément ce qui rendait le défaut invisible. « 12 M€ » de revenus
+      // affiché comme « 12 M€ levés » décrit une entreprise que personne n'a
+      // observée — une donnée vraie placée dans le mauvais emplacement produit une
+      // information fausse, exactement comme une donnée inventée.
+      //
+      // Le modèle `Lead` actuel ne porte AUCUN champ de financement faisant
+      // autorité. On échoue donc fermé plutôt que d'emprunter le voisin le plus
+      // proche. `lead.ca` reste persisté et intact ; il n'est simplement plus
+      // projeté ici. Le jour où un financement réel sera collecté, il aura son
+      // propre champ.
+      funding: '—',
       description: lead.summary
         ? lead.summary
         : lead.siren
@@ -386,86 +407,56 @@ function emptyDetail(lead: Lead): LeadDetail {
   }
 }
 
+/**
+ * Dossier d'un lead — UNIQUEMENT à partir de ce que la fiche porte réellement.
+ *
+ * ── LE DÉFAUT QUE CE LOT FERME (PROSPECTOR-DOMAIN-ADAPTERS-001) ─────────────
+ * Cette fonction possédait une seconde branche, active dès que `lead.score`
+ * était non nul, qui FABRIQUAIT un dossier complet à partir de trois proxies
+ * sans aucune valeur probante : le score lui-même, `lead.temperature`, et un
+ * pseudo-aléa tiré d'un identifiant (`lead.id.charCodeAt(1)`).
+ *
+ * Elle produisait notamment :
+ *
+ *     preuves: [
+ *       `FAIT — Offre d'emploi publiée récemment (source Unipile)`,
+ *       `FAIT — Effectif 51-200 en croissance (source Pappers)`,
+ *       `FAIT — ${lead.title} identifié comme décideur (source LinkedIn)`,
+ *     ]
+ *     funding: 'Série A · 12 M€'
+ *     website: `www.${company}.com`
+ *     location: 'Paris, France'
+ *     pourquoiMaintenant: `… signal 🔥 FRAIS (< 30 jours) …`
+ *
+ * ⚠️ CE N'ÉTAIENT PAS DES MAQUETTES. C'étaient des énoncés préfixés « FAIT — »,
+ * ATTRIBUÉS À DES SOURCES NOMMÉES, portant un montant de levée, une tranche
+ * d'effectif et une fraîcheur de signal — tous déduits d'un nombre entre 0 et
+ * 100, quand ils n'étaient pas tirés du code ASCII d'un identifiant. Aucune de
+ * ces informations n'a jamais été observée.
+ *
+ * ── POURQUOI C'ÉTAIT UNE BOMBE AMORCÉE, ET NON UNE DETTE DORMANTE ──────────
+ * `lead.score` vaut `0` partout aujourd'hui : la branche était donc morte, et
+ * seule cette coïncidence protégeait l'utilisateur. La première ligne de code
+ * qui aurait renseigné un score — un futur agent de scoring, un import, un
+ * test — aurait rallumé l'ensemble, sans qu'aucune revue ne le rattache à ce
+ * changement.
+ *
+ * ── LA RÈGLE, DÉSORMAIS ────────────────────────────────────────────────────
+ * Une donnée absente reste absente. `emptyDetail` ne lit que des champs
+ * réellement persistés sur le `Lead` (`effectif`, `city`, `website`, `naf`,
+ * `ca`, `summary`, `siren`, `dirigeant`) et dit « à enrichir » pour le reste,
+ * avec `preuves: []`. Un dossier vide est un dossier honnête ; un dossier
+ * inventé est indiscernable d'un dossier vrai, et c'est précisément ce qui le
+ * rend dangereux.
+ *
+ * ⚠️ `lead.score` N'EST PLUS LU ICI, ni nulle part comme source de fait. Il
+ * subsiste dans le type pour compatibilité des données persistées, et il est
+ * marqué non-autoritaire (cf. `types/prospector.ts`).
+ */
 function buildDetail(lead: Lead): LeadDetail {
-  if (!lead.score) return emptyDetail(lead)
-  const seed = lead.id.charCodeAt(1) || 0
-  const sector = SECTORS[seed % SECTORS.length]
-  const fit = Math.min(40, Math.round(lead.score * 0.45))
-  const intent = Math.min(40, Math.round(lead.score * 0.35))
-  const timing = Math.max(0, Math.min(20, lead.score - fit - intent))
-  const ageDays = refreshedDossiers.has(lead.id) ? 1 : (seed * 13) % 60
-  const stale = ageDays > 30
-
-  return {
-    tags: LEAD_TAGS[lead.id] ?? [],
-    nextAction: NEXT_ACTION[lead.stage],
-    lead,
-    headline: `${lead.title} · ${lead.company}`,
-    connectionDegree: seed % 2 === 0 ? '2e degré' : '1er degré',
-    premium: lead.score > 75,
-    openProfile: seed % 3 === 0,
-    linkedinUrl: lead.linkedinUrl || '',
-    scoring: {
-      fit,
-      intent,
-      timing,
-      segment: lead.temperature === 'hot' ? 'D1' : 'D2',
-      band: BAND[lead.temperature],
-      confidence: lead.score > 80 ? 'high' : lead.score > 65 ? 'medium' : 'low',
-      edgeCase: lead.score >= 68 && lead.score <= 74,
-      rationale: `Offre d'emploi ${sector === 'IA / ML' ? 'ML Engineer' : 'growth/sales'} publiée il y a moins de 7 jours chez ${lead.company} — confirme une phase de croissance active et une fenêtre d'opportunité immédiate.`,
-      aiAdjustment: lead.temperature === 'hot' ? 5 : 0,
-    },
-    company: {
-      name: lead.company,
-      size: lead.score > 70 ? '51-200' : '11-50',
-      location: 'Paris, France',
-      website: `www.${lead.company.toLowerCase().replace(/\s/g, '')}.com`,
-      sector,
-      funding: lead.score > 82 ? 'Série A · 12 M€' : 'N/A',
-      description: `${lead.company} construit une solution ${sector} pour les équipes tech. Croissance rapide de l'effectif commercial et marketing sur les 12 derniers mois.`,
-    },
-    dossier: {
-      status: lead.score > 78 ? 'solide' : 'moyen',
-      ageLabel: ageDays <= 1 ? 'à l\'instant' : `il y a ${ageDays} j`,
-      ageDays,
-      stale,
-      mecanisme: 'Mécanisme 2 — Signal récent vérifié',
-      accrochePivot: `Vous scalez vos équipes ${sector === 'MarTech' ? 'marketing' : 'sales'} chez ${lead.company} — pendant ce temps, qui structure le suivi pour que rien ne tombe entre les mailles ?`,
-      pourquoiMaintenant: `Recrutement commercial/growth publié récemment — signal 🔥 FRAIS (< 30 jours). Indique une phase de croissance et une charge opérationnelle accrue sur ${lead.firstName}.`,
-      preuves: [
-        `FAIT — Offre d'emploi publiée récemment (source Unipile)`,
-        `FAIT — Effectif ${lead.score > 70 ? '51-200' : '11-50'} en croissance (source Pappers)`,
-        `FAIT — ${lead.title} identifié comme décideur (source LinkedIn)`,
-      ],
-      aIntegrer: [
-        `Le signal de recrutement comme point d'entrée concret et daté`,
-        `La double charge croissance + structuration qui pèse sur ${lead.firstName} — nommer sans dramatiser`,
-      ],
-      aEviter: [
-        `Flatter une réalisation publique (levée, prix) sans qu'il en ait parlé`,
-        `Mentionner des outils concurrents sans qu'il les ait cités`,
-        `Promettre un ROI chiffré sans connaître ses métriques réelles`,
-      ],
-      questionAPoser: `Quand vos équipes ${sector === 'MarTech' ? 'marketing' : 'sales'} grossissent aussi vite, comment vous assurez-vous aujourd'hui que le suivi ne se dégrade pas ?`,
-      objectifReponse: `Obtenir une réponse sur leur process actuel — ouvrir une conversation, pas vendre.`,
-      canalRecommande: 'linkedin_message',
-      canalRationale: `Profil LinkedIn actif. LinkedIn est le canal naturel d'un ${lead.title.toLowerCase()} qui publie et recrute. Invitation d'abord si non connecté.`,
-      reserves: [
-        lead.temperature !== 'hot' ? `Segment D1 vs D2 non confirmé — dépend de la présence d'une équipe dédiée.` : `Nom du décideur secondaire non disponible.`,
-        `Effectif non recoupé Pappers/Unipile — cohérence acceptable, pas d'écart bloquant.`,
-        `L'angle suppose ${lead.firstName} impliqué dans l'opérationnel commercial — hypothèse raisonnée, non confirmée.`,
-      ],
-    },
-    notes: '',
-    interactions: lead.stage === 'to_invite' || lead.stage === 'invited'
-      ? []
-      : [
-          { id: 'i1', date: 'il y a 2 j', kind: 'invitation', text: 'Invitation acceptée' },
-          { id: 'i2', date: 'il y a 1 j', kind: 'message', text: 'Premier message envoyé' },
-        ],
-  }
+  return emptyDetail(lead)
 }
+
 
 // Supprime un lead (mémoire + Supabase).
 export async function deleteLead(id: string): Promise<void> {
@@ -523,7 +514,7 @@ export async function verifyLeadCompany(id: string): Promise<{
   active?: boolean
   dirigeant?: string
   ambiguous?: boolean
-  resolution?: 'resolved' | 'ambiguous' | 'not_found' | 'provider_error'
+  resolution?: Resolution
   candidates?: CompanyCandidate[]
 } | undefined> {
   const l = LEADS[id]
@@ -1237,7 +1228,7 @@ export interface SignalImportResult {
   siren?: string
   ambiguous?: boolean
   /** `provider_error` = data.gouv injoignable. RIEN n'a été écrit. */
-  resolution?: 'resolved' | 'ambiguous' | 'not_found' | 'provider_error'
+  resolution?: Resolution
   company?: string
   candidates?: CompanyCandidate[]
 }

@@ -43,6 +43,20 @@ export interface Lead {
   lastName: string
   title: string
   company: string
+  /**
+   * @deprecated LEGACY, NON-AUTORITAIRE. Vaut `0` partout dans le produit
+   * actuel : aucun agent ne le calcule.
+   *
+   * ⚠️ N'EST JAMAIS UNE SOURCE DE FAIT. Ce champ a fabriqué, jusqu'à
+   * PROSPECTOR-DOMAIN-ADAPTERS-001, un dossier commercial entier — montant de
+   * levée, tranche d'effectif, offre d'emploi, attributions « source Pappers /
+   * Unipile / LinkedIn » — à partir de ce seul nombre. Cette branche est
+   * supprimée.
+   *
+   * Conservé pour la compatibilité des données déjà persistées. Ne doit jamais
+   * devenir une `EvidenceEvent`, ni alimenter le Decision Kernel, ni justifier
+   * un énoncé affiché comme un fait.
+   */
   score: number // 0-100
   temperature: Temperature
   status: LeadStatus
