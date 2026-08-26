@@ -7,6 +7,72 @@ import type { AuthorizedMotion, HumanControl } from './motions'
 // Règle : ces objets décrivent des faits, interprétations et décisions.
 // Ils ne contiennent volontairement aucune logique d'exécution.
 
+/**
+ * Provenance d'ingestion des signaux externes.
+ *
+ * ⚠️ DÉCLARÉE ICI, ET NON DANS LE BRIDGE. `validators.ts` doit reconnaître cette
+ * provenance pour exiger une adjudication, et importer le Bridge depuis les
+ * validateurs créerait un cycle de propriété. Ce module ne dépend de personne :
+ * c'est le seul endroit acyclique où les deux peuvent se rencontrer.
+ */
+export const EXTERNAL_SIGNAL_PROVIDER = 'web_signal_search'
+
+const INSTANT_STRICT =
+  /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|[+-](\d{2}):(\d{2}))$/
+
+/**
+ * INSTANT RFC 3339 STRICT — L'UNIQUE définition du dépôt.
+ *
+ * ⚠️ POURQUOI PAS `validDate()`. Ce dernier s'appuie sur `Date.parse`, qui est
+ * permissif ET NORMALISE : `2026-08-20T24:00:00Z` y devient le 21 août, et
+ * `2026-08-20` — une date sans heure — y passe pour un instant. Un horodatage
+ * d'adjudication validé strictement à l'écriture mais relu avec une règle plus
+ * lâche romprait l'aller-retour : une confirmation refusée à l'entrée
+ * deviendrait acceptable à la relecture.
+ *
+ * Les composantes ÉCRITES sont comparées à celles que le calendrier rend, pour
+ * que la normalisation silencieuse soit impossible.
+ */
+export function isStrictInstant(valeur: unknown): boolean {
+  if (typeof valeur !== 'string') return false
+  const m = INSTANT_STRICT.exec(valeur)
+  if (!m) return false
+
+  const [, a, mo, j, h, mi, sec, oh, om] = m
+  const [an, mois, jour] = [Number(a), Number(mo), Number(j)]
+  if (mois < 1 || mois > 12 || jour < 1 || jour > 31) return false
+  const d = new Date(Date.UTC(an, mois - 1, jour))
+  if (d.getUTCFullYear() !== an || d.getUTCMonth() !== mois - 1 || d.getUTCDate() !== jour) {
+    return false
+  }
+  if (Number(h) > 23 || Number(mi) > 59 || Number(sec) > 59) return false
+  if (oh !== undefined && (Number(oh) > 23 || Number(om) > 59)) return false
+  return true
+}
+
+/**
+ * IDENTITÉ CANONIQUE d'une revendication — L'UNIQUE définition du dépôt.
+ *
+ * ⚠️ DÉCLARÉE ICI, ET NON DANS LE BRIDGE. Le Bridge l'écrit dans
+ * `acceptance.canonicalKey` ; les validateurs doivent la RECALCULER à la
+ * relecture pour vérifier qu'une evidence n'a pas été mutée d'une revendication
+ * vers une autre en conservant l'adjudication humaine de la première. Deux
+ * implémentations de la même règle finiraient par diverger — et la divergence
+ * ferait passer une mutation pour une cohérence.
+ *
+ *   dated_event    → `<type>|<accountId>|<occurredAt>`
+ *   undated_state  → `<type>|<accountId>|STATE`
+ */
+export function canonicalClaimKey(claim: {
+  type: string
+  accountId: string
+  temporality: 'dated_event' | 'undated_state'
+  occurredAt?: string
+}): string {
+  const quand = claim.temporality === 'dated_event' ? claim.occurredAt : 'STATE'
+  return `${claim.type}|${claim.accountId}|${quand}`
+}
+
 export type EvidenceScope =
   | 'account'
   | 'person'
@@ -65,6 +131,29 @@ export interface EvidenceSource {
  */
 export type EvidenceTemporality = 'dated_event' | 'undated_state'
 
+/**
+ * POURQUOI CE FAIT A ÉTÉ ACCEPTÉ — provenance d'ADJUDICATION, pas de source.
+ *
+ * ⚠️ À NE PAS CONFONDRE AVEC `EvidenceSource`. `source` dit d'où vient
+ * l'information ; `acceptance` dit qui a décidé qu'elle pouvait être affirmée
+ * comme un fait. Une evidence externe issue du web n'est un fait que parce
+ * qu'une personne l'a adjugée : effacer ce motif la rendrait, dès la relecture,
+ * indiscernable d'un fait fabriqué.
+ *
+ * Facultatif : les evidences dérivées du CRM (`dataBridge`) n'en portent pas —
+ * elles constatent l'état de notre propre base et n'ont personne à citer.
+ */
+export interface EvidenceAcceptance {
+  kind: 'human_confirmed'
+  /** Identifiant opaque de l'acteur. Jamais une adresse déduite d'un client. */
+  actorId: string
+  confirmedAt: string
+  /** La revendication EXACTE adjugée. */
+  canonicalKey: string
+  /** Les sources réellement examinées lors de l'adjudication. */
+  sourceUrls: readonly string[]
+}
+
 /** Champs communs aux deux natures temporelles. */
 interface EvidenceBase<T extends string = string> {
   id: string
@@ -97,6 +186,14 @@ interface EvidenceBase<T extends string = string> {
 
   // Après cette date, l'evidence ne doit plus être considérée fraîche.
   expiresAt?: string
+
+  /**
+   * Motif d'ACCEPTATION, quand ce fait a dû être adjugé pour être affirmé.
+   *
+   * Absent sur les evidences internes. PRÉSENT et validé fail-closed sur toute
+   * evidence issue d'une source externe.
+   */
+  acceptance?: EvidenceAcceptance
 }
 
 /** Un fait daté : la date de survenue est connue, et elle est exigée. */

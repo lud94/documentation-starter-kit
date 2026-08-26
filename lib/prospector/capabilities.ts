@@ -1235,6 +1235,37 @@ export interface SignalImportResult {
 
 export interface CompanyCandidate { siren: string; name: string; city?: string }
 
+/** SIREN canonique : exactement neuf chiffres, rien d'autre. */
+const SIREN_EXACT = /^\d{9}$/
+
+/**
+ * L'import a-t-il RÉELLEMENT résolu une entité faisant autorité ?
+ *
+ * ⚠️ FAIL CLOSED. Cette garde existe parce que le Signal Bridge en a besoin
+ * pour décider si un fait externe peut s'attacher à un compte. Elle ne déduit
+ * la résolution d'AUCUN indice indirect :
+ *
+ *   • `verified` est un booléen qui écrase quatre états distincts ;
+ *   • `added` ne dit rien de l'identité — un doublon rend `{added: 0, id}` ;
+ *   • un `id` seul prouve qu'une fiche existe, pas qu'elle a été identifiée ;
+ *   • le nom d'entreprise n'est jamais une identité ;
+ *   • la présence de `candidates` signale au contraire une AMBIGUÏTÉ.
+ *
+ * Seule la conjonction `resolution === 'resolved'` + fiche existante + SIREN
+ * exact fait foi. `ambiguous`, `not_found` et `provider_error` échouent, et
+ * `provider_error` en particulier n'est pas une absence : c'est une panne
+ * (OBS-DATAGOUV-001).
+ */
+export function isResolvedSignalImportResult(
+  result: SignalImportResult | null | undefined,
+): result is SignalImportResult & { id: string; siren: string; resolution: 'resolved' } {
+  if (!result || typeof result !== 'object') return false
+  if (result.resolution !== 'resolved') return false
+  if (typeof result.id !== 'string' || result.id.trim() === '') return false
+  if (typeof result.siren !== 'string' || !SIREN_EXACT.test(result.siren)) return false
+  return true
+}
+
 /**
  * Libellé commun d'une résolution ambiguë, partagé par les écrans.
  *

@@ -19,6 +19,7 @@
 import { rulePackById } from './packs/registry'
 import { isLensId } from './lens/registry'
 import { AUTHORIZED_MOTIONS } from './motions'
+import { EXTERNAL_SIGNAL_PROVIDER, canonicalClaimKey, isStrictInstant } from './types'
 import type {
   EvidenceEvent,
   Outcome,
@@ -76,8 +77,73 @@ export function isEvidenceEvent(value: any): value is EvidenceEvent {
     validDate(value.observedAt) &&
     optionalDate(value.lastVerifiedAt) &&
     optionalDate(value.expiresAt) &&
+    acceptationCoherente(value) &&
     temporaliteCoherente(value)
   )
+}
+
+/**
+ * PROVENANCE D'ADJUDICATION — absente OU complète, jamais à moitié.
+ *
+ * ⚠️ REVALIDÉE À LA LECTURE, comme tout le reste. Une ligne relue vient d'un
+ * `jsonb` que rien ne contraint côté base : une acceptation tronquée y
+ * affirmerait qu'un fait a été adjugé sans dire par qui ni sur quoi. Un motif
+ * d'acceptation invalide invalide donc l'evidence entière — l'ignorer
+ * laisserait passer un fait externe dont la justification a disparu.
+ */
+function acceptationCoherente(value: any): boolean {
+  const a = value.acceptance
+
+  // ⚠️ UN FAIT EXTERNE SANS ADJUDICATION EST INVALIDE — À L'ÉCRITURE COMME À LA
+  // RELECTURE. Rendre `acceptance` seulement optionnel laissait une ligne
+  // `web_signal_search` + `fact` valider sans que personne ne l'ait confirmée :
+  // le contrôle du Bridge devenait contournable par toute écriture directe dans
+  // le magasin. Les evidences internes (CRM) restent dispensées : elles
+  // constatent l'état de notre propre base et n'ont personne à citer.
+  const externe = value?.source?.provider === EXTERNAL_SIGNAL_PROVIDER
+
+  // ⚠️ CONTRAT V0 FERMÉ POUR LA PROVENANCE WEB. Exiger l'adjudication seulement
+  // sur `assertionType === 'fact'` laissait une porte : la même provenance avec
+  // `inference`, `assumption` — ou toute autre valeur — passait sans confirmation.
+  // Or le Bridge V0 ne produit QU'UN fait adjugé par un humain ; toute autre
+  // forme portant cette provenance n'a été produite par aucun chemin légitime.
+  //
+  // Ce durcissement vaut pour `web_signal_search` UNIQUEMENT. Le trou général
+  // sur `assertionType` reste `EVIDENCE-ASSERTION-RUNTIME-GUARD-001`, non traité ici.
+  if (externe && value.assertionType !== 'fact') return false
+  if (a === undefined) return !externe
+
+  if (!a || typeof a !== 'object') return false
+  if (a.kind !== 'human_confirmed') return false
+  if (!nonEmpty(a.actorId)) return false
+  // ⚠️ MÊME RÈGLE STRICTE QU'À L'ÉCRITURE. `validDate` s'appuie sur `Date.parse`
+  // et accepterait `2026-08-20T24:00:00Z` en le normalisant au 21 : un
+  // horodatage refusé par le Bridge redeviendrait acceptable à la relecture.
+  if (!isStrictInstant(a.confirmedAt)) return false
+  if (!nonEmpty(a.canonicalKey)) return false
+  if (!stringArray(a.sourceUrls) || a.sourceUrls.length === 0) return false
+
+  // ⚠️ LA SOURCE CITÉE DOIT FIGURER PARMI LES PREUVES RÉELLEMENT EXAMINÉES.
+  // Sans quoi une evidence désignerait une source que personne n'a revue, tout
+  // en portant une adjudication qui semble la couvrir.
+  const url = value?.source?.url
+  if (typeof url !== 'string' || url.trim() === '') return false
+  if (!a.sourceUrls.map((u: string) => u.trim()).includes(url.trim())) return false
+
+  // ⚠️ L'ADJUDICATION DOIT DÉSIGNER CETTE EVIDENCE-CI, ET AUCUNE AUTRE.
+  // Sans ce contrôle, une evidence adjugée pouvait être MUTÉE d'une
+  // revendication vers une autre — changer son `type`, son `accountId` ou son
+  // `occurredAt` — tout en conservant la confirmation humaine de la première.
+  // La signature humaine se serait alors appliquée à un fait que personne n'a vu.
+  //
+  // La clé est RECALCULÉE depuis l'evidence, par la définition canonique unique
+  // de `types.ts` — jamais réécrite ici.
+  return a.canonicalKey === canonicalClaimKey({
+    type: value.type,
+    accountId: value.accountId,
+    temporality: value.temporality,
+    occurredAt: value.occurredAt,
+  })
 }
 
 /**

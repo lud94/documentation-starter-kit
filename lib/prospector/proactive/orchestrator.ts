@@ -25,6 +25,7 @@ import {
   type TaskSnapshot,
 } from './dataBridge'
 import type { EligibilityContext } from './eligibility'
+import { isEvidenceEvent } from './validators'
 import type {
   EvidenceEvent,
   Recommendation,
@@ -83,6 +84,22 @@ export interface ProactiveEvaluationInput {
    * VIDE : fail closed.
    */
   businessContext: BusinessContextV0
+
+  /**
+   * Evidences DÉJÀ NORMALISÉES, produites hors des leads.
+   *
+   * ⚠️ POURQUOI CE CHAMP EXISTE. `evidenceFromLeads` ne sait produire que des
+   * evidences d'ÉTAT tirées des fiches CRM : le Decision Kernel était donc
+   * INATTEIGNABLE depuis toute source externe, quelle qu'elle soit. C'est le
+   * point d'entrée du Signal Bridge, et il est volontairement le plus étroit
+   * possible — une liste de faits déjà validés, rien d'autre.
+   *
+   * ⚠️ AUCUNE VALIDATION ALLÉGÉE ICI. Ces evidences traversent exactement les
+   * mêmes gardes que celles des leads : `evidenceIsUsable` du Situation Engine
+   * les filtre sur confiance, temporalité, fraîcheur et cible. Ce champ ouvre
+   * une PORTE D'ENTRÉE, jamais une dérogation.
+   */
+  externalEvidence?: readonly EvidenceEvent[]
 }
 
 export interface ProactiveEvaluation {
@@ -209,10 +226,22 @@ export function evaluate(input: ProactiveEvaluationInput): ProactiveEvaluation {
   const validation = resolveBusinessContext(input.businessContext)
   if (!validation.ok) return VIDE
 
-  const evidence = evidenceFromLeads(input.leads, {
-    now: input.now,
-    tasks: input.tasks,
-  })
+  // Faits du CRM et faits externes entrent par la MÊME porte et subissent les
+  // MÊMES contrôles. L'ordre est déterministe : leads d'abord, externes ensuite.
+  //
+  // ⚠️ LES FAITS EXTERNES SONT REVALIDÉS À L'EXÉCUTION, ET C'EST INDISPENSABLE.
+  // Le typage TypeScript n'est PAS une frontière de confiance : `externalEvidence`
+  // est un point d'entrée public, et un appelant peut y déposer un objet
+  // parfaitement typé mais forgé — un fait `web_signal_search` sans adjudication,
+  // par exemple. Sans ce filtre, ce champ contournerait tout le Signal Bridge.
+  //
+  // `isEvidenceEvent` est le validateur de LECTURE existant, celui-là même qui
+  // protège les lignes relues du magasin. Une evidence externe invalide est
+  // IGNORÉE — jamais réparée, jamais complétée — et n'atteint aucun Rule Pack.
+  const evidence: EvidenceEvent[] = [
+    ...evidenceFromLeads(input.leads, { now: input.now, tasks: input.tasks }),
+    ...(input.externalEvidence ?? []).filter(isEvidenceEvent),
+  ]
 
   if (evidence.length === 0) return { ...VIDE, evidence: [] }
 
