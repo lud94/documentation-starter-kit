@@ -241,6 +241,16 @@ export interface SignalExtraction {
 
 // Recherche par SIGNAL : entreprise détectée via une annonce/actu, avec icebreaker.
 export interface SignalHit {
+  /**
+   * Identifiant OPAQUE du candidat émis par le serveur
+   * (SIGNAL-PRODUCT-REACHABILITY-001-R1c).
+   *
+   * ⚠️ RENDU PAR `/api/signals/search`, JAMAIS ACCEPTÉ EN ENTRÉE d'un traitement
+   * porteur de vérité. C'est la SEULE chose que le navigateur renvoie pour
+   * désigner un candidat à l'adjudication : tous les champs structurés ci-dessous
+   * sont alors relus du registre serveur, jamais de la requête.
+   */
+  candidateId?: string
   company: string
   siren?: string          // rempli SEULEMENT à l'import (vérification data.gouv)
   signalType: 'recrutement' | 'levée' | 'actu' | 'autre'

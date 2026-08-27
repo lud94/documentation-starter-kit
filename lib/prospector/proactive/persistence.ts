@@ -39,6 +39,7 @@
 // requête ou de la query.
 import {
   listItems,
+  listItemsStrict,
   getItemStrict,
   upsertItem,
   deleteItem,
@@ -160,13 +161,20 @@ async function readAll<T>(
   if (!validWorkspace(ws)) return []
   // ⚠️ `listItems` est INDULGENT : il rend `[]` sur erreur comme sur collection
   // vide. Cette couche ne peut donc pas distinguer les deux, et il faut le
-  // savoir plutôt que l'ignorer. C'est acceptable ICI parce que la conséquence
-  // d'une liste vide est l'ABSENCE de situation et donc de recommandation :
-  // l'échec va dans le sens fermé.
+  // savoir plutôt que l'ignorer.
   //
-  // Ce raisonnement ne se transporte PAS aux données dont l'absence AUTORISE
-  // quelque chose. C'est exactement pourquoi `dataBridge` refuse de lire les
-  // tâches lui-même et exige un instantané dont la complétude est prouvée.
+  // ⚠️ CORRECTION (R1c) — L'ANCIENNE JUSTIFICATION ÉTAIT FAUSSE. On lisait ici
+  // que l'indulgence était sans danger « parce que l'échec va dans le sens
+  // fermé : moins de situations ». C'est INEXACT dès qu'un pack ARBITRE entre
+  // plusieurs situations. Avec `sales-core`, un fait historique manquant ne
+  // retire pas seulement `sales_scale_up` : il fait BASCULER l'arbitrage vers
+  // `strong_signal_low_context`. Une panne de lecture change alors la
+  // RECOMMANDATION, elle ne se contente pas d'en supprimer une. Moins de
+  // données n'est pas la même chose qu'un résultat plus prudent.
+  //
+  // Cette fonction reste indulgente pour ses appelants d'affichage, où lire
+  // « rien pour l'instant » est acceptable. Tout appelant qui RAISONNE sur
+  // l'absence doit utiliser `listEvidenceStrict` — voir plus bas.
   const items = await listItems<any>(kind, ws)
   return items.filter((item) => guard(item))
 }
@@ -183,6 +191,42 @@ export function readEvidence(id: string, ws: string) {
 
 export function listEvidence(ws: string) {
   return readAll<EvidenceEvent>(PROACTIVE_KINDS.evidence, isEvidenceEvent, ws)
+}
+
+/**
+ * Faits persistés d'un espace, avec la distinction « vide » / « injoignable ».
+ *
+ * ⚠️ À UTILISER DÈS QUE L'ABSENCE CHANGE UNE DÉCISION. `listEvidence` rend `[]`
+ * dans les deux cas ; interpréter une panne de stockage comme « zéro fait
+ * historique » fait produire une conclusion à partir d'une ignorance. Les
+ * règles de `sales-core` arbitrent entre situations concurrentes : l'historique
+ * manquant y change la recommandation émise, il ne la retire pas.
+ *
+ * ⚠️ UNE LIGNE MALFORMÉE FAIT ÉCHOUER LA LECTURE — elle n'est PAS écartée en
+ * silence. Une version antérieure appliquait `.filter(isEvidenceEvent)` et
+ * rendait `ok: true` : une ligne corrompue devenait alors « ce fait n'existe
+ * pas », c'est-à-dire exactement la confusion que cette fonction existe pour
+ * empêcher, une couche plus bas. La lecture est stricte au TRANSPORT et au
+ * CONTENU, sans quoi elle n'est stricte qu'à moitié.
+ *
+ * Conséquence assumée : une seule ligne abîmée bloque le raisonnement sur tout
+ * l'espace. C'est le bon sens de l'échec — refuser de conclure plutôt que
+ * conclure à partir d'un historique dont on sait qu'il est incomplet.
+ *
+ * `reason` distingue les deux causes : `unavailable` se réessaie, `invalid`
+ * demande une réparation. Les confondre enverrait attendre au lieu d'agir.
+ */
+export async function listEvidenceStrict(
+  ws: string,
+): Promise<
+  | { ok: true; values: EvidenceEvent[] }
+  | { ok: false; reason: 'invalid' | 'unavailable' }
+> {
+  if (!validWorkspace(ws)) return { ok: false, reason: 'unavailable' }
+  const lu = await listItemsStrict<any>(PROACTIVE_KINDS.evidence, ws)
+  if (lu.ok === false) return { ok: false, reason: 'unavailable' }
+  if (!lu.values.every((item) => isEvidenceEvent(item))) return { ok: false, reason: 'invalid' }
+  return { ok: true, values: lu.values as EvidenceEvent[] }
 }
 
 /** Écrit un lot et rend le nombre d'objets réellement persistés. */

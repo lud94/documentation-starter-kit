@@ -242,8 +242,25 @@ export async function lookupByName(name: string): Promise<CompanyLookup> {
   // Réponse VALIDE et vide : l'entreprise n'existe pas. Une panne, elle, a déjà
   // levé dans `searchCandidates` et n'arrive jamais ici.
   if (candidates.length === 0) return { found: false, resolution: 'not_found' }
-  if (candidates.length === 1) return { found: true, resolution: 'resolved', ...candidates[0] }
 
+  // ── UN SEUL RÉSULTAT N'EST PAS UNE RÉSOLUTION (R1e·P0-1) ──────────────────
+  // ⚠️ LE RACCOURCI SUPPRIMÉ ICI CONTREDISAIT LA DOCTRINE ÉCRITE JUSTE AU-DESSUS.
+  // La ligne était :
+  //
+  //     if (candidates.length === 1) return { found: true, resolution: 'resolved', … }
+  //
+  // Or l'API rend un CLASSEMENT DE PERTINENCE, jamais une réponse unique : elle
+  // peut parfaitement ne renvoyer QU'UNE société, et que celle-ci ne porte pas
+  // le nom demandé. Interroger « Acme » et recevoir la seule « Acme Services »
+  // suffisait à décerner l'autorité — sans aucune égalité de raison sociale.
+  // C'est exactement le défaut ENTITY-RESOLUTION-001, rouvert par le bas :
+  // `results[0]` refusé quand il y en a plusieurs, accepté quand il est seul.
+  //
+  // Le cardinal du classement ne prouve rien. Seule l'égalité stricte du nom
+  // normalisé prouve quelque chose, et elle doit s'appliquer UNIFORMÉMENT.
+  //
+  // Ce défaut préexistait ; il devient P0 parce que ce SIREN devient désormais
+  // l'identité de compte d'un fait du Kernel.
   const cible = normaliserRaisonSociale(n)
   const exacts = candidates.filter((c) => normaliserRaisonSociale(c.name) === cible)
 

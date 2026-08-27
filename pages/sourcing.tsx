@@ -284,6 +284,123 @@ export default function SourcingPage() {
     setTimeout(() => setSignalListMsg(null), 8000)
   }
 
+  // ── SIGNAL-PRODUCT-REACHABILITY-001 — revue et adjudication d'un candidat ──
+  // ⚠️ CET ÉCRAN NE PRÉSENTE JAMAIS UN CANDIDAT COMME UN FAIT ÉTABLI. Il montre
+  // ce que la source affirme, et demande une confirmation EXPLICITE. Le
+  // navigateur n'envoie que la désignation du candidat : l'acteur, l'instant,
+  // l'espace et le contexte métier sont dérivés côté serveur.
+  const [factState, setFactState] = useState<Record<string, { state: string; label: string }>>({})
+  const [factBusy, setFactBusy] = useState<string | null>(null)
+
+  /** Revendication candidate lisible — ou `null` si le contrat ne la porte pas. */
+  const candidateClaim = (h: SignalHit): { key: string; label: string; temporal: string } | null => {
+    const siren = sigCheck[h.company]?.siren
+    if (!siren) return null
+    // ⚠️ SANS IDENTIFIANT SERVEUR, RIEN N'EST ADJUGEABLE. Le candidat n'existe
+    // comme objet promouvable que s'il a été émis par `/api/signals/search` :
+    // un hit reconstruit côté navigateur ne désigne aucune ligne du registre.
+    if (!h.candidateId) return null
+    const account = `acc_siren_${siren}`
+    if (h.signalType === 'levée' && h.claimNature === 'EVENT' && h.eventStatus === 'COMPLETED'
+        && h.eventDatePrecision === 'DAY' && h.eventDate) {
+      return {
+        key: `recent_funding|${account}|${h.eventDate}`,
+        label: 'Levée de fonds bouclée',
+        temporal: `Événement daté du ${h.eventDate}`,
+      }
+    }
+    if (h.claimNature === 'STATE' && h.roleStatus === 'OPEN' && h.roleFunction === 'SALES') {
+      return {
+        key: `sales_hiring|${account}|STATE`,
+        label: 'Poste commercial actuellement ouvert',
+        temporal: 'État constaté — date de début inconnue',
+      }
+    }
+    return null
+  }
+
+  const LIBELLES_FAIT: Record<string, string> = {
+    ACCEPTED_WITH_RESULT: 'Fait accepté — situation détectée.',
+    ACCEPTED_NO_SITUATION: 'Fait accepté, mais les preuves ne suffisent pas encore à une situation.',
+    BUSINESS_CONTEXT_REQUIRED: 'Contexte métier à configurer avant toute acceptation.',
+    BUSINESS_CONTEXT_INVALID: 'Contexte métier invalide — à réparer.',
+    BUSINESS_CONTEXT_UNAVAILABLE: 'Configuration indisponible — réessayez dans un instant.',
+    PERSISTENCE_FAILED: 'Rien n’a été enregistré — réessayez.',
+    SIGNAL_NOT_RESOLVED: 'Entreprise non résolue : importez-la et vérifiez son SIREN d’abord.',
+    CONFIRMATION_SOURCE_MISMATCH: 'Les sources confirmées ne correspondent pas au candidat.',
+    CLAIM_NOT_PROMOTABLE: 'Ce candidat ne porte pas de revendication exploitable.',
+    NO_FACT_PRODUCED: 'Aucun fait accepté — le candidat ne franchit pas les contrôles.',
+    CANDIDATE_UNKNOWN: 'Ce candidat n’est plus connu du serveur — relancez la recherche.',
+    CANDIDATE_STORE_UNAVAILABLE: 'Candidat momentanément illisible — réessayez.',
+    ENTITY_REGISTRY_UNAVAILABLE: 'Registre des entreprises indisponible — réessayez.',
+    EVIDENCE_HISTORY_UNAVAILABLE: 'Historique des faits illisible — rien n’a été évalué. Réessayez.',
+    EVIDENCE_HISTORY_INVALID: 'Un fait enregistré est corrompu — rien n’a été évalué. Signalez-le.',
+    LEAD_STORE_UNAVAILABLE: 'Fiches entreprises momentanément illisibles — réessayez.',
+    UNAUTHENTICATED: 'Session expirée.',
+    WORKSPACE_UNRESOLVED: 'Espace client indéterminé.',
+  }
+
+  // ── ACTIVATION EXPLICITE DU CONTEXTE MÉTIER (R1c·P1) ──────────────────────
+  // ⚠️ GESTE HUMAIN, JAMAIS AUTOMATIQUE. Aucun `useEffect` n'active le contexte :
+  // un espace non configuré le reste jusqu'à ce qu'une personne le décide. Ce
+  // bouton n'apparaît d'ailleurs qu'après un refus explicite du serveur.
+  //
+  // ⚠️ LE CORPS EST VIDE, ET C'EST LE POINT. Le navigateur demande l'activation ;
+  // il ne dit pas ce qui est activé. Capacités, périmètre et version de lens sont
+  // construits côté serveur à partir du registre.
+  const [ctxBusy, setCtxBusy] = useState(false)
+  const [ctxMsg, setCtxMsg] = useState<string | null>(null)
+  const activerContexte = async () => {
+    setCtxBusy(true)
+    try {
+      const r = await fetch('/api/proactive/context', { method: 'POST' })
+      const d = await r.json().catch(() => null)
+      setCtxMsg(d?.state === 'BUSINESS_CONTEXT_ACTIVE'
+        ? 'Lecture proactive activée (Sales V0). La prise de contact reste soumise à votre approbation.'
+        : 'Activation impossible pour le moment — réessayez.')
+      // On efface les refus liés au contexte : ils ne décrivent plus l'état réel.
+      if (d?.state === 'BUSINESS_CONTEXT_ACTIVE') {
+        setFactState((f) => {
+          const n = { ...f }
+          for (const k of Object.keys(n)) if (n[k].state.startsWith('BUSINESS_CONTEXT')) delete n[k]
+          return n
+        })
+      }
+    } catch {
+      setCtxMsg('Activation indisponible.')
+    } finally { setCtxBusy(false) }
+  }
+
+  const confirmFact = async (h: SignalHit) => {
+    const claim = candidateClaim(h)
+    if (!claim) return
+    setFactBusy(h.company)
+    try {
+      const r = await fetch('/api/signals/promote', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        // ⚠️ AUCUN CHAMP PORTEUR DE VÉRITÉ N'EST ENVOYÉ. On envoyait auparavant
+        // `hits: [h]` et `resolvedSiren` : le navigateur choisissait donc la
+        // date, le statut d'événement, l'URL de source ET le compte de
+        // rattachement. Il ne DÉSIGNE plus qu'un candidat émis par le serveur ;
+        // tout le reste est relu du registre, côté serveur.
+        body: JSON.stringify({
+          candidateId: h.candidateId,
+          canonicalKey: claim.key,
+          reviewedSourceUrls: [h.sourceUrl],
+        }),
+      })
+      const d = await r.json().catch(() => null)
+      const state = d?.state || 'NO_FACT_PRODUCED'
+      const base = LIBELLES_FAIT[state] || 'Aucun fait accepté.'
+      const detail = state === 'ACCEPTED_WITH_RESULT' && Array.isArray(d?.situations)
+        ? ` (${d.situations.length} situation(s), ${d.recommendations?.length ?? 0} recommandation(s))`
+        : ''
+      setFactState((f) => ({ ...f, [h.company]: { state, label: base + detail } }))
+    } catch {
+      setFactState((f) => ({ ...f, [h.company]: { state: 'NO_FACT_PRODUCED', label: 'Acceptation indisponible.' } }))
+    } finally { setFactBusy(null) }
+  }
+
   const copyIce = (h: SignalHit) => { navigator.clipboard?.writeText(h.icebreaker); setCopied(h.company); setTimeout(() => setCopied(null), 1500) }
 
   const loadMore = async () => {
@@ -575,6 +692,61 @@ export default function SourcingPage() {
                     <div className="bg-indigo-50/40 border border-indigo-100 rounded-lg p-2.5 mb-2">
                       <p className="text-xs text-gray-700 italic">« {h.icebreaker} »</p>
                     </div>
+                    {/* ── REVUE DU CANDIDAT ─────────────────────────────────
+                        ⚠️ Présenté comme CANDIDAT, jamais comme un fait établi.
+                        Le libellé le dit explicitement : rien n'est acquis tant
+                        que personne n'a confirmé. */}
+                    {(() => {
+                      const claim = candidateClaim(h)
+                      const etat = factState[h.company]
+                      if (!claim) return null
+                      const accepte = etat?.state?.startsWith('ACCEPTED')
+                      return (
+                        <div className="border border-gray-200 rounded-lg p-2.5 mb-2">
+                          <p className="text-[11px] font-semibold text-gray-600 mb-1">{claim.label}</p>
+                          <p className="text-[11px] text-gray-400 mb-1">{claim.temporal}</p>
+                          {h.sourceUrl && (
+                            <a href={h.sourceUrl} target="_blank" rel="noreferrer"
+                               className="text-[11px] text-indigo-500 underline break-all">
+                              {h.sourceName || h.sourceUrl}
+                            </a>
+                          )}
+                          {!etat && (
+                            <p className="text-[11px] text-amber-600 mt-1.5">
+                              Candidat non vérifié — ce n’est pas encore un fait accepté.
+                            </p>
+                          )}
+                          {etat && (
+                            <p className={`text-[11px] mt-1.5 ${accepte ? 'text-emerald-600' : 'text-amber-600'}`}>
+                              {accepte ? '✓ ' : '⚠️ '}{etat.label}
+                            </p>
+                          )}
+                          {/* ⚠️ L'ACTIVATION N'EST PROPOSÉE QU'APRÈS UN REFUS
+                              EXPLICITE du serveur. Elle n'est jamais offerte
+                              « au cas où » : sans ce refus, rien n'indique que
+                              l'espace ait besoin d'être configuré. */}
+                          {etat?.state === 'BUSINESS_CONTEXT_REQUIRED' && (
+                            <div className="mt-2">
+                              <button
+                                onClick={activerContexte}
+                                disabled={ctxBusy}
+                                className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-gray-300 disabled:opacity-40">
+                                {ctxBusy ? 'Activation…' : 'Activer la lecture proactive (Sales V0)'}
+                              </button>
+                              {ctxMsg && <p className="text-[11px] text-gray-500 mt-1">{ctxMsg}</p>}
+                            </div>
+                          )}
+                          {!accepte && (
+                            <button
+                              onClick={() => confirmFact(h)}
+                              disabled={factBusy === h.company}
+                              className="mt-2 text-[11px] font-medium px-2.5 py-1 rounded-lg bg-gray-900 text-white disabled:opacity-40">
+                              {factBusy === h.company ? 'Vérification…' : 'Confirmer ce fait'}
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })()}
                     {/* Résolution ambiguë : RIEN n'a été importé. Le dire ici, à
                         côté du bouton, évite que l'absence de changement se lise
                         comme un échec technique. */}

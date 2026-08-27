@@ -144,9 +144,29 @@ describe('A. lookupByName ne choisit plus arbitrairement', () => {
     expect(v.ambiguous).toBeUndefined()
   })
 
-  it('1 candidat ⇒ found:true, même si le nom diffère', async () => {
+  // ⚠️ CONTRAT CORRIGÉ PAR R1e·P0-1 — CE TEST CANONISAIT LE DÉFAUT.
+  //
+  // Il s'intitulait « 1 candidat ⇒ found:true, MÊME SI LE NOM DIFFÈRE » et
+  // exigeait donc exactement ce que ce fichier existe pour interdire : retenir
+  // une candidate sans égalité de raison sociale. La garde s'appliquait quand
+  // le classement contenait plusieurs sociétés, et sautait quand il n'en
+  // contenait qu'une — alors que le cardinal d'un classement de PERTINENCE ne
+  // prouve rien du tout.
+  //
+  // Le défaut devient P0 depuis que ce SIREN sert d'identité de COMPTE à un
+  // fait du Decision Kernel : une donnée vraie sur la mauvaise entité est une
+  // information fausse, et elle porterait le tampon « vérifié data.gouv ».
+  it('1 candidat APPROCHANT ⇒ jamais résolu, l’ambiguïté remonte', async () => {
     repond([societe('600000001', 'MA BOITE SARL')])
     const v = await lookupByName('Ma Boite')
+    expect(v.found).toBe(false)
+    expect(v.resolution).not.toBe('resolved')
+    expect(v.siren).toBeUndefined()
+  })
+
+  it('1 candidat EXACT ⇒ résolu — la garde n’est pas un mur', async () => {
+    repond([societe('600000001', 'MA BOITE SARL')])
+    const v = await lookupByName('Ma Boite SARL')
     expect(v.found).toBe(true)
     expect(v.siren).toBe('600000001')
   })

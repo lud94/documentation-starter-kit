@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { searchSignals, buildThesis, SIGNAL_TYPES, type SignalQuery } from '../../../lib/prospector/signals'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
+import { registerCandidates } from '../../../lib/prospector/proactive/signalCandidates'
 import { logSafeError } from '../../../lib/observability/safeError'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
@@ -39,7 +40,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!thesis || thesis.length < 5) return res.status(400).json({ error: 'Précise au moins un type de signal ou une thèse.' })
 
   try {
-    res.status(200).json(await searchSignals(tenant, thesis, 25, q))
+    const resultat = await searchSignals(tenant, thesis, 25, q)
+
+    // ── ÉMISSION DES CANDIDATS — CÔTÉ SERVEUR, ICI ET NULLE PART AILLEURS ───
+    // ⚠️ C'EST LE SEUL ENDROIT OÙ UN CANDIDAT NAÎT. Les `hits` viennent d'être
+    // produits par `searchSignals` : ils n'ont transité par aucun navigateur.
+    // On en fige la part porteuse de vérité dans le registre de l'espace, et on
+    // ne rend au client qu'un identifiant opaque.
+    //
+    // Sans cela, `/api/signals/promote` n'aurait rien à quoi comparer ce qu'un
+    // navigateur lui présente — et devrait le croire sur parole.
+    const ids = await registerCandidates(resultat.hits || [], tenant.id)
+    const hits = (resultat.hits || []).map((h, i) => ({ ...h, candidateId: ids[i] || undefined }))
+
+    res.status(200).json({ ...resultat, hits })
   } catch (e: any) {
     logSafeError('signals.search_error', e, { operation: 'signals_search' })
     res.status(502).json({ error: 'Recherche de signaux indisponible pour le moment.' })

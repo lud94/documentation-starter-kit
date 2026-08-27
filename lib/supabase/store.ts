@@ -24,6 +24,39 @@ export async function listItems<T = any>(kind: string, ws: string): Promise<T[]>
   } catch { return [] }
 }
 
+/**
+ * Lecture STRICTE d'une collection : « vide » et « injoignable » restent DEUX
+ * réponses distinctes.
+ *
+ * ⚠️ POURQUOI `listItems` NE SUFFIT PAS. Il rend `[]` aussi bien pour une
+ * collection réellement vide que pour une panne — `if (error || !data) return []`.
+ * Un appelant qui RAISONNE sur l'absence conclut alors « il n'y a rien » là où
+ * la vérité est « je ne sais pas ». Tant que l'absence ne fait que retirer des
+ * résultats, l'indulgence est tolérable ; dès qu'elle CHANGE une décision, elle
+ * fabrique une conclusion à partir d'une panne.
+ *
+ * Même contrat que `getItemStrict`, à la collection près — y compris le repli
+ * mémoire, où l'absence est certaine parce que la structure est en main.
+ */
+export async function listItemsStrict<T = any>(
+  kind: string, ws: string,
+): Promise<{ ok: true; values: T[] } | { ok: false }> {
+  const sb = supabase()
+  if (!sb) {
+    const out: T[] = []
+    Array.from(mem.entries()).forEach(([k, v]) => { if (k.startsWith(`${kind}|${ws}|`)) out.push(v) })
+    return { ok: true, values: out }
+  }
+  try {
+    const { data, error } = await sb.from(TABLE).select('data')
+      .eq('kind', kind).eq('workspace_id', ws).order('updated_at', { ascending: false })
+    if (error || !data) return { ok: false }
+    return { ok: true, values: data.map((r: any) => r.data as T) }
+  } catch {
+    return { ok: false }
+  }
+}
+
 // Lecture CIBLÉE d'un élément par sa clé primaire (kind, id, workspace_id).
 //
 // POURQUOI (lot MT-0b). `listItems()` charge toute la collection puis

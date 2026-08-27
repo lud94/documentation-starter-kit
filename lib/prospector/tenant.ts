@@ -198,3 +198,33 @@ export async function resolveTenantFromRequest(req: NextApiRequest): Promise<Ten
 export function isBillableTenant(t: TenantContext | null | undefined): boolean {
   return !!t && !!t.id && (t.kind === 'client' || t.kind === 'admin' || t.kind === 'system')
 }
+
+/**
+ * ACTEUR AUTHENTIFIÉ + espace, pour les gestes qui ENGAGENT une personne.
+ *
+ * ⚠️ POURQUOI CETTE FONCTION EXISTE. `resolveTenantFromRequest` rend l'espace et
+ * s'arrête là : le `sub` du jeton — la seule identité d'acteur que le produit
+ * possède — y est écarté. Or une adjudication humaine doit dire QUI a signé.
+ * Sans cet identifiant, la provenance d'acceptation serait une chaîne fournie
+ * par le navigateur, c'est-à-dire une signature que l'on croit sur parole.
+ *
+ * ⚠️ AUCUNE RÈGLE D'AUTORITÉ N'EST RÉÉCRITE ICI. L'espace vient intégralement de
+ * `resolveTenantFromRequest`, avec ses contrôles de rôle, de suspension et de
+ * revendication croisée. Cette fonction n'ajoute qu'une lecture : le sujet du
+ * même jeton, déjà vérifié par `readSession`. Elle ne peut donc pas accorder ce
+ * que la résolution d'espace refuse.
+ *
+ * Rend `null` dès qu'un des deux manque — jamais un acteur anonyme.
+ */
+export async function resolveActorFromRequest(
+  req: NextApiRequest,
+): Promise<{ tenant: TenantContext; actorId: string } | null> {
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return null
+
+  const claims = await readSession(req.cookies?.[SESSION_COOKIE])
+  const actorId = (claims?.sub || '').trim()
+  if (!actorId) return null
+
+  return { tenant, actorId }
+}
