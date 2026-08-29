@@ -196,11 +196,28 @@ export default function SourcingPage() {
       // l'utilisateur voyait « Unexpected token '<' » au lieu du vrai problème.
       const raw = await res.text()
       let d: any = null
-      try { d = JSON.parse(raw) } catch { throw new Error(res.ok ? 'Réponse illisible du serveur' : `Le serveur a coupé (HTTP ${res.status}) — recherche trop longue, réduis la période ou les critères.`) }
+      // ⚠️ LE CONSEIL PRÉCÉDENT ÉTAIT FAUX, ET LE TERRAIN L'A PROUVÉ. Il disait
+      // « réduis la période ou les critères » ; or une recherche à 1 MOIS
+      // échouait aussi — et c'était même la passe la plus lourde. On envoyait
+      // donc l'utilisateur corriger ce qui n'était pas en cause.
+      try { d = JSON.parse(raw) } catch { throw new Error(res.ok ? 'Réponse illisible du serveur' : 'La recherche n’a pas terminé dans le délai disponible. Réessaie dans quelques instants.') }
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
       setSigHits(d.hits || []); setSigMode(d.mode || ''); setSigBuilt(d.thesis || ''); setSigPasses(d.passes || 1)
-      // Plus de données de démonstration : une erreur est une erreur, on l'affiche.
-      if (d.error) setSigError(d.error)
+
+      // ── DÉLAI DÉPASSÉ N'EST PAS « AUCUN SIGNAL » ──────────────────────────
+      // ⚠️ La couverture est INCONNUE, pas nulle. Sans ce cas, l'écran afficherait
+      // « 0 entreprise trouvée » pour une recherche que personne n'a terminée —
+      // et l'utilisateur en conclurait qu'il n'y a rien à trouver.
+      // ⚠️ LE LIBELLÉ « DÉLAI » NE VAUT QUE POUR UN VRAI DÉPASSEMENT D'ÉCHÉANCE.
+      // Une conversation fournisseur qui ne converge pas épuise ses tours en
+      // quelques secondes : dire « réessaie dans quelques instants » enverrait
+      // attendre un problème que l'attente ne résout pas.
+      if (d.state === 'TIMEOUT') {
+        setSigError('La recherche n’a pas terminé dans le délai disponible. Réessaie dans quelques instants.')
+      } else if (d.error) {
+        // Plus de données de démonstration : une erreur est une erreur, on l'affiche.
+        setSigError(d.error)
+      }
     } catch (e: any) {
       setSigError(e.message || 'Agent indisponible')
     } finally { setSigRunning(false); setSigDone(true) }

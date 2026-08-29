@@ -18,6 +18,11 @@ import { searchExa, exaConfigured, type ExaDoc } from './exa'
 import { getKey } from './keystore'
 import { withBuild } from '../version'
 import { callClaude as llmCall, cacheKey, pickModel } from './llm'
+import {
+  startAcquisitionBudget,
+  QUICK_SEARCH_BUDGET_MS,
+  type AcquisitionBudget,
+} from './acquisitionBudget'
 import type { TenantContext } from './tenant'
 import { logSafeError, PUBLIC_ERROR } from '../observability/safeError'
 
@@ -249,7 +254,7 @@ function dedupe(hits: SignalHit[]): SignalHit[] {
   return out
 }
 
-async function callClaude(tenant: TenantContext, thesis: string, max: number, q?: SignalQuery): Promise<SignalHit[]> {
+async function callClaude(tenant: TenantContext, thesis: string, max: number, q?: SignalQuery, budget?: AcquisitionBudget): Promise<SignalHit[]> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return []
   // Sources ciblées selon le type de signal (presse pour les levées, jobboards
@@ -281,9 +286,19 @@ async function callClaude(tenant: TenantContext, thesis: string, max: number, q?
     tenant, task: 'research', agent: SIGNAL_AGENT, system: SYSTEM, tools,
     messages: [{ role: 'user', content: `Thèse: ${thesis}${focus}${hint}\n\n${RECALL}\n\n${jsonInstruction(max)}` }],
     cache: cacheKey(cacheParts),
+    budget,
   })
   // Un budget épuisé est une ERREUR, pas « aucun résultat » : on le dit.
   if (r.blocked) throw new Error(r.error || 'Appel IA refusé (budget).')
+
+  // ── RÈGLE DE VÉRITÉ : UN TOUR INACHEVÉ NE DONNE AUCUN CANDIDAT ───────────
+  // ⚠️ ON NE PARSE MÊME PAS. Le JSON d'un tour interrompu peut être
+  // syntaxiquement valide et sémantiquement faux — un tableau coupé, une levée
+  // sans sa date, une entreprise sans sa source. `parseHits` en tirerait des
+  // `SignalHit` d'apparence normale, qui deviendraient des candidats serveur,
+  // puis des faits. Une couverture inconnue n'est pas une couverture vide.
+  if (r.incomplete) throw echecInacheve(r.reason)
+
   const hits = parseHits(r.text, {
     mode: 'claude-web',
     promptVersion: PROMPT_VERSION,
@@ -297,7 +312,7 @@ async function callClaude(tenant: TenantContext, thesis: string, max: number, q?
 
 // Claude EXTRACTEUR : à partir des documents Exa, sort les entreprises + signaux
 // + icebreakers. Pas de web tool ici (Exa a déjà cherché) → plus rapide/moins cher.
-async function extractWithClaude(tenant: TenantContext, thesis: string, docs: ExaDoc[], max: number, q?: SignalQuery): Promise<SignalHit[]> {
+async function extractWithClaude(tenant: TenantContext, thesis: string, docs: ExaDoc[], max: number, q?: SignalQuery, budget?: AcquisitionBudget): Promise<SignalHit[]> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key || docs.length === 0) return []
   // Économie : on borne le corpus (8 docs, 900 car.) — l'entrée est facturée.
@@ -309,8 +324,11 @@ async function extractWithClaude(tenant: TenantContext, thesis: string, docs: Ex
     tenant, task: 'research', agent: SIGNAL_AGENT,
     system: `${SYSTEM}\nOn te fournit des extraits web déjà collectés. N'invente RIEN au-delà de ces extraits. Attribue à chaque entreprise l'URL source d'où vient le signal.`,
     messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}\n\nExtraits web:\n${corpus}\n\n${jsonInstruction(max)}` }],
+    budget,
   })
   if (r.blocked) throw new Error(r.error || 'Appel IA refusé (budget).')
+  // Même règle que dans `callClaude` : inachevé ⇒ aucun candidat, jamais un parse.
+  if (r.incomplete) throw echecInacheve(r.reason)
   return parseHits(r.text, {
     mode: 'exa+claude',
     promptVersion: PROMPT_VERSION,
@@ -447,58 +465,191 @@ export function parseHits(text: string, extraction: SignalExtraction): SignalHit
 // Découpe la fenêtre demandée en mois calendaires (3 passes au maximum, pour
 // borner le coût). Chaque passe cible un mois nommé — c'est ce qui permet à
 // l'agent de trouver le récapitulatif mensuel correspondant.
-function monthSlices(months: number): string[] {
+/**
+ * Découpage mensuel — CONSERVÉ POUR L'ACQUISITION EN MISSION.
+ *
+ * ⚠️ PLUS UTILISÉ PAR LA QUICK SEARCH, et c'est délibéré : en une seule requête
+ * HTTP, un balayage multi-passes ne peut être que tronqué en silence quand le
+ * budget s'épuise. Il redeviendra pertinent quand chaque lot sera borné,
+ * persisté et reprenable — c'est-à-dire dans le ticket Mission.
+ */
+export function monthSlices(months: number): string[] {
   const n = Math.min(Math.max(months, 1), 3)
   const fmt = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' })
   const now = new Date()
   return Array.from({ length: n }, (_, i) => fmt.format(new Date(now.getFullYear(), now.getMonth() - i, 1)))
 }
 
+/**
+ * L'acquisition n'a pas terminé dans son budget.
+ *
+ * ⚠️ CLASSE DISTINCTE, ET LA DISTINCTION EST TOUT L'ENJEU. « je n'ai rien
+ * trouvé » et « je n'ai pas fini de chercher » appellent des gestes opposés :
+ * l'un invite à élargir les critères, l'autre à réessayer. Les confondre ferait
+ * annoncer une absence de signal que personne n'a constatée — `NO DATA != NO
+ * SIGNAL`.
+ */
+export class AcquisitionTimeout extends Error {
+  constructor() {
+    super('acquisition_timeout')
+    this.name = 'AcquisitionTimeout'
+  }
+}
+
+/**
+ * La conversation fournisseur n'a pas convergé dans le nombre de tours permis,
+ * ALORS QUE DU TEMPS RESTAIT.
+ *
+ * ⚠️ CE N'EST PAS UN DÉLAI DÉPASSÉ, et les confondre serait un mensonge de
+ * diagnostic. Quatre reprises `pause_turn` rapides épuisent la boucle en
+ * quelques secondes : dire à l'utilisateur « la recherche n'a pas terminé dans
+ * le délai disponible » l'inviterait à réessayer plus tard un problème que le
+ * temps ne résoudra pas.
+ */
+export class AcquisitionIncomplete extends Error {
+  constructor() {
+    super('acquisition_incomplete')
+    this.name = 'AcquisitionIncomplete'
+  }
+}
+
+/** Traduit un tour inachevé en la classe d'échec qui lui correspond. */
+function echecInacheve(reason?: 'deadline' | 'turn_limit'): Error {
+  return reason === 'turn_limit' ? new AcquisitionIncomplete() : new AcquisitionTimeout()
+}
+
+/**
+ * Plafond de hits demandés par passe Claude, pour la Quick Search UNIQUEMENT.
+ *
+ * ── POURQUOI 10, ET POURQUOI CE N'EST PAS UNE LIMITE PRODUIT ────────────────
+ * La route demandait `max = 25`. À `months = 1`, `monthSlices` rend UNE tranche,
+ * donc `per = max(8, ceil(25/1)) = 25` : le chemin que l'utilisateur emprunte
+ * pour « alléger » sa recherche était en réalité le PLUS LOURD. Demander vingt-
+ * cinq entreprises en une passe pousse l'agent à épuiser ses dix recherches web
+ * et ses six `web_fetch`, ce qui est précisément ce qui déclenche `pause_turn` —
+ * donc les reprises, donc le dépassement.
+ *
+ * 10 est le haut de la fourchette 8–10 : on conserve autant de couverture que le
+ * budget permet d'en obtenir de façon FIABLE, plutôt qu'une couverture
+ * théorique plus large qui expire avant d'être rendue.
+ *
+ * ⚠️ CE PLAFOND NE VAUT QUE POUR LA QUICK SEARCH. Ce n'est ni un maximum de
+ * résultats de Mission, ni une limite de couverture du moteur de signaux : une
+ * acquisition en Mission accumulera 20, 30, 40+ candidats sur plusieurs lots
+ * bornés. Réutiliser cette constante ailleurs transformerait une contrainte
+ * d'exécution en politique produit.
+ */
+export const QUICK_SEARCH_MAX_HITS = 10
+
+/**
+ * Plafond propre au transport Exa.
+ *
+ * Exa précède Claude en séquentiel : sans plafond distinct, un fournisseur lent
+ * consommerait la fenêtre entière et ne laisserait rien au raisonnement — on
+ * aurait des documents, et aucune analyse.
+ */
+export const EXA_TIMEOUT_MS = 10_000
+
+/**
+ * Issue d'une acquisition, du point de vue du PRODUIT.
+ *
+ * ⚠️ TROIS ÉTATS, JAMAIS DEUX. « terminé, rien trouvé » et « pas fini » sont des
+ * faits différents sur le monde : le premier est une observation, le second un
+ * aveu d'ignorance. Les fusionner ferait annoncer une absence de signal que
+ * personne n'a constatée.
+ */
+export type AcquisitionState = 'COMPLETE' | 'TIMEOUT' | 'PROVIDER_ERROR'
+
 // `q` (critères structurés) est optionnel : sans lui, on garde la thèse libre.
-export async function searchSignals(tenant: TenantContext, thesis: string, max = 8, q?: SignalQuery): Promise<{ mode: string; hits: SignalHit[]; thesis: string; passes?: number; error?: string }> {
+export async function searchSignals(
+  tenant: TenantContext,
+  thesis: string,
+  max = 8,
+  q?: SignalQuery,
+  budget?: AcquisitionBudget,
+): Promise<{ mode: string; hits: SignalHit[]; thesis: string; passes?: number; error?: string; state?: AcquisitionState }> {
   const mode = signalsMode()
   if (mode === 'mock') {
-    return { mode, hits: [], thesis, error: 'Aucune clé IA configurée : ajoute ANTHROPIC_API_KEY dans Admin → Connexions pour activer la veille par signal.' }
+    return { mode, hits: [], thesis, state: 'PROVIDER_ERROR', error: 'Aucune clé IA configurée : ajoute ANTHROPIC_API_KEY dans Admin → Connexions pour activer la veille par signal.' }
   }
 
   let hits: SignalHit[] = []
-  let passes = 1
   try {
     if (mode === 'exa+claude') {
       // Exa : on garde le filtre de FRAÎCHEUR (le vrai apport : la fenêtre demandée
       // devient une contrainte réelle, pas un souhait adressé au modèle) mais PAS de
       // liste blanche de domaines — un signal se trouve aussi sur le site de
       // l'entreprise. Le tri de pertinence se fait par keepOnFocus() en sortie.
-      const docs = await searchExa(thesis, 12, { months: q?.months })
-      hits = docs.length ? await extractWithClaude(tenant, thesis, docs, max, q) : await callClaude(tenant, thesis, max, q)
+      //
+      // ⚠️ EXA NE PART PAS SANS BUDGET. Il précède Claude en SÉQUENTIEL : chaque
+      // seconde qu'il consomme est prise sur l'acquisition. Son plafond propre
+      // évite qu'un fournisseur lent mange la fenêtre qui doit servir au
+      // raisonnement — on aurait des documents, et aucune analyse.
+      if (budget && !budget.canAfford()) throw new AcquisitionTimeout()
+      const docs = await searchExa(thesis, 12, {
+        months: q?.months,
+        timeoutMs: budget ? budget.transportTimeoutMs(EXA_TIMEOUT_MS) : undefined,
+      })
+      if (budget && !budget.canAfford()) throw new AcquisitionTimeout()
+
+      hits = docs.length
+        ? await extractWithClaude(tenant, thesis, docs, max, q, budget)
+        : await callClaude(tenant, thesis, max, q, budget)
+
       // Exa a bien répondu mais rien d'exploitable n'en sort (documents hors sujet) :
       // on repasse par la recherche web plutôt que de rendre une page vide.
-      if (!hits.length) hits = await callClaude(tenant, thesis, max, q)
+      //
+      // ⚠️ LE REPLI EST UN TRANSPORT DE PLUS. S'il ne peut pas être payé, la
+      // couverture demandée n'a PAS été entièrement tentée : ce n'est plus un
+      // résultat complet, c'est un délai dépassé.
+      if (!hits.length) {
+        if (budget && !budget.canAfford()) throw new AcquisitionTimeout()
+        hits = await callClaude(tenant, thesis, max, q, budget)
+      }
     } else {
-      // Balayage par MOIS plutôt qu'une requête unique sur toute la période.
-      // Une seule requête « 3 derniers mois » rend 1 ou 2 entreprises ; trois
-      // requêtes « juin », « mai », « avril » en rendent bien davantage, parce que
-      // chacune tombe sur le récapitulatif mensuel correspondant.
-      const slices = monthSlices(q?.months || 6)
-      const per = Math.max(8, Math.ceil(max / slices.length))
-      const batches = await Promise.all(slices.map((label) =>
-        callClaude(tenant, `${thesis}\n\nPÉRIODE À COUVRIR POUR CETTE RECHERCHE : ${label}. Ne renvoie que des signaux datés de ce mois-là.`, per, q)
-          .catch(() => [] as SignalHit[]),
-      ))
-      hits = batches.flat()
-      passes = slices.length
-      // Si toutes les passes échouent, on relance une fois en global pour avoir
-      // une vraie erreur plutôt qu'un silence.
-      if (!hits.length) hits = await callClaude(tenant, thesis, max, q)
+      // ── UNE SEULE ACQUISITION BORNÉE — PAS DE BALAYAGE MENSUEL ────────────
+      // ⚠️ LE BALAYAGE PAR MOIS FABRIQUAIT UNE COUVERTURE PARTIELLE SILENCIEUSE.
+      // Le code rendait `COMPLETE` alors qu'il avait pu SAUTER des tranches
+      // faute de budget : « mois 1 fait, mois 2 et 3 jamais tentés » ressortait
+      // comme une recherche terminée. Pire, mois 1 sans résultat + tranches
+      // sautées donnait `COMPLETE` + `[]` — soit « aucun signal » affirmé sur
+      // une couverture que personne n'a mesurée.
+      //
+      // La Quick Search est donc UNE acquisition logique bornée sur la fenêtre
+      // demandée. La fraîcheur reste portée par la thèse (`buildThesis` écrit
+      // « sur les N derniers mois »), donc rien n'est perdu du ciblage. Soit
+      // cette passe aboutit — et la couverture demandée a bien été tentée
+      // intégralement — soit l'état n'est pas `COMPLETE`. Il n'y a plus de
+      // troisième cas.
+      //
+      // ⚠️ `monthSlices` EST CONSERVÉ, ET DÉLIBÉRÉMENT. Le balayage multi-passes
+      // reste la bonne façon d'obtenir de la COUVERTURE — il appartient à
+      // l'acquisition en Mission, où chaque lot est borné, persisté et
+      // reprenable. Ici, il ne pouvait qu'être tronqué en silence.
+      hits = await callClaude(tenant, thesis, max, q, budget)
     }
   } catch (e: any) {
+    // ── LIMITE DE TOURS : PANNE FOURNISSEUR, PAS DÉLAI DÉPASSÉ ──────────────
+    // ⚠️ Du temps restait : dire « réessaie dans quelques instants » enverrait
+    // attendre un problème que l'attente ne résout pas.
+    if (e instanceof AcquisitionIncomplete) {
+      logSafeError('signals.search_incomplete', e, { operation: 'signals_search' })
+      return { mode, hits: [], thesis, passes: 1, state: 'PROVIDER_ERROR', error: withBuild(PUBLIC_ERROR) }
+    }
+    // ── DÉLAI DÉPASSÉ : ÉTAT PROPRE, JAMAIS « AUCUN SIGNAL » ────────────────
+    // ⚠️ La couverture est INCONNUE, pas nulle. Le dire est la seule réponse
+    // honnête, et c'est ce qui interdit à l'écran d'afficher « 0 résultat ».
+    if (e instanceof AcquisitionTimeout || e?.name === 'DeadlineExceeded' || (budget && budget.expired())) {
+      logSafeError('signals.search_timeout', e, { operation: 'signals_search' })
+      return { mode, hits: [], thesis, passes: 1, state: 'TIMEOUT' }
+    }
     // On remonte l'erreur RÉELLE (modèle indisponible, outil web non activé, quota…)
     // au lieu de fabriquer des résultats.
     // SEC-LOG-01 — ce champ part TEL QUEL dans la réponse HTTP 200 de
     // `/api/signals/search`. Le message d'exception n'y a donc pas sa place :
     // seule la classe de panne est communiquée, le détail va au journal.
     logSafeError('signals.search_failed', e, { operation: 'signals_search' })
-    return { mode, hits: [], thesis, error: withBuild(PUBLIC_ERROR) }
+    return { mode, hits: [], thesis, state: 'PROVIDER_ERROR', error: withBuild(PUBLIC_ERROR) }
   }
 
   // Post-traitement LOCAL (gratuit, instantané) : on respecte le ciblage demandé
@@ -509,5 +660,9 @@ export async function searchSignals(tenant: TenantContext, thesis: string, max =
   // ralentissait tout (cause de timeout) et marquait « non vérifiée » des sociétés
   // réelles dont le nom ne matchait pas exactement. La vérification SIREN est un
   // geste d'AJOUT, pas de découverte → elle se fait à l'import (voir capabilities).
-  return { mode, hits: clean, thesis, passes }
+  // ⚠️ PLAFOND APPLIQUÉ AU RÉSULTAT AUSSI. `max` borne ce qui est DEMANDÉ ; ce
+  // `slice` borne ce qui est RENDU. Les deux sont nécessaires : un modèle peut
+  // rendre plus d'entrées qu'on ne lui en a demandé, et chaque hit rendu devient
+  // un candidat persisté.
+  return { mode, hits: clean.slice(0, max), thesis, passes: 1, state: 'COMPLETE' }
 }

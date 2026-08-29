@@ -17,6 +17,7 @@ import {
 import { getItem, upsertItem } from '../supabase/store'
 import { randomUUID, createHash } from 'node:crypto'
 import type { TenantContext } from './tenant'
+import type { AcquisitionBudget } from './acquisitionBudget'
 import { requestFingerprint } from './fingerprint'
 import { budgetMode, enforceBudget, observeLimit, warnIfObserveBiased } from './budgetMode'
 import { reserve, settle, resolveReservation } from '../supabase/aiBudget'
@@ -237,12 +238,40 @@ export interface CallOpts {
   maxTokens?: number
   tools?: any[]
   cache?: string                // si fourni : réutilise/enregistre le résultat
+  /**
+   * Budget d'acquisition (QUICK-SIGNAL-SEARCH-BOUNDED-001).
+   *
+   * Fourni ⇒ le transport ET la boucle `pause_turn` s'y soumettent.
+   * Absent ⇒ comportement historique, inchangé.
+   */
+  budget?: AcquisitionBudget
 }
 
 export interface CallResult {
   text: string
   cached?: boolean
   blocked?: boolean
+  /**
+   * Le tour Claude n'est pas allé à son terme dans le budget imparti.
+   *
+   * ⚠️ RÈGLE DE VÉRITÉ CENTRALE : un tour inachevé N'EST PAS un résultat partiel
+   * valide. `text` peut contenir du JSON tronqué, syntaxiquement plausible et
+   * sémantiquement faux — une entreprise sans sa date, un tableau coupé au
+   * milieu. L'appelant DOIT refuser d'en extraire quoi que ce soit.
+   */
+  incomplete?: boolean
+  /**
+   * POURQUOI le tour est inachevé — et la distinction n'est pas cosmétique.
+   *
+   *   `deadline`   — le budget d'acquisition ne permettait plus de continuer.
+   *   `turn_limit` — la conversation n'a pas convergé en quatre reprises, alors
+   *                  que du temps restait disponible.
+   *
+   * ⚠️ Le premier se réessaie plus tard, le second signale une requête ou un
+   * fournisseur qui ne converge pas. Les fusionner enverrait attendre au lieu de
+   * corriger — et afficherait « délai dépassé » pour une panne sans rapport.
+   */
+  reason?: 'deadline' | 'turn_limit'
   // Motif du refus, exploitable par l'interface et l'Admin : un crédit épuisé se
   // corrige en rechargeant, un suivi indisponible se corrige en réparant la base
   // ou la configuration. Les confondre enverrait l'utilisateur au mauvais endroit.
@@ -307,6 +336,21 @@ export const ANTHROPIC_COUNT_TOKENS_ENDPOINT = 'https://api.anthropic.com/v1/mes
 // séparément. OFF reste le comportement historique, y compris ses défauts.
 export const REQUEST_TIMEOUT_MS = 50_000
 
+/**
+ * Le budget d'acquisition ne permet plus d'émettre une requête fournisseur.
+ *
+ * ⚠️ CLASSE DISTINCTE D'UNE PANNE FOURNISSEUR. Rien n'a été demandé, donc rien
+ * n'a échoué : c'est un refus d'engager, pas un échec de transport. Les
+ * confondre ferait diagnostiquer une indisponibilité Anthropic là où c'est notre
+ * propre horloge qui a parlé.
+ */
+export class DeadlineExceeded extends Error {
+  constructor() {
+    super('acquisition_deadline')
+    this.name = 'DeadlineExceeded'
+  }
+}
+
 // Durée de vie d'une réservation. Généreuse par rapport au délai ci-dessus : une
 // TTL trop courte ferait balayer en UNRESOLVED des réservations encore vivantes.
 const RESERVATION_TTL_SECONDS = 300
@@ -316,7 +360,21 @@ const RESERVATION_TTL_SECONDS = 300
  * type force chaque site d'appel à le fournir, et `anthropicPost` le revérifie
  * à l'exécution pour les appelants non typés.
  */
-export interface GatewayMeta { tenant: TenantContext; agent?: string; task?: string }
+export interface GatewayMeta {
+  tenant: TenantContext
+  agent?: string
+  task?: string
+  /**
+   * Budget d'acquisition de l'appelant (QUICK-SIGNAL-SEARCH-BOUNDED-001).
+   *
+   * ⚠️ OPTIONNEL, ET SON ABSENCE NE VAUT PAS PERMISSION ILLIMITÉE : elle
+   * signifie « cet appelant conserve son comportement historique ». Seuls les
+   * chemins qui fournissent un budget voient leur transport resserré. C'est ce
+   * qui permet de borner la recherche de signaux sans changer le transport de
+   * tous les autres appelants du dépôt.
+   */
+  budget?: AcquisitionBudget
+}
 
 // ── Lecture des outils déclarés — `web_search` ≠ `web_fetch` ─────────────────
 // Voir la correction du modèle de coût dans money.ts. On ne somme PAS les
@@ -473,17 +531,38 @@ function serialize(body: any): { payload: string; bytes: number } {
 // ── Émission brute — aucune comptabilité, un seul `fetch` ────────────────────
 // Séparée pour que le chemin OFF reste littéralement le comportement historique
 // (au délai maximal près, désormais uniforme).
-async function rawPost(key: string, payload: string): Promise<GatewayResult> {
+async function rawPost(key: string, payload: string, timeoutMs?: number): Promise<GatewayResult> {
+  // Dernière barrière : un appel budgété sans budget restant ne part pas.
+  if (typeof timeoutMs === 'number' && timeoutMs <= 0) throw new DeadlineExceeded()
   // ⚠️ SEC-LOG-01 — le mode OFF emprunte CE chemin, et lui seul. Sans cette
   // conversion, l'exception brute de `fetch` remontait jusqu'aux routes, qui
   // journalisaient son message. Fermer la fuite uniquement dans le chemin
   // comptable aurait laissé la porte ouverte là où il y a le moins de garde-fous.
   let r: Response
   try {
+    // ⚠️ LE TROU LE PLUS GRAVE DU CHEMIN OFF, ET OFF EST LE DÉFAUT
+    // (`budgetMode.ts:38`). Ce `fetch` partait SANS `signal` : un appel lent
+    // n'était borné par rien, et la fonction serverless était tuée à 60 s
+    // pendant qu'il courait encore. Le commentaire du lot C2a-2 assumait ce
+    // défaut ; il n'est plus tenable dès qu'un budget d'acquisition existe.
+    //
+    // ⚠️ SANS BUDGET, LE COMPORTEMENT RESTE CELUI D'AVANT. On ne fabrique pas un
+    // plafond pour les appelants qui n'en ont pas demandé : ce lot borne la
+    // recherche de signaux, il ne redéfinit pas le transport du dépôt entier.
+    //
+    // ⚠️ `timeoutMs = 0` N'EST PAS « PAS DE TIMEOUT DEMANDÉ ». C'était une porte
+    // de sortie : un budget épuisé dérivait 0, et l'ancien test `> 0` retombait
+    // sur un `fetch` NON BORNÉ — le P0 d'origine rouvert par le bas. Un appel
+    // budgété n'a que deux issues possibles : il part avec un `AbortSignal`
+    // strictement positif, ou il ne part PAS. Le refus est décidé en amont
+    // (`assertPeutEmettre`) ; ici on refuse par sécurité si on y arrive quand même.
     r = await fetch(ANTHROPIC_ENDPOINT, {
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: payload,
+      ...(typeof timeoutMs === 'number' && timeoutMs > 0
+        ? { signal: AbortSignal.timeout(timeoutMs) }
+        : {}),
     })
   } catch (e: any) {
     const name = typeof e?.name === 'string' ? e.name : ''
@@ -545,8 +624,21 @@ export async function anthropicPost(key: string, body: any, meta: GatewayMeta): 
   const mode = budgetMode()
   const { payload, bytes } = serialize(body)
 
+  // ── AUCUNE REQUÊTE N'EST ÉMISE SANS BUDGET SUFFISANT ────────────────────
+  // ⚠️ INVARIANT : budget présent + incapable de payer un transport ⇒ AUCUN
+  // appel fournisseur. Cette vérification est ici, au point d'émission unique,
+  // et pas seulement chez les appelants : `send()` rejoue jusqu'à trois
+  // dégradations de 400 sans repasser par eux, et chacune est une requête réelle.
+  if (meta?.budget && !meta.budget.canAfford()) throw new DeadlineExceeded()
+
+  // Plafond de CE transport : le reste du budget, jamais plus que le plafond
+  // historique. Sans budget ⇒ `undefined` ⇒ comportement inchangé.
+  const timeoutMs = meta?.budget
+    ? meta.budget.transportTimeoutMs(REQUEST_TIMEOUT_MS)
+    : undefined
+
   // OFF : aucune RPC, aucune télémétrie, aucun état. Chemin historique.
-  if (mode === 'OFF') return rawPost(key, payload)
+  if (mode === 'OFF') return rawPost(key, payload, timeoutMs)
 
   warnIfObserveBiased(mode)
 
@@ -709,7 +801,10 @@ export async function anthropicPost(key: string, body: any, meta: GatewayMeta): 
       method: 'POST',
       headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: payload,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      // ⚠️ LE BUDGET NE PEUT QUE RÉDUIRE. `REQUEST_TIMEOUT_MS` vaut 50 s : seul,
+      // il dépasse déjà une fenêtre d'acquisition de 45 s. Le reste du budget
+      // l'emporte quand il est plus court.
+      signal: AbortSignal.timeout(timeoutMs ?? REQUEST_TIMEOUT_MS),
     })
   } catch (e: any) {
     const outcome = transportOutcome(e)
@@ -863,6 +958,11 @@ async function send(key: string, body: any, meta: GatewayMeta): Promise<SendResu
   }
 
   for (let i = 0; i < 3 && !attempt.ok; i++) {
+    // ⚠️ CHAQUE DÉGRADATION EST UNE REQUÊTE RÉELLE, DONC UNE DÉPENSE RÉELLE.
+    // Sans ce contrôle, un 400 survenant près de l'échéance relançait jusqu'à
+    // trois appels supplémentaires hors budget — et `anthropicPost` en dérivait
+    // un timeout nul, ce qui rouvrait le transport non borné.
+    if (meta?.budget && !meta.budget.canAfford()) throw new DeadlineExceeded()
     const msg = attempt.text
     const before = JSON.stringify(body)
 
@@ -956,6 +1056,8 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
   let messages = o.messages
   let text = ''
   let truncated = false
+  // Le dernier tour observé s'est-il arrêté sur `pause_turn` ?
+  let enPause = false
   let inTokens = 0
   let outTokens = 0
 
@@ -963,9 +1065,31 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
   // Quand elle atteint sa limite, la réponse s'arrête avec stop_reason
   // « pause_turn » : il faut RENVOYER la conversation pour qu'elle reprenne.
   // Sans ça, on récupérait une réponse tronquée — donc zéro entreprise, sans erreur.
+  // ⚠️ Le budget est passé à CHAQUE tour : le transport se resserre à mesure que
+  // le temps s'épuise, au lieu de s'accorder 50 s alors qu'il en reste 5.
+  const meta = { tenant: o.tenant, agent: o.agent, task: o.task, budget: o.budget }
+
   for (let turn = 0; turn < 4; turn++) {
+    // ── NE PAS ENGAGER CE QU'ON NE PEUT PAS TERMINER ────────────────────────
+    // ⚠️ VÉRIFIÉ AVANT le transport, pas après. Démarrer un tour qu'on sait ne
+    // pas pouvoir finir dépense le budget restant ET perd le résultat : on
+    // aurait payé le temps pour rien, puis expiré quand même.
+    //
+    // Le premier tour est concerné comme les autres : si l'appelant arrive déjà
+    // à court de budget, l'appel ne part pas.
+    //
+    // ⚠️ REDONDANTE AVEC LA GARDE DE CONTINUATION, ET DIT COMME TEL. Vérifié par
+    // mutation : retirer l'une OU l'autre ne fait échouer aucun test ; retirer
+    // LES DEUX en casse trois. Elles se couvrent mutuellement. On garde les deux
+    // — celle-ci protège le premier tour, celle du bas évite une itération
+    // perdue et comptabilise la consommation — mais aucune n'est, seule, la
+    // garde prouvée.
+    if (o.budget && !o.budget.canAfford()) {
+      return { text: '', incomplete: true, reason: 'deadline' }
+    }
+
     body.messages = messages
-    const sent = await send(key, body, { tenant: o.tenant, agent: o.agent, task: o.task })
+    const sent = await send(key, body, meta)
     // Refus budgétaire du garde C2 : converti dans le contrat `CallResult`
     // existant, donc l'interface et l'Admin n'ont rien à changer.
     if (sent.blocked) {
@@ -979,13 +1103,44 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
 
     text = (data.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
     truncated = data.stop_reason === 'max_tokens'
+    enPause = data.stop_reason === 'pause_turn'
 
-    if (data.stop_reason !== 'pause_turn') break
+    if (!enPause) break
+
+    // ── UNE REPRISE EST UN NOUVEAU TRANSPORT, DONC UNE NOUVELLE DÉPENSE ─────
+    // ⚠️ C'EST LA CAUSE RACINE DU 504. Quatre reprises à 50 s font 200 s face à
+    // une fonction de 60 s. On ne relance une continuation que si le budget
+    // restant peut la contenir.
+    //
+    // ⚠️ ET LE TOUR RESTE INACHEVÉ. `text` porte ici la sortie d'un tour que
+    // l'API elle-même a déclaré interrompu : le rendre sans le marquer laisserait
+    // un appelant en extraire des « résultats partiels » qui n'en sont pas.
+    if (o.budget && !o.budget.canAfford()) {
+      await recordAiUsage(o.agent, model, inTokens, outTokens)
+      return { text: '', incomplete: true, reason: 'deadline' }
+    }
+
     // Reprise : on rejoue la question + la réponse partielle, l'API continue seule.
     messages = [...o.messages, { role: 'assistant', content: data.content }]
   }
 
   await recordAiUsage(o.agent, model, inTokens, outTokens)
+
+  // ── SORTIE DE BOUCLE ALORS QUE L'API DEMANDAIT ENCORE À CONTINUER ─────────
+  // ⚠️ DÉFAUT PRÉEXISTANT, FERMÉ ICI. Si les quatre tours sont consommés et que
+  // le dernier s'est arrêté sur `pause_turn`, la conversation n'est PAS finie —
+  // et l'ancien code rendait tout de même son `text`. Le commentaire au-dessus
+  // de la boucle décrivait exactement ce symptôme (« une réponse tronquée, donc
+  // zéro entreprise, sans erreur ») sans le traiter dans ce cas-là.
+  //
+  // Un tour inachevé n'est pas un résultat partiel : c'est une absence de
+  // résultat. `NO DATA != NO SIGNAL`.
+  // ⚠️ LIMITE DE TOURS != DÉLAI DÉPASSÉ. Quatre reprises RAPIDES peuvent épuiser
+  // la boucle alors qu'il reste largement du temps : ce n'est pas une horloge
+  // qui a parlé, c'est une conversation qui ne converge pas. Les confondre
+  // ferait afficher « la recherche n'a pas terminé dans le délai disponible »
+  // pour une panne qui n'a rien à voir avec le délai.
+  if (enPause) return { text: '', incomplete: true, reason: 'turn_limit' }
 
   // Une réponse tronquée n'est PAS mise en cache : sinon on resservirait un
   // résultat inexploitable pendant 7 jours, sans moyen de l'invalider depuis l'UI.

@@ -14,12 +14,19 @@ export function exaConfigured(): boolean {
 
 // `opts` permet de cibler les sources et la fenêtre de fraîcheur selon le type de
 // signal recherché (presse pour les levées, jobboards pour les recrutements).
-export async function searchExa(thesis: string, numResults = 12, opts?: { domains?: string[]; months?: number }): Promise<ExaDoc[]> {
+export async function searchExa(thesis: string, numResults = 12, opts?: { domains?: string[]; months?: number; timeoutMs?: number }): Promise<ExaDoc[]> {
   const key = getKey('EXA_API_KEY')
   if (!key || !thesis) return []
 
   const days = Math.max(30, Math.min((opts?.months || 3) * 30, 540))
+  // ⚠️ CE `fetch` PARTAIT SANS BORNE (QUICK-SIGNAL-SEARCH-BOUNDED-001). Exa
+  // précède Claude en séquentiel dans `searchSignals` : sa latence s'ajoute
+  // INTÉGRALEMENT au budget d'acquisition, et rien ne l'arrêtait. Sans
+  // `timeoutMs`, le comportement historique est conservé.
   const res = await fetch('https://api.exa.ai/search', {
+    ...(typeof opts?.timeoutMs === 'number' && opts.timeoutMs > 0
+      ? { signal: AbortSignal.timeout(opts.timeoutMs) }
+      : {}),
     method: 'POST',
     headers: { 'x-api-key': key, accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify({
