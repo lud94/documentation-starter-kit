@@ -25,6 +25,13 @@ import { createHash } from 'node:crypto'
 
 import type { EvidenceType, KnownEvidenceEvent } from './catalog'
 import { EXTERNAL_SIGNAL_PROVIDER, canonicalClaimKey, isStrictInstant } from './types'
+import type {
+  EvidenceCorroboration,
+  EvidenceProvenance,
+  GroundingKind,
+  SourceGrade,
+  SourceLineageKind,
+} from './types'
 import type { SignalHit } from '../../../types/prospector'
 
 /**
@@ -93,8 +100,14 @@ function jourReel(valeur: unknown): valeur is string {
  *   B — éditeur secondaire crédible et IDENTIFIÉ.
  *   C — agrégateur ou source faible identifiée comme telle.
  *   UNKNOWN — non classable avec sûreté. Jamais promue.
+ *
+ * ⚠️ LE VOCABULAIRE VIT DANS `types.ts`, ET CE N'EST PAS UN DÉTAIL DE RANGEMENT.
+ * Ces valeurs sont désormais PERSISTÉES : `validators.ts` doit les revalider à
+ * la relecture, et il ne peut pas importer ce module sans créer un cycle. Ce
+ * ré-export conserve la surface historique — tout le dépôt lit `SourceGrade`
+ * ici — sans qu'il existe deux listes de grades.
  */
-export type SourceGrade = 'A' | 'B' | 'C' | 'UNKNOWN'
+export type { SourceGrade }
 
 /**
  * LIGNÉE — cette preuve est-elle originale, ou reprend-elle une autre source ?
@@ -108,6 +121,29 @@ export type SourceLineage =
   | { kind: 'ORIGINAL' }
   | { kind: 'CITES'; sourceUrl: string }
   | { kind: 'UNKNOWN' }
+
+/**
+ * PREUVE DE NON-DIVERGENCE, VÉRIFIÉE PAR LE COMPILATEUR.
+ *
+ * ⚠️ `SourceLineage` et `Grounding` portent une charge utile en plus du `kind`
+ * (`sourceUrl`, `anchor`) : ils ne peuvent donc pas ÊTRE les types scalaires de
+ * `types.ts`. Mais leurs `kind` doivent en être exactement l'image — sans quoi
+ * le Bridge émettrait un jour une valeur que `validators.ts` refuserait à la
+ * relecture, ou pire, accepterait une valeur que le Bridge n'émet plus.
+ *
+ * Ces alias n'existent qu'à la compilation ; ajouter un `kind` d'un seul côté
+ * casse `npm run typecheck`, et c'est tout leur objet.
+ */
+type MemeVocabulaire<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
+
+// ⚠️ L'AFFECTATION EST CE QUI FAIT ÉCHOUER LA COMPILATION. Un simple alias de
+// type valant `never` ne produirait aucune erreur : la preuve n'existe que
+// parce que `true` doit être assignable au résultat.
+const _vocabulairesAlignes: [
+  MemeVocabulaire<SourceLineage['kind'], SourceLineageKind>,
+  MemeVocabulaire<Grounding['kind'], GroundingKind>,
+] = [true, true]
+void _vocabulairesAlignes
 
 /** Registres publics faisant autorité. Liste FERMÉE et vérifiable. */
 const REGISTRY_HOSTS: readonly string[] = [
@@ -324,6 +360,15 @@ export interface SourceEvidence {
   sourcePublishedAt: string | null
   /** Ce que l'application a pu VÉRIFIER elle-même. Jamais ce que le modèle dit. */
   grounding: Grounding
+  /**
+   * Instant SERVEUR où la matière a été récupérée — absent si inconnu.
+   *
+   * ⚠️ NE SE DÉDUIT PAS DE L'INSTANT D'ADJUDICATION. L'appelant le fournit
+   * lorsqu'il le connaît réellement : pour la voie Quick Search, c'est
+   * `SignalCandidate.issuedAt`, l'instant où le serveur a émis le candidat.
+   * Inconnu ⇒ absent, jamais `observedAt` recopié.
+   */
+  retrievedAt?: string
 }
 
 export function sourceEvidenceFromHit(
@@ -331,6 +376,7 @@ export function sourceEvidenceFromHit(
   companyWebsite?: string | null,
   lineage: SourceLineage = { kind: 'UNKNOWN' },
   grounding: Grounding = { kind: 'UNVERIFIABLE' },
+  retrievedAt?: string,
 ): SourceEvidence | null {
   const host = hostOf(hit?.sourceUrl)
   if (!host) return null
@@ -343,6 +389,12 @@ export function sourceEvidenceFromHit(
     hit,
     sourcePublishedAt: hit.sourcePublishedAt ?? null,
     grounding,
+    // ⚠️ Non renseigné ⇒ ABSENT du champ. Aucune horloge n'est lue ici : ce
+    // module est pur, et fabriquer un instant de récupération inventerait une
+    // date de consultation que personne n'a observée.
+    ...(typeof retrievedAt === 'string' && retrievedAt.trim() !== ''
+      ? { retrievedAt: retrievedAt.trim() }
+      : {}),
   }
 }
 
@@ -675,6 +727,44 @@ export function promoteToEvidence(input: PromotionInput): PromotionResult {
   // l'evidence aurait désigné une preuve qui ne la fonde pas.
   const urls = [...new Set(qualifiantes.map((s) => s.url.trim()))].sort()
 
+  // ── INSTANTANÉ DE QUALIFICATION — CE QUI A FONDÉ LA DÉCISION, CONSERVÉ ───
+  // ⚠️ CE BLOC EXISTE PARCE QUE TOUT CECI ÉTAIT CALCULÉ, UTILISÉ, PUIS JETÉ.
+  // Le grade, l'éditeur, la lignée et l'ancrage décidaient de la promotion et
+  // ne survivaient pas à la persistance : relue plus tard, l'evidence ne
+  // pouvait plus dire POURQUOI ses sources étaient qualifiantes. Un audit
+  // devait re-télécharger les pages — c'est-à-dire refaire l'histoire, avec la
+  // politique d'aujourd'hui et non celle du jour de la promotion.
+  //
+  // ⚠️ LA PROVENANCE DÉCRIT LA SOURCE QUE `source.url` DÉSIGNE, ET ELLE SEULE.
+  // Prendre la première QUALIFIANTE au hasard décrirait une preuve différente
+  // de celle que l'evidence cite : le lecteur croirait lire le grade de la
+  // source affichée alors qu'il lirait celui d'une autre.
+  const principale = qualifiantes.find((s) => s.url.trim() === urls[0]) as SourceEvidence
+  const provenance: EvidenceProvenance = {
+    ...(principale.publisher ? { publisher: principale.publisher } : {}),
+    grade: principale.grade,
+    lineage: principale.lineage.kind,
+    grounding: principale.grounding.kind,
+    // ⚠️ ABSENTE SI INCONNUE — JAMAIS `observedAt`. La date de publication d'un
+    // article n'est pas l'instant où nous l'avons adjugé, et la lui substituer
+    // ferait passer une source non datée pour une source publiée le jour de la
+    // confirmation. Même faux zéro que `occurredAt = now` sur un état non daté.
+    ...(principale.sourcePublishedAt ? { sourcePublishedAt: principale.sourcePublishedAt } : {}),
+    ...(principale.retrievedAt ? { retrievedAt: principale.retrievedAt } : {}),
+  }
+
+  // ⚠️ COMPTÉE SUR LES QUALIFIANTES, comme `corroboration` du résultat. Une
+  // source écartée n'a fondé aucune décision : la faire figurer ici donnerait à
+  // une preuve rejetée l'apparence d'un appui.
+  const editeurs = independentPublishers(qualifiantes)
+  const corroboration: EvidenceCorroboration = {
+    publishers: editeurs,
+    sourceUrls: urls,
+    // ⚠️ `0` EST UN FAIT, PAS UN MANQUE : c'est le cas nominal de la V0, où la
+    // lignée n'est pas transportée depuis l'acquisition et vaut donc `UNKNOWN`.
+    independentPublisherCount: editeurs.length,
+  }
+
   const base = {
     id: externalEvidenceId(cle),
     accountId: input.accountId,
@@ -686,7 +776,9 @@ export function promoteToEvidence(input: PromotionInput): PromotionResult {
       provider: EXTERNAL_SIGNAL_PROVIDER,
       url: urls[0],
       reference: urls.length > 1 ? urls.join(' ') : undefined,
+      provenance,
     },
+    corroboration,
     // Le fait est RAPPORTÉ par une source identifiée, il n'est pas déduit.
     assertionType: 'fact' as const,
     confidence: ACCEPTED_EXTERNAL_CLAIM_CONFIDENCE_V0,

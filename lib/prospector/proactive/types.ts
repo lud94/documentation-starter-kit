@@ -97,10 +97,111 @@ export type AssertionType =
  * n'est pas une échappatoire : c'est ce qui permet au catalogue d'exister.
  */
 
+// ── VOCABULAIRES DE QUALIFICATION DE SOURCE — DÉCLARÉS ICI, ET NULLE PART AILLEURS
+//
+// ⚠️ POURQUOI DANS `types.ts` ET NON DANS LE BRIDGE. Ces valeurs sont PERSISTÉES
+// sur l'evidence, donc `validators.ts` doit les revalider à la relecture. Or
+// importer le Bridge depuis les validateurs créerait le cycle que ce module
+// existe pour éviter — exactement le raisonnement déjà tenu pour
+// `canonicalClaimKey` et `EXTERNAL_SIGNAL_PROVIDER`.
+//
+// ⚠️ AUCUN SECOND VOCABULAIRE N'EST CRÉÉ. `signalBridge.ts` importe ces types-ci
+// et vérifie À LA COMPILATION que ses unions de travail — `SourceLineage`,
+// `Grounding`, qui portent des charges utiles en plus du `kind` — ont exactement
+// ces `kind`-là. Deux listes de grades qui divergeraient feraient valider à la
+// relecture une valeur que le Bridge n'émet plus, ou l'inverse.
+
+/** Autorité de la source. `UNKNOWN` ne vaut jamais « faible » : il vaut « non établi ». */
+export type SourceGrade = 'A' | 'B' | 'C' | 'UNKNOWN'
+
+/** Lignée. `UNKNOWN` NE VAUT JAMAIS INDÉPENDANCE — voir `signalBridge`. */
+export type SourceLineageKind = 'ORIGINAL' | 'CITES' | 'UNKNOWN'
+
+/** Ce que l'application a pu vérifier elle-même. Jamais ce que le modèle affirme. */
+export type GroundingKind = 'VERIFIED_ANCHOR' | 'UNVERIFIABLE'
+
+/**
+ * INSTANTANÉ DE QUALIFICATION, PRIS AU MOMENT DE LA PROMOTION.
+ *
+ * ── LA PERTE QUE CE CHAMP ARRÊTE ───────────────────────────────────────────
+ * Le Bridge CALCULE le grade, l'éditeur, la lignée et l'ancrage, s'en sert pour
+ * décider si la revendication peut devenir un fait… puis les jette. Une
+ * evidence relue six mois plus tard pouvait dire QUI l'avait adjugée et sur
+ * QUELLES URL, mais plus POURQUOI ces sources étaient qualifiantes. La
+ * politique de source n'était donc pas rejouable après coup : impossible de
+ * distinguer « promue sur une source A ancrée » de « promue sur deux sources B
+ * indépendantes » sans re-télécharger les pages — c'est-à-dire sans refaire
+ * l'histoire.
+ *
+ * ⚠️ INSTANTANÉ, PAS VUE CALCULÉE. Si la politique de classement change demain,
+ * une evidence ancienne doit continuer d'afficher les valeurs qui ont RÉELLEMENT
+ * fondé sa promotion. Rien ne recalcule ce bloc à la lecture — le recalculer
+ * réécrirait le passé pour le rendre conforme au présent.
+ *
+ * ⚠️ TOUS LES CHAMPS SONT FACULTATIFS, ET C'EST STRUCTUREL. Les evidences déjà
+ * persistées n'en portent aucun, et elles restent valides : l'absence de
+ * provenance signifie « non enregistrée », jamais « aucune ».
+ */
+export interface EvidenceProvenance {
+  /** Éditeur — l'hôte fait foi, jamais le nom déclaré par la source. */
+  publisher?: string
+  grade?: SourceGrade
+  lineage?: SourceLineageKind
+  grounding?: GroundingKind
+
+  /**
+   * Date de PUBLICATION de la source, quand elle est connue.
+   *
+   * ⚠️ N'EST NI `observedAt` NI `occurredAt`, ET NE S'EN DÉDUIT JAMAIS. Quand la
+   * source ne la donne pas, ce champ est ABSENT. Y recopier l'instant de
+   * consultation fabriquerait une date de publication que personne n'a lue —
+   * c'est le même faux zéro que `occurredAt = now` sur un état non daté.
+   */
+  sourcePublishedAt?: string
+
+  /**
+   * Quand PROSPECTOR a récupéré la matière — instant SERVEUR.
+   *
+   * Distinct de `observedAt`, qui est l'instant d'ADJUDICATION du fait : une
+   * recherche du lundi confirmée le jeudi a deux dates différentes, et les
+   * confondre effacerait le délai de revue.
+   */
+  retrievedAt?: string
+}
+
+/**
+ * CORROBORATION TELLE QU'ELLE EXISTAIT AU MOMENT DE LA PROMOTION.
+ *
+ * ⚠️ `independentPublisherCount` COMPTE DES ÉDITEURS INDÉPENDANTS PROUVÉS, pas
+ * des URL. Cinq reprises d'un même communiqué ne sont pas cinq confirmations —
+ * la règle vit dans `signalBridge.independentPublishers`, ce champ n'en est que
+ * la trace figée.
+ *
+ * ⚠️ `0` EST UNE VALEUR SIGNIFICATIVE, ET NON UN MANQUE : « promue sans aucun
+ * éditeur indépendant établi » est précisément ce qu'un audit doit pouvoir lire.
+ * C'est le cas NOMINAL de la V0, où la lignée n'est pas transportée depuis
+ * l'acquisition et vaut donc `UNKNOWN`.
+ */
+export interface EvidenceCorroboration {
+  /** Éditeurs indépendants établis. Trié, sans doublon. */
+  publishers?: readonly string[]
+  /** URL des sources QUALIFIANTES — celles qui ont réellement porté la décision. */
+  sourceUrls?: readonly string[]
+  independentPublisherCount?: number
+}
+
 export interface EvidenceSource {
   provider: string
   reference?: string
   url?: string
+
+  /**
+   * Qualification de la source PRINCIPALE — celle que `url` désigne.
+   *
+   * Facultatif : absent sur les evidences internes (CRM) et sur toutes celles
+   * déjà persistées avant ce lot.
+   */
+  provenance?: EvidenceProvenance
 }
 
 /**
@@ -194,6 +295,16 @@ interface EvidenceBase<T extends string = string> {
    * evidence issue d'une source externe.
    */
   acceptance?: EvidenceAcceptance
+
+  /**
+   * Corroboration constatée AU MOMENT DE LA PROMOTION.
+   *
+   * ⚠️ PORTÉE PAR L'EVIDENCE, PAS PAR `source`. `source` décrit UNE source ; la
+   * corroboration est une propriété du GROUPE de preuves qui a fondé le fait.
+   * La ranger sous `source` laisserait croire qu'une seule source se corrobore
+   * elle-même.
+   */
+  corroboration?: EvidenceCorroboration
 }
 
 /** Un fait daté : la date de survenue est connue, et elle est exigée. */

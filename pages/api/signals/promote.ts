@@ -212,7 +212,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // reçu. C'est ce qui rend les gardes du Bridge à nouveau opérantes : elles
     // s'appliquent enfin à ce que le serveur a produit.
     const sources: SourceEvidence[] = []
-    const s = sourceEvidenceFromHit(hitFromCandidate(candidate), lead.officialWebsite)
+    // ⚠️ `issuedAt` EST LA SEULE DATE DE RÉCUPÉRATION QUE LE SERVEUR CONNAISSE
+    // RÉELLEMENT : l'instant où il a lui-même émis ce candidat. Elle n'est ni
+    // `observedAt` (l'instant d'adjudication, plus bas) ni la date de
+    // publication de la source. Une recherche du lundi confirmée le jeudi porte
+    // bien deux dates distinctes, et les confondre effacerait le délai de revue.
+    //
+    // ⚠️ APPEL TENU SUR UNE SEULE LIGNE, VOLONTAIREMENT. Le verrou structurel
+    // `tests/signal-product-reachability.test.ts` vérifie par expression
+    // régulière que le site passé ici est bien `officialWebsite` — le registre
+    // officiel — et jamais `lead.website`, que le navigateur peut influencer.
+    // Couper l'appel sur plusieurs lignes désarmait ce verrou en silence.
+    const s = sourceEvidenceFromHit(hitFromCandidate(candidate), lead.officialWebsite, undefined, undefined, candidate.issuedAt)
     if (s) sources.push(s)
 
     const pont = bridgeSignals({

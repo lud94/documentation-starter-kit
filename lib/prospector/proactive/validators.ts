@@ -22,9 +22,12 @@ import { AUTHORIZED_MOTIONS } from './motions'
 import { EXTERNAL_SIGNAL_PROVIDER, canonicalClaimKey, isStrictInstant } from './types'
 import type {
   EvidenceEvent,
+  GroundingKind,
   Outcome,
   Recommendation,
   Situation,
+  SourceGrade,
+  SourceLineageKind,
 } from './types'
 
 export function nonEmpty(value: unknown): value is string {
@@ -78,8 +81,85 @@ export function isEvidenceEvent(value: any): value is EvidenceEvent {
     optionalDate(value.lastVerifiedAt) &&
     optionalDate(value.expiresAt) &&
     acceptationCoherente(value) &&
+    provenanceCoherente(value?.source?.provenance) &&
+    corroborationCoherente(value?.corroboration) &&
     temporaliteCoherente(value)
   )
+}
+
+/** Vocabulaires REVALIDÉS à la relecture — un `jsonb` ne contraint rien. */
+const GRADES: readonly SourceGrade[] = ['A', 'B', 'C', 'UNKNOWN']
+const LIGNEES: readonly SourceLineageKind[] = ['ORIGINAL', 'CITES', 'UNKNOWN']
+const ANCRAGES: readonly GroundingKind[] = ['VERIFIED_ANCHOR', 'UNVERIFIABLE']
+
+function dansCatalogue<T extends string>(v: unknown, catalogue: readonly T[]): boolean {
+  return v === undefined || (typeof v === 'string' && (catalogue as readonly string[]).includes(v))
+}
+
+/**
+ * INSTANTANÉ DE QUALIFICATION — absent OU bien formé, jamais approximatif.
+ *
+ * ⚠️ ABSENT EST VALIDE, ET C'EST LA COMPATIBILITÉ ASCENDANTE ELLE-MÊME. Toutes
+ * les evidences déjà persistées dans `prospector_store` sont dépourvues de ce
+ * bloc ; exiger sa présence les invaliderait TOUTES à la relecture, ce qui
+ * ferait échouer l'accumulation d'historique (`EVIDENCE_HISTORY_INVALID`) et
+ * arrêterait le produit. L'absence signifie « non enregistrée », jamais
+ * « aucune ».
+ *
+ * ⚠️ PRÉSENT MAIS ABÎMÉ ⇒ INVALIDE. Un grade `'Z'` ou une lignée inventée
+ * relue comme acceptable ferait croire à un audit que la promotion s'est
+ * appuyée sur une qualification que le Bridge n'a jamais produite. Une
+ * provenance à moitié fausse est pire qu'une provenance absente : la première
+ * ment, la seconde se tait.
+ */
+function provenanceCoherente(p: unknown): boolean {
+  if (p === undefined) return true
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return false
+  const v = p as any
+
+  if (!optionalString(v.publisher)) return false
+  if (!dansCatalogue<SourceGrade>(v.grade, GRADES)) return false
+  if (!dansCatalogue<SourceLineageKind>(v.lineage, LIGNEES)) return false
+  if (!dansCatalogue<GroundingKind>(v.grounding, ANCRAGES)) return false
+
+  // Date de PUBLICATION : au jour (`AAAA-MM-JJ`) telle que l'acquisition la
+  // normalise. Tolérance de `validDate`, comme partout ailleurs pour une date
+  // qui vient d'un tiers et non de notre horloge.
+  if (v.sourcePublishedAt !== undefined && !validDate(v.sourcePublishedAt)) return false
+
+  // ⚠️ `retrievedAt` EST NOTRE HORODATAGE, donc STRICT. Il est produit par le
+  // serveur (`SignalCandidate.issuedAt`) : le relire avec une règle plus lâche
+  // que celle de l'écriture rouvrirait la normalisation silencieuse que
+  // `isStrictInstant` existe pour interdire.
+  if (v.retrievedAt !== undefined && !isStrictInstant(v.retrievedAt)) return false
+
+  return true
+}
+
+/**
+ * CORROBORATION — absente OU bien formée.
+ *
+ * ⚠️ `independentPublisherCount` DOIT S'ACCORDER AVEC `publishers` QUAND LES
+ * DEUX SONT LÀ. Un compte de 3 en face d'une liste vide affirmerait une
+ * corroboration que rien ne porte — et c'est exactement le champ qu'un lecteur
+ * pressé regarderait en premier.
+ */
+function corroborationCoherente(c: unknown): boolean {
+  if (c === undefined) return true
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return false
+  const v = c as any
+
+  // Un tableau VIDE est licite — « aucun éditeur indépendant établi » est le cas
+  // nominal de la V0. `stringArray` l'accepte ; il refuse les entrées vides.
+  if (v.publishers !== undefined && !stringArray(v.publishers)) return false
+  if (v.sourceUrls !== undefined && !stringArray(v.sourceUrls)) return false
+
+  if (v.independentPublisherCount !== undefined) {
+    const n = v.independentPublisherCount
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) return false
+    if (Array.isArray(v.publishers) && n !== v.publishers.length) return false
+  }
+  return true
 }
 
 /**
