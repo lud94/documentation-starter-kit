@@ -17,11 +17,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Le runtime Node réellement configuré côté Vercel n'a pas pu être vérifié
-        # (aucun accès au projet). On teste donc les deux versions plausibles plutôt
-        # que d'en figer une au jugé. À réduire à une seule ligne une fois le
-        # runtime Vercel constaté.
-        node: ['20', '22']
+        # Node 22 est la BASELINE CI. Ce n'est pas un choix de confort :
+        #
+        #   • `@supabase/supabase-js` — dépendance de PRODUCTION — déclare
+        #     `engines.node >= 22.0.0`. Node 20 était donc hors du contrat
+        #     déclaré du dépôt, et non une cible qu'on aurait cessé de soutenir.
+        #
+        #   • `tests/proactive-eval-runner.test.ts` lance le CLI d'évaluation en
+        #     SOUS-PROCESSUS avec `--experimental-strip-types` — seul moyen
+        #     d'observer le vrai processus. Ce drapeau existe depuis Node 22.6 ;
+        #     Node 20 refusait de démarrer (`bad option`), et la suite échouait
+        #     sans que `npm test` mentionne jamais ce drapeau.
+        #
+        # Node 20 n'est donc plus une cible supportée. GitHub le déprécie par
+        # ailleurs de son côté sur les runners.
+        node: ['22']
     name: verify (node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v4
