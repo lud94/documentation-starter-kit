@@ -214,6 +214,15 @@ export default function SourcingPage() {
       // attendre un problème que l'attente ne résout pas.
       if (d.state === 'TIMEOUT') {
         setSigError('La recherche n’a pas terminé dans le délai disponible. Réessaie dans quelques instants.')
+      } else if (d.state === 'BUDGET_EXCEEDED') {
+        // ⚠️ NI UNE PANNE, NI UNE ABSENCE DE SIGNAL. Le système s'est arrêté
+        // VOLONTAIREMENT avant de dépasser le coût autorisé. Le présenter comme
+        // « aucun résultat » ferait conclure qu'il n'y a rien à trouver ; comme
+        // une erreur, ferait chercher une panne inexistante.
+        //
+        // Aucun montant, aucun modèle, aucun compte de jetons : l'utilisateur
+        // n'a pas à connaître les internes de facturation pour comprendre.
+        setSigError('La recherche a été arrêtée avant de dépasser la limite de coût autorisée.')
       } else if (d.error) {
         // Plus de données de démonstration : une erreur est une erreur, on l'affiche.
         setSigError(d.error)

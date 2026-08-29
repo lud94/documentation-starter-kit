@@ -21,6 +21,7 @@ import { callClaude as llmCall, cacheKey, pickModel } from './llm'
 import {
   startAcquisitionBudget,
   QUICK_SEARCH_BUDGET_MS,
+  QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS,
   type AcquisitionBudget,
 } from './acquisitionBudget'
 import type { TenantContext } from './tenant'
@@ -276,7 +277,20 @@ async function callClaude(tenant: TenantContext, thesis: string, max: number, q?
   // liste 30 entreprises dans le CORPS de l'article, invisible dans l'extrait.
   // Avec web_fetch il ouvre l'article et les énumère toutes.
   if (supportsWebFetch(pickModel('research'))) {
-    tools.push({ type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6, blocked_domains: ['linkedin.com'] })
+    // ⚠️ `max_content_tokens` EST OBLIGATOIRE, ET C'ÉTAIT LE TROU DE COÛT.
+    // Sans lui, `money.ts` marque l'estimation INCOMPLÈTE — il le documente
+    // depuis C2a-2 : « le volume d'entrée injecté est NON BORNÉ, donc non
+    // estimable ». Six pages web entières réinjectées à chaque tour interne et
+    // facturées au tarif d'entrée du modèle : c'est l'amplificateur de coût le
+    // plus puissant du chemin, et le seul que rien ne bornait.
+    //
+    // La valeur vient d'UNE source unique, partagée avec l'estimateur : les
+    // laisser diverger rendrait l'estimation fausse dans le sens permissif.
+    tools.push({
+      type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6,
+      max_content_tokens: QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS,
+      blocked_domains: ['linkedin.com'],
+    })
   }
   // UNE SEULE dérivation : le prompt ET la clé de cache lisent les MÊMES
   // chaînes. Recalculer le ciblage d'un côté seulement rouvrirait exactement la
@@ -558,7 +572,22 @@ export const EXA_TIMEOUT_MS = 10_000
  * aveu d'ignorance. Les fusionner ferait annoncer une absence de signal que
  * personne n'a constatée.
  */
-export type AcquisitionState = 'COMPLETE' | 'TIMEOUT' | 'PROVIDER_ERROR'
+export type AcquisitionState = 'COMPLETE' | 'TIMEOUT' | 'PROVIDER_ERROR' | 'BUDGET_EXCEEDED'
+
+/**
+ * L'acquisition s'est ARRÊTÉE VOLONTAIREMENT avant de dépasser un plafond.
+ *
+ * ⚠️ DISTINCT DE `TIMEOUT` ET DE `PROVIDER_ERROR`, et la distinction porte du
+ * sens : rien n'a échoué, rien n'a expiré — le système a refusé d'engager une
+ * dépense. C'est un succès du garde-fou, pas une panne, et l'utilisateur doit
+ * pouvoir le distinguer d'une absence de signal.
+ */
+export class AcquisitionBudgetExceeded extends Error {
+  constructor(readonly denial: string) {
+    super('acquisition_budget_exceeded')
+    this.name = 'AcquisitionBudgetExceeded'
+  }
+}
 
 // `q` (critères structurés) est optionnel : sans lui, on garde la thèse libre.
 export async function searchSignals(
@@ -632,6 +661,15 @@ export async function searchSignals(
     // ── LIMITE DE TOURS : PANNE FOURNISSEUR, PAS DÉLAI DÉPASSÉ ──────────────
     // ⚠️ Du temps restait : dire « réessaie dans quelques instants » enverrait
     // attendre un problème que l'attente ne résout pas.
+    // ── ARRÊT VOLONTAIRE AVANT DÉPENSE ─────────────────────────────────────
+    // ⚠️ NI UNE PANNE, NI UN DÉLAI. Le garde-fou a fonctionné : aucune requête
+    // n'a été émise au-delà du plafond. Le confondre avec `PROVIDER_ERROR`
+    // ferait diagnostiquer une indisponibilité fournisseur ; avec `TIMEOUT`,
+    // inviterait à réessayer un problème que l'attente ne résout pas.
+    if (e?.name === 'BudgetExceeded' || e instanceof AcquisitionBudgetExceeded) {
+      logSafeError('signals.search_budget', e, { operation: 'signals_search' })
+      return { mode, hits: [], thesis, passes: 1, state: 'BUDGET_EXCEEDED' }
+    }
     if (e instanceof AcquisitionIncomplete) {
       logSafeError('signals.search_incomplete', e, { operation: 'signals_search' })
       return { mode, hits: [], thesis, passes: 1, state: 'PROVIDER_ERROR', error: withBuild(PUBLIC_ERROR) }

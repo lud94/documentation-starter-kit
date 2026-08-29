@@ -351,6 +351,21 @@ export class DeadlineExceeded extends Error {
   }
 }
 
+/**
+ * Le budget de l'action refuse d'engager cette requête fournisseur.
+ *
+ * ⚠️ LEVÉE **AVANT** TOUT `fetch`. Rien n'est demandé, donc rien n'est facturé :
+ * c'est un refus d'engager, pas un échec de transport. Le distinguer de
+ * `DeadlineExceeded` importe — l'un dit « plus de temps », l'autre « trop
+ * cher » — et les deux appellent des gestes différents.
+ */
+export class BudgetExceeded extends Error {
+  constructor(readonly denial: string) {
+    super('acquisition_budget')
+    this.name = 'BudgetExceeded'
+  }
+}
+
 // Durée de vie d'une réservation. Généreuse par rapport au délai ci-dessus : une
 // TTL trop courte ferait balayer en UNRESOLVED des réservations encore vivantes.
 const RESERVATION_TTL_SECONDS = 300
@@ -630,6 +645,42 @@ export async function anthropicPost(key: string, body: any, meta: GatewayMeta): 
   // et pas seulement chez les appelants : `send()` rejoue jusqu'à trois
   // dégradations de 400 sans repasser par eux, et chacune est une requête réelle.
   if (meta?.budget && !meta.budget.canAfford()) throw new DeadlineExceeded()
+
+  // ── RÉSERVATION AVANT ÉMISSION — LE CŒUR DE LA SÛRETÉ DE COÛT ───────────
+  // ⚠️ TOUT PASSE PAR ICI : premier tour, continuation `pause_turn`, ET chacune
+  // des trois dégradations HTTP 400. C'est le point d'émission unique, donc le
+  // seul endroit où un plafond agrégé ne peut pas être contourné.
+  //
+  // ⚠️ LA SÉCURITÉ VIENT DE LA RÉSERVATION, PAS DE LA COMPTABILITÉ. On décompte
+  // ce que la requête PEUT consommer avant de l'émettre. Attendre l'`usage`
+  // rendu par le fournisseur reviendrait à constater la dépense après l'avoir
+  // faite — et un tour aborté n'en rend aucun.
+  if (meta?.budget) {
+    const forme = readToolShape(body)
+    const est = estimateBreakdown({
+      model: String(body?.model || ''),
+      maxTokens: Number.isFinite(body?.max_tokens) ? Math.trunc(body.max_tokens) : 0,
+      bodyBytes: bytes,
+      webSearchMaxUses: forme.webSearchMaxUses,
+      webSearchDeclared: forme.webSearchDeclared,
+      webFetchDeclared: forme.webFetchDeclared,
+      webFetchMaxContentTokens: forme.webFetchMaxContentTokens,
+      unknownServerToolTypes: forme.unknownServerToolTypes,
+    })
+
+    // ⚠️ « JE NE PEUX PAS ESTIMER » NE VAUT JAMAIS « J'AUTORISE ». Une
+    // composante non bornable rend le plafond inarbitrable : on ferme.
+    if (!est.complete) throw new BudgetExceeded('unestimable')
+
+    const refusCompteurs = meta.budget.reserveCall({
+      webSearches: forme.webSearchMaxUses,
+      webFetches: forme.webFetchMaxUses,
+    })
+    if (refusCompteurs) throw new BudgetExceeded(refusCompteurs)
+
+    const refusArgent = meta.budget.reserveMicros(est.totalMicros)
+    if (refusArgent) throw new BudgetExceeded(refusArgent)
+  }
 
   // Plafond de CE transport : le reste du budget, jamais plus que le plafond
   // historique. Sans budget ⇒ `undefined` ⇒ comportement inchangé.
@@ -1069,6 +1120,18 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
   // le temps s'épuise, au lieu de s'accorder 50 s alors qu'il en reste 5.
   const meta = { tenant: o.tenant, agent: o.agent, task: o.task, budget: o.budget }
 
+  // ── P0-H — UNE SORTIE PAR EXCEPTION N'EST PAS UN COÛT NUL ────────────────
+  // ⚠️ `recordAiUsage` vit APRÈS la boucle. Une sortie par `AbortError`,
+  // `ProviderError` ou `BudgetExceeded` la saute : les tours DÉJÀ observés
+  // n'étaient alors comptabilisés nulle part, et le compteur affichait zéro pour
+  // une dépense réelle.
+  //
+  // ⚠️ ON N'INVENTE AUCUN JETON. Seuls les `usage` RÉELLEMENT reçus sont
+  // enregistrés ; un tour interrompu avant réponse n'en fournit aucun et reste
+  // donc non mesuré — ce qui est la vérité, pas un zéro. La sûreté de coût ne
+  // repose PAS sur cette comptabilité : elle repose sur la réservation faite
+  // AVANT l'émission, dans `anthropicPost`.
+  try {
   for (let turn = 0; turn < 4; turn++) {
     // ── NE PAS ENGAGER CE QU'ON NE PEUT PAS TERMINER ────────────────────────
     // ⚠️ VÉRIFIÉ AVANT le transport, pas après. Démarrer un tour qu'on sait ne
@@ -1115,8 +1178,9 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
     // ⚠️ ET LE TOUR RESTE INACHEVÉ. `text` porte ici la sortie d'un tour que
     // l'API elle-même a déclaré interrompu : le rendre sans le marquer laisserait
     // un appelant en extraire des « résultats partiels » qui n'en sont pas.
+    // ⚠️ Aucun `recordAiUsage` ici : le `finally` s'en charge sur TOUS les
+    // chemins de sortie. Le laisser produirait un double enregistrement.
     if (o.budget && !o.budget.canAfford()) {
-      await recordAiUsage(o.agent, model, inTokens, outTokens)
       return { text: '', incomplete: true, reason: 'deadline' }
     }
 
@@ -1124,7 +1188,11 @@ export async function callClaude(o: CallOpts): Promise<CallResult> {
     messages = [...o.messages, { role: 'assistant', content: data.content }]
   }
 
-  await recordAiUsage(o.agent, model, inTokens, outTokens)
+  } finally {
+    // Ce qui a été RÉELLEMENT observé est enregistré, quel que soit le chemin
+    // de sortie. Zéro tour observé ⇒ zéro écriture, pas un faux zéro.
+    if (inTokens > 0 || outTokens > 0) await recordAiUsage(o.agent, model, inTokens, outTokens)
+  }
 
   // ── SORTIE DE BOUCLE ALORS QUE L'API DEMANDAIT ENCORE À CONTINUER ─────────
   // ⚠️ DÉFAUT PRÉEXISTANT, FERMÉ ICI. Si les quatre tours sont consommés et que

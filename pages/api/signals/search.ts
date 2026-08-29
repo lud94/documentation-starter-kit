@@ -7,6 +7,9 @@ import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import {
   startAcquisitionBudget,
   QUICK_SEARCH_BUDGET_MS,
+  QUICK_SEARCH_MAX_PROVIDER_CALLS,
+  QUICK_SEARCH_MAX_WEB_SEARCHES,
+  QUICK_SEARCH_MAX_WEB_FETCHES,
 } from '../../../lib/prospector/acquisitionBudget'
 import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import { registerCandidates } from '../../../lib/prospector/proactive/signalCandidates'
@@ -33,7 +36,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // signaux. `searchSignals` n'en fabrique plus aucun : une acquisition en
   // Mission passera SON PROPRE budget de lot, plus court. Laisser un défaut dans
   // le moteur imposerait la politique de cette route à tous ses appelants futurs.
-  const budget = startAcquisitionBudget(QUICK_SEARCH_BUDGET_MS)
+  // ── PLAFOND MONÉTAIRE DE L'ACTION — FAIL CLOSED SI ABSENT ───────────────
+  // ⚠️ LE SOLDE DU COMPTE N'EST PAS UN GARDE-FOU. Il ne borne pas UNE action :
+  // il borne la ruine. Une seule Quick Search doit avoir son propre plafond.
+  //
+  // ⚠️ ENV-ONLY, DÉLIBÉRÉMENT. Cette clé n'entre PAS dans `MANAGED_KEYS` : un
+  // plafond de sécurité ne doit pas pouvoir être relevé depuis la base qu'il
+  // protège, ni depuis l'écran d'administration. C'est la doctrine que le lot
+  // 0C.0.3 a déjà posée pour `AI_BUDGET_RESERVATION`, et elle vaut a fortiori
+  // pour un plafond de dépense.
+  //
+  // ⚠️ ABSENTE OU ILLISIBLE ⇒ AUCUN APPEL. On n'invente pas un défaut permissif :
+  // « je ne sais pas combien je peux dépenser » ne vaut pas « autant que je
+  // veux ». Configuration requise : `QUICK_SEARCH_MAX_MICROS` (µUSD, entier).
+  const plafond = plafondMonetaire()
+
+  const budget = startAcquisitionBudget(QUICK_SEARCH_BUDGET_MS, Date.now, {
+    providerCalls: QUICK_SEARCH_MAX_PROVIDER_CALLS,
+    webSearches: QUICK_SEARCH_MAX_WEB_SEARCHES,
+    webFetches: QUICK_SEARCH_MAX_WEB_FETCHES,
+    maxMicros: plafond,
+  })
 
   await hydrateKeystore()
 
@@ -82,7 +105,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // l'agrégation par lots complets arrivera (ticket Mission), `hits` POURRA
     // être non vide sur un TIMEOUT, et c'est ici que la décision devra se
     // prendre. Ne pas le présenter comme la garde : la garde est en amont.
-    if (resultat.state === 'TIMEOUT') {
+    if (resultat.state === 'TIMEOUT' || resultat.state === 'BUDGET_EXCEEDED') {
       return res.status(200).json({ ...resultat, hits: [] })
     }
 
@@ -103,4 +126,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.status(502).json({ error: 'Recherche de signaux indisponible pour le moment.' })
   }
 }
+/**
+ * Plafond monétaire d'UNE Quick Search, en µUSD — ou `null` si non configuré.
+ *
+ * ⚠️ `null` FERME. L'appelant refuse alors toute émission : voir
+ * `AcquisitionBudget.reserveMicros`, qui rend `'money'` sans plafond.
+ *
+ * Lecture directe de `process.env` — PAS de `getKey`. `getKey` consulte d'abord
+ * le magasin hydraté depuis `prospector_settings` : une ligne en base pourrait
+ * alors relever le plafond de sécurité. Un garde-fou ne se configure pas depuis
+ * la surface qu'il surveille.
+ */
+function plafondMonetaire(): bigint | null {
+  const brut = (process.env.QUICK_SEARCH_MAX_MICROS || '').trim()
+  if (!/^\d+$/.test(brut)) return null      // absente, vide ou illisible ⇒ ferme
+  try {
+    const v = BigInt(brut)
+    return v > 0n ? v : null                // zéro ⇒ aucune dépense autorisée
+  } catch {
+    return null
+  }
+}
+
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

@@ -51,6 +51,58 @@ export const QUICK_SEARCH_BUDGET_MS = 45_000
  */
 export const MIN_TRANSPORT_MS = 8_000
 
+// ── PLAFONDS D'EXÉCUTION AGRÉGÉS — LE TEMPS NE BORNE PAS LA DÉPENSE ─────────
+//
+// ⚠️ LEÇON DU SMOKE STAGING. L'échéance de 45 s a parfaitement tenu — 42,45 s,
+// aucun 504 — et la requête a pourtant coûté cher : le fournisseur facture à
+// l'USAGE D'OUTIL et au TOKEN D'ENTRÉE, pas à la seconde. Une requête peut
+// épuiser dix recherches web et six pages entières en quarante secondes.
+//
+// Ces plafonds sont donc TOTAUX pour UNE action utilisateur. Ils ne se
+// réinitialisent ni à un nouveau tour, ni sur `pause_turn`, ni sur une
+// continuation, ni sur une dégradation HTTP 400 — c'est précisément par ces
+// chemins que la dépense échappait au compte.
+
+/** Requêtes fournisseur pour UNE Quick Search. Couvre tours + dégradations. */
+export const QUICK_SEARCH_MAX_PROVIDER_CALLS = 4
+
+/**
+ * Recherches web TOTALES pour UNE Quick Search.
+ *
+ * ⚠️ CE N'EST PAS `max_uses`. `max_uses: 10` est un plafond PAR REQUÊTE : sur
+ * quatre tours il autorise quarante recherches. Ce compteur-ci est le plafond
+ * de l'action utilisateur entière. On ne touche pas à `max_uses` — c'est un
+ * arbitrage de qualité qui appartient à un autre lot.
+ */
+export const QUICK_SEARCH_MAX_WEB_SEARCHES = 10
+
+/** Récupérations de page TOTALES pour UNE Quick Search. Même raisonnement. */
+export const QUICK_SEARCH_MAX_WEB_FETCHES = 6
+
+/**
+ * Plafond de contenu TEXTE par `web_fetch`, en tokens.
+ *
+ * ⚠️ LA SEULE COMPOSANTE QUE RIEN NE BORNAIT. `money.ts` le documente depuis
+ * C2a-2 : sans `max_content_tokens`, le volume d'entrée injecté est NON BORNÉ
+ * — donc non estimable, donc non plafonnable. Six pages web entières
+ * réinjectées à chaque tour interne, facturées au tarif d'entrée du modèle,
+ * étaient l'amplificateur de coût le plus puissant du chemin.
+ *
+ * Cette valeur est consommée par DEUX endroits qui doivent rester d'accord :
+ * la déclaration de l'outil envoyée au fournisseur, et l'estimateur de coût.
+ * Les laisser diverger rendrait l'estimation fausse dans le sens permissif.
+ */
+export const QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS = 20_000
+
+/** Pourquoi une acquisition a été refusée AVANT d'engager une dépense. */
+export type BudgetDenial =
+  | 'deadline'          // plus assez de temps
+  | 'provider_calls'    // plafond d'appels fournisseur atteint
+  | 'web_searches'      // plafond de recherches web atteint
+  | 'web_fetches'       // plafond de récupérations atteint
+  | 'money'             // le coût estimé dépasserait le plafond de l'action
+  | 'unestimable'       // coût non bornable ⇒ refus, jamais autorisation
+
 export interface AcquisitionBudget {
   /** Instant limite ABSOLU, en millisecondes epoch. */
   readonly deadlineAt: number
@@ -68,6 +120,47 @@ export interface AcquisitionBudget {
    * propre à l'appelant quand il en a un.
    */
   transportTimeoutMs(cap?: number): number
+
+  // ── COMPTEURS AGRÉGÉS ────────────────────────────────────────────────────
+  /**
+   * Réserve une requête fournisseur ET les usages d'outils qu'elle autorise.
+   *
+   * ⚠️ RÉSERVE AVANT, PAS APRÈS. On décompte ce que la requête PEUT consommer,
+   * pas ce qu'elle a consommé : le fournisseur ne nous dit pas combien de
+   * recherches il fera, et l'apprendre après coup n'empêche aucune dépense.
+   * La sécurité vient de la réservation, jamais de la comptabilité a posteriori.
+   *
+   * Rend `null` si tout tient, sinon le motif du refus. Idempotent en cas de
+   * refus : rien n'est décompté quand la réponse est un refus.
+   */
+  reserveCall(o?: { webSearches?: number; webFetches?: number }): BudgetDenial | null
+  /** Coût estimé déjà réservé, en µUSD. */
+  spentMicros(): bigint
+  /**
+   * Le coût estimé de la PROCHAINE requête tient-il dans le plafond monétaire ?
+   * Rend `null` si oui, sinon le motif.
+   */
+  reserveMicros(estimate: bigint): BudgetDenial | null
+  /** Instantané lisible — télémétrie interne, jamais rendu au navigateur tel quel. */
+  snapshot(): {
+    providerCalls: number; webSearches: number; webFetches: number
+    spentMicros: string; capMicros: string | null
+  }
+}
+
+/** Plafonds agrégés d'UNE acquisition. */
+export interface AcquisitionCaps {
+  providerCalls?: number
+  webSearches?: number
+  webFetches?: number
+  /**
+   * Plafond monétaire de l'action, en µUSD.
+   *
+   * ⚠️ `null` N'EST PAS « ILLIMITÉ ». Il signifie « aucun plafond n'a été
+   * fourni », et les appelants qui EXIGENT un plafond doivent refuser dans ce
+   * cas. On ne fabrique pas ici une permission que personne n'a accordée.
+   */
+  maxMicros?: bigint | null
 }
 
 /**
@@ -79,6 +172,7 @@ export interface AcquisitionBudget {
 export function startAcquisitionBudget(
   totalMs: number = QUICK_SEARCH_BUDGET_MS,
   now: () => number = Date.now,
+  caps: AcquisitionCaps = {},
 ): AcquisitionBudget {
   // Un budget négatif ou absurde est ramené à zéro : il ferme, il n'ouvre pas.
   const duree = Number.isFinite(totalMs) && totalMs > 0 ? totalMs : 0
@@ -86,9 +180,59 @@ export function startAcquisitionBudget(
 
   const remainingMs = () => Math.max(0, deadlineAt - now())
 
+  // ⚠️ ÉTAT MUTABLE, PORTÉ PAR L'OBJET ET PAR LUI SEUL. C'est ce qui fait que
+  // les compteurs SURVIVENT aux tours, aux continuations `pause_turn` et aux
+  // dégradations HTTP 400 : tous reçoivent LE MÊME budget, jamais une copie.
+  let callsUsed = 0
+  let searchesUsed = 0
+  let fetchesUsed = 0
+  let spent = 0n
+
+  const maxCalls = capEntier(caps.providerCalls)
+  const maxSearches = capEntier(caps.webSearches)
+  const maxFetches = capEntier(caps.webFetches)
+  const maxMicros = typeof caps.maxMicros === 'bigint' && caps.maxMicros >= 0n ? caps.maxMicros : null
+
   return {
     deadlineAt,
     remainingMs,
+
+    reserveCall: (o = {}) => {
+      const s = Math.max(0, Math.trunc(o.webSearches || 0))
+      const f = Math.max(0, Math.trunc(o.webFetches || 0))
+
+      // Vérifier TOUT avant de décompter QUOI QUE CE SOIT : un refus ne doit
+      // pas laisser un compteur à moitié consommé.
+      if (maxCalls !== null && callsUsed + 1 > maxCalls) return 'provider_calls'
+      if (maxSearches !== null && searchesUsed + s > maxSearches) return 'web_searches'
+      if (maxFetches !== null && fetchesUsed + f > maxFetches) return 'web_fetches'
+
+      callsUsed += 1
+      searchesUsed += s
+      fetchesUsed += f
+      return null
+    },
+
+    spentMicros: () => spent,
+
+    reserveMicros: (estimate) => {
+      // ⚠️ AUCUN PLAFOND FOURNI ⇒ REFUS. « je ne sais pas combien je peux
+      // dépenser » ne vaut pas « je peux dépenser autant que je veux ».
+      if (maxMicros === null) return 'money'
+      const e = typeof estimate === 'bigint' && estimate >= 0n ? estimate : 0n
+      if (spent + e > maxMicros) return 'money'
+      spent += e
+      return null
+    },
+
+    snapshot: () => ({
+      providerCalls: callsUsed,
+      webSearches: searchesUsed,
+      webFetches: fetchesUsed,
+      spentMicros: spent.toString(),
+      capMicros: maxMicros === null ? null : maxMicros.toString(),
+    }),
+
     expired: () => remainingMs() <= 0,
     canAfford: (costMs = MIN_TRANSPORT_MS) => remainingMs() >= costMs,
     transportTimeoutMs: (cap?: number) => {
@@ -112,4 +256,9 @@ export function startAcquisitionBudget(
  */
 export function expiredBudget(): AcquisitionBudget {
   return startAcquisitionBudget(0)
+}
+
+/** Plafond entier exploitable, ou `null` — jamais une valeur devinée. */
+function capEntier(v: number | undefined): number | null {
+  return Number.isFinite(v) && (v as number) >= 0 ? Math.trunc(v as number) : null
 }

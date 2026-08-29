@@ -14,7 +14,51 @@ import {
   expiredBudget,
   QUICK_SEARCH_BUDGET_MS,
   MIN_TRANSPORT_MS,
+  QUICK_SEARCH_MAX_PROVIDER_CALLS,
+  QUICK_SEARCH_MAX_WEB_SEARCHES,
+  QUICK_SEARCH_MAX_WEB_FETCHES,
+  QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS,
 } from '../lib/prospector/acquisitionBudget'
+
+/**
+ * Plafond monétaire GÉNÉREUX pour les tests qui n'étudient PAS l'argent.
+ *
+ * ⚠️ Un budget sans plafond REFUSE désormais toute émission (fail closed). Les
+ * tests de temps et de bornes doivent donc en fournir un, faute de quoi ils
+ * mesureraient le refus monétaire au lieu de ce qu'ils prétendent mesurer.
+ */
+const PLAFOND_LARGE = 10_000_000n   // 10 $ en µUSD
+
+/** Budget de test complet : temps + compteurs de PRODUCTION + argent. */
+function budgetTest(ms = 45_000, now = horloge, maxMicros: bigint | null = PLAFOND_LARGE) {
+  return startAcquisitionBudget(ms, now, {
+    providerCalls: QUICK_SEARCH_MAX_PROVIDER_CALLS,
+    webSearches: QUICK_SEARCH_MAX_WEB_SEARCHES,
+    webFetches: QUICK_SEARCH_MAX_WEB_FETCHES,
+    maxMicros,
+  })
+}
+
+/**
+ * Budget aux COMPTEURS D'OUTILS DÉLIBÉRÉMENT LARGES.
+ *
+ * ⚠️ POURQUOI IL EXISTE, ET CE QU'IL NE DOIT PAS MASQUER. Avec les plafonds de
+ * production, la réservation est PESSIMISTE : chaque requête réserve les
+ * `max_uses` DÉCLARÉS (10 recherches), et le plafond agrégé vaut 10 — donc une
+ * seule requête fournisseur est possible, et toute continuation est refusée sur
+ * `web_searches` AVANT d'atteindre la logique de délai.
+ *
+ * C'est le comportement voulu en production. Mais pour tester le mécanisme de
+ * DÉLAI ou la LIMITE DE TOURS, il faut écarter le compteur qui préempte, sinon
+ * le test mesurerait autre chose que ce qu'annonce son intitulé. Ce budget-ci
+ * isole donc le mécanisme sous test ; les plafonds agrégés ont leurs propres
+ * tests dédiés, plus bas.
+ */
+function budgetSansPlafondOutils(ms = 45_000) {
+  return startAcquisitionBudget(ms, horloge, {
+    providerCalls: 99, webSearches: 9_999, webFetches: 9_999, maxMicros: PLAFOND_LARGE,
+  })
+}
 
 const etat = vi.hoisted(() => ({
   /** Requêtes sortantes observées : { url, aSignal, timeoutMs } */
@@ -122,6 +166,8 @@ beforeEach(() => {
   etat.exaDocs = []
   etat.leads = []
   etat.cles = { ANTHROPIC_API_KEY: 'k-test' }   // mode 'claude-web' par défaut
+  // La route lit son plafond monétaire dans l'ENVIRONNEMENT (jamais la base).
+  process.env.QUICK_SEARCH_MAX_MICROS = '10000000'
   ;(fetch as any).mockClear()
 })
 
@@ -186,7 +232,7 @@ describe('QUICK-SIGNAL-SEARCH-BOUNDED-001 — transports bornés', () => {
     // Quick Search appartient à la route, pas au moteur de signaux.
     await searchSignals(
       TENANT, 'levées Série A Paris', QUICK_SEARCH_MAX_HITS, { months: 1 } as any,
-      startAcquisitionBudget(45_000, horloge),
+      budgetTest(),
     )
 
     const anthropic = etat.appels.filter((a) => a.url.includes('anthropic'))
@@ -248,7 +294,7 @@ describe('QUICK-SIGNAL-SEARCH-BOUNDED-001 — un tour inachevé n’est pas un r
 
     const r = await searchSignals(
       TENANT, 'levées Série A Paris', QUICK_SEARCH_MAX_HITS, { months: 1 } as any,
-      startAcquisitionBudget(45_000, horloge),
+      budgetSansPlafondOutils(),
     )
 
     expect(r.state).toBe('TIMEOUT')
@@ -267,7 +313,7 @@ describe('QUICK-SIGNAL-SEARCH-BOUNDED-001 — un tour inachevé n’est pas un r
 
     const r = await searchSignals(
       TENANT, 'levées Série A Paris', QUICK_SEARCH_MAX_HITS, { months: 1 } as any,
-      startAcquisitionBudget(45_000, horloge),
+      budgetSansPlafondOutils(),
     )
 
     expect(r.state).toBe('TIMEOUT')
@@ -280,7 +326,7 @@ describe('QUICK-SIGNAL-SEARCH-BOUNDED-001 — un tour inachevé n’est pas un r
     etat.reponses = [reponsePause(), reponseComplete()]
     const expire = await searchSignals(
       TENANT, 'thèse', QUICK_SEARCH_MAX_HITS, { months: 1 } as any,
-      startAcquisitionBudget(45_000, horloge),
+      budgetSansPlafondOutils(),
     )
     expect(expire.state).toBe('TIMEOUT')
 
@@ -305,7 +351,7 @@ describe('QUICK-SIGNAL-SEARCH-BOUNDED-001 — un tour inachevé n’est pas un r
 
     await searchSignals(
       TENANT, 'thèse', QUICK_SEARCH_MAX_HITS, { months: 1 } as any,
-      startAcquisitionBudget(45_000, horloge),
+      budgetSansPlafondOutils(),
     )
 
     // Une seule passe : le repli n'a pas été tenté.
@@ -367,7 +413,7 @@ describe('QUICK-SIGNAL-SEARCH-BOUNDED-001 — contrat de la route', () => {
   })
 
   // ── B. LIMITE DE TOURS, DU TEMPS RESTANT ────────────────────────────────
-  it('quatre reprises RAPIDES → PROVIDER_ERROR, jamais TIMEOUT', async () => {
+  it('quatre reprises RAPIDES → arrêt CONTRÔLÉ, jamais TIMEOUT', async () => {
     // ⚠️ LA DISTINCTION QUE CE TEST PROTÈGE. Quatre `pause_turn` instantanés
     // épuisent la boucle en quelques millisecondes, avec 45 s encore au compteur.
     // Ce n'est PAS l'horloge qui a parlé : c'est une conversation qui ne
@@ -378,7 +424,11 @@ describe('QUICK-SIGNAL-SEARCH-BOUNDED-001 — contrat de la route', () => {
 
     const r = await appelerRoute({ types: ['levée'], location: 'Paris', months: 1 })
 
-    expect(r.body.state).toBe('PROVIDER_ERROR')
+    // ⚠️ DEPUIS LES PLAFONDS DE COÛT, la deuxième requête est refusée sur le
+    // compteur agrégé de recherches AVANT d'atteindre la limite de tours : la
+    // route rend donc `BUDGET_EXCEEDED`. Ce qui compte ici reste vrai et
+    // inchangé — ce n'est PAS un délai dépassé, et rien n'est fabriqué.
+    expect(r.body.state).toBe('BUDGET_EXCEEDED')
     expect(r.body.state).not.toBe('TIMEOUT')
     expect(r.body.hits).toEqual([])
     // Et le JSON du tour inachevé n'a jamais été lu.
@@ -533,5 +583,268 @@ describe('QUICK-SIGNAL-SEARCH-BOUNDED-001 — contrat de la route', () => {
 
     expect(JSON.stringify(r.body)).not.toContain('ECONNRESET')
     expect(JSON.stringify(r.body)).not.toContain('clé-secrète-interne')
+  })
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// QUICK-SIGNAL-SEARCH-COST-GUARDRAIL-001 — BORNÉ EN ARGENT, PAS SEULEMENT EN TEMPS
+//
+// ⚠️ LA LEÇON QUI FONDE CE BLOC. Le smoke staging a prouvé la borne de TEMPS :
+// 42,45 s, aucun 504, arrêt propre. Et la requête a coûté cher quand même. Le
+// fournisseur facture à l'USAGE D'OUTIL et au TOKEN D'ENTRÉE, pas à la seconde :
+// une échéance serverless n'est pas un garde-fou financier.
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('COST-GUARDRAIL — T1/T2 le contenu récupéré est borné et estimable', () => {
+  it('T1 — chaque outil `web_fetch` de la Quick Search porte un `max_content_tokens` FINI', async () => {
+    // ⚠️ C'ÉTAIT LA SEULE COMPOSANTE QUE RIEN NE BORNAIT. `money.ts` le dit
+    // depuis C2a-2 : sans ce champ, le volume d'entrée injecté est NON BORNÉ.
+    const fs = await import('fs')
+    const src = fs.readFileSync('lib/prospector/signals.ts', 'utf8')
+    const bloc = src.slice(src.indexOf('web_fetch_20260209'), src.indexOf('web_fetch_20260209') + 400)
+
+    expect(bloc).toContain('max_content_tokens')
+    expect(Number.isFinite(QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS)).toBe(true)
+    expect(QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS).toBeGreaterThan(0)
+    // La valeur vient d'UNE source partagée avec l'estimateur, pas d'un littéral
+    // enfoui : les laisser diverger rendrait l'estimation fausse, en permissif.
+    expect(bloc).toContain('QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS')
+  })
+
+  it('T2 — l’estimation de coût de la forme d’outils réelle est COMPLÈTE', async () => {
+    const { estimateBreakdown } = await import('../lib/prospector/money')
+    const complet = estimateBreakdown({
+      model: 'claude-sonnet-5', maxTokens: 8000, bodyBytes: 4000,
+      webSearchMaxUses: 10, webSearchDeclared: true,
+      webFetchDeclared: true,
+      webFetchMaxContentTokens: QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS * 6,
+    })
+    expect(complet.complete).toBe(true)
+    expect(complet.incomplete).toEqual([])
+
+    // MUTATION : retirer la borne rend l'estimation incomplète — donc refusée.
+    const sansBorne = estimateBreakdown({
+      model: 'claude-sonnet-5', maxTokens: 8000, bodyBytes: 4000,
+      webSearchMaxUses: 10, webSearchDeclared: true, webFetchDeclared: true,
+    })
+    expect(sansBorne.complete).toBe(false)
+    expect(sansBorne.incomplete).toContain('web_fetch_content')
+  })
+})
+
+describe('COST-GUARDRAIL — « je ne sais pas estimer » ne vaut JAMAIS « j’autorise »', () => {
+  it('un outil `web_fetch` SANS borne de contenu fait refuser l’appel, sans rien émettre', async () => {
+    // ⚠️ GARDE DE FOND, testée sur le vrai transport. `signals.ts` déclare
+    // désormais la borne — mais tout appelant futur qui l'oublierait doit être
+    // refusé, pas servi. Une composante non bornable rend le plafond
+    // inarbitrable : on ferme.
+    const { callClaude } = await import('../lib/prospector/llm')
+
+    // Le refus est une EXCEPTION typée qui remonte jusqu'à `searchSignals`,
+    // lequel la convertit en `BUDGET_EXCEEDED`. Ici on observe la frontière basse.
+    const appel = callClaude({
+      tenant: TENANT, task: 'research', agent: 'test', system: 's',
+      messages: [{ role: 'user', content: 'x' }],
+      tools: [
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 2 },
+        // Volontairement SANS `max_content_tokens` : l'entrée est non bornable.
+        { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 2 },
+      ],
+      budget: budgetTest(),
+    } as any)
+
+    await expect(appel).rejects.toThrow('acquisition_budget')
+    // Et surtout : aucune requête n'a été émise — le refus précède l'émission.
+    expect(etat.appels.filter((a) => a.url.includes('anthropic')).length).toBe(0)
+  })
+
+  it('le MÊME appel, borne déclarée, est bien émis', async () => {
+    // La garde n'est pas un mur : le cas légitime passe.
+    etat.reponses = [reponseComplete()]
+    const { callClaude } = await import('../lib/prospector/llm')
+
+    await callClaude({
+      tenant: TENANT, task: 'research', agent: 'test', system: 's',
+      messages: [{ role: 'user', content: 'x' }],
+      tools: [
+        { type: 'web_search_20250305', name: 'web_search', max_uses: 2 },
+        { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 2,
+          max_content_tokens: QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS },
+      ],
+      budget: budgetTest(),
+    } as any)
+
+    expect(etat.appels.filter((a) => a.url.includes('anthropic')).length).toBe(1)
+  })
+})
+
+describe('COST-GUARDRAIL — T3/T4/T5 plafonds AGRÉGÉS sur toute l’action', () => {
+  it('T3 — le plafond d’appels fournisseur ne se réinitialise à aucun tour', () => {
+    const b = startAcquisitionBudget(45_000, horloge, {
+      providerCalls: 2, webSearches: 9_999, webFetches: 9_999, maxMicros: PLAFOND_LARGE,
+    })
+    expect(b.reserveCall()).toBeNull()
+    expect(b.reserveCall()).toBeNull()
+    // Le troisième est refusé — et le refus ne consomme rien.
+    expect(b.reserveCall()).toBe('provider_calls')
+    expect(b.snapshot().providerCalls).toBe(2)
+  })
+
+  it('T4 — le plafond de recherches web est TOTAL, pas par requête', () => {
+    // ⚠️ LA DISTINCTION QUI COMPTE. `max_uses: 10` autorise 10 recherches PAR
+    // REQUÊTE : sur quatre tours, quarante. Ce compteur borne l'action entière.
+    const b = startAcquisitionBudget(45_000, horloge, {
+      providerCalls: 99, webSearches: 10, webFetches: 9_999, maxMicros: PLAFOND_LARGE,
+    })
+    expect(b.reserveCall({ webSearches: 10 })).toBeNull()
+    expect(b.reserveCall({ webSearches: 10 })).toBe('web_searches')
+    expect(b.snapshot().webSearches).toBe(10)
+  })
+
+  it('T5 — le plafond de récupérations de page est TOTAL lui aussi', () => {
+    const b = startAcquisitionBudget(45_000, horloge, {
+      providerCalls: 99, webSearches: 9_999, webFetches: 6, maxMicros: PLAFOND_LARGE,
+    })
+    expect(b.reserveCall({ webFetches: 6 })).toBeNull()
+    expect(b.reserveCall({ webFetches: 1 })).toBe('web_fetches')
+    expect(b.snapshot().webFetches).toBe(6)
+  })
+
+  it('un refus ne consomme AUCUN compteur — pas de demi-réservation', () => {
+    const b = startAcquisitionBudget(45_000, horloge, {
+      providerCalls: 99, webSearches: 5, webFetches: 6, maxMicros: PLAFOND_LARGE,
+    })
+    expect(b.reserveCall({ webSearches: 99, webFetches: 6 })).toBe('web_searches')
+    const s = b.snapshot()
+    expect(s.providerCalls).toBe(0)
+    expect(s.webSearches).toBe(0)
+    expect(s.webFetches).toBe(0)
+  })
+})
+
+describe('COST-GUARDRAIL — T6/T7 plafond monétaire de l’action', () => {
+  it('T6 — dépassement du plafond ⇒ AUCUNE requête émise, BUDGET_EXCEEDED, hits vides', async () => {
+    // Plafond volontairement minuscule : la première estimation le dépasse.
+    process.env.QUICK_SEARCH_MAX_MICROS = '1'
+    etat.reponses = [reponseComplete()]
+
+    const r = await appelerRoute({ types: ['levée'], location: 'Paris', months: 1 })
+
+    expect(r.status).toBe(200)
+    expect(r.body.state).toBe('BUDGET_EXCEEDED')
+    expect(r.body.hits).toEqual([])
+    // ⚠️ LE POINT CENTRAL : la dépense n'a pas eu lieu, elle a été REFUSÉE.
+    expect(etat.appels.filter((a) => a.url.includes('anthropic')).length).toBe(0)
+  })
+
+  it('T7 — plafond ABSENT ⇒ fail closed, aucune requête', async () => {
+    // ⚠️ « je ne sais pas combien je peux dépenser » ne vaut pas « autant que je
+    // veux ». Un garde-fou absent ferme ; il n'ouvre pas.
+    delete process.env.QUICK_SEARCH_MAX_MICROS
+    etat.reponses = [reponseComplete()]
+
+    const r = await appelerRoute({ types: ['levée'], location: 'Paris', months: 1 })
+
+    expect(r.body.state).toBe('BUDGET_EXCEEDED')
+    expect(r.body.hits).toEqual([])
+    expect(etat.appels.length).toBe(0)
+  })
+
+  it('plafond illisible ou nul ⇒ ferme également', async () => {
+    for (const mauvais of ['', '  ', 'abc', '-5', '0', '1.5']) {
+      etat.appels = []
+      process.env.QUICK_SEARCH_MAX_MICROS = mauvais
+      etat.reponses = [reponseComplete()]
+      const r = await appelerRoute({ types: ['levée'], location: 'Paris', months: 1 })
+      expect(r.body.state).toBe('BUDGET_EXCEEDED')
+      expect(etat.appels.length).toBe(0)
+    }
+  })
+})
+
+describe('COST-GUARDRAIL — T8/T9/T10 les états restent distincts', () => {
+  it('T8 — TIMEOUT != BUDGET_EXCEEDED', async () => {
+    etat.coutParAppel = 40_000
+    etat.reponses = [reponsePause(), reponseComplete()]
+    const r = await searchSignals(
+      TENANT, 'thèse', QUICK_SEARCH_MAX_HITS, { months: 1 } as any,
+      budgetSansPlafondOutils(),
+    )
+    expect(r.state).toBe('TIMEOUT')
+    expect(r.state).not.toBe('BUDGET_EXCEEDED')
+  })
+
+  it('T9 — une requête bon marché et valide rend COMPLETE', async () => {
+    etat.coutParAppel = 500
+    etat.reponses = [reponseComplete(2)]
+    const r = await appelerRoute({ types: ['levée'], location: 'Paris', months: 1 })
+    expect(r.body.state).toBe('COMPLETE')
+    expect(r.body.hits.length).toBeGreaterThan(0)
+    for (const h of r.body.hits) expect(h.candidateId).toMatch(/^cand_[0-9a-f]{32}$/)
+  })
+
+  it('T10 — une panne fournisseur reste PROVIDER_ERROR', async () => {
+    ;(fetch as any).mockImplementationOnce(async () => { throw new Error('ECONNRESET interne') })
+    const r = await appelerRoute({ types: ['levée'], location: 'Paris', months: 1 })
+    expect(r.body.state).toBe('PROVIDER_ERROR')
+    expect(r.body.state).not.toBe('BUDGET_EXCEEDED')
+  })
+})
+
+describe('COST-GUARDRAIL — T11/T12/T13/T14 persistance, fuite, contournement', () => {
+  it('T11 — BUDGET_EXCEEDED ne persiste AUCUN candidat', async () => {
+    process.env.QUICK_SEARCH_MAX_MICROS = '1'
+    etat.reponses = [reponseComplete(5)]
+    const r = await appelerRoute({ types: ['levée'], location: 'Paris', months: 1 })
+    expect(r.body.state).toBe('BUDGET_EXCEEDED')
+    expect(etat.leads.filter((l) => l.kind === 'proactive_signal_candidate')).toEqual([])
+  })
+
+  it('T12 — la réponse publique ne fuit rien', async () => {
+    process.env.QUICK_SEARCH_MAX_MICROS = '1'
+    etat.reponses = [reponseComplete()]
+    const r = await appelerRoute({ types: ['levée'], location: 'Paris', months: 1 })
+    const brut = JSON.stringify(r.body)
+
+    for (const interdit of ['k-test', 'anthropic.com', 'Thèse', 'micros', 'Error', 'stack', 'at Object']) {
+      expect(brut).not.toContain(interdit)
+    }
+    // Ni montant, ni tarif, ni compte de jetons dans le contrat public.
+    expect(brut).not.toMatch(/µUSD|maxMicros|spentMicros|input_tokens/)
+  })
+
+  it('T13 — la dégradation HTTP 400 puise dans LE MÊME budget', async () => {
+    // ⚠️ `send()` rejoue jusqu'à trois dégradations SANS repasser par les
+    // appelants. Si elles créaient un budget neuf, le plafond serait
+    // contournable par une simple requête invalide.
+    process.env.QUICK_SEARCH_MAX_MICROS = '10000000'
+    ;(fetch as any).mockImplementation(async (url: any, init: any) => {
+      etat.appels.push({ url: String(url), aSignal: !!init?.signal })
+      return { ok: false, status: 400, json: async () => ({}), text: async () => 'unknown tool type web_fetch_20260209' } as any
+    })
+
+    await appelerRoute({ types: ['levée'], location: 'Paris', months: 1 })
+
+    // Le compteur agrégé (10 recherches réservées par requête) n'autorise qu'UNE
+    // émission : la dégradation ne peut pas en obtenir une seconde.
+    expect(etat.appels.filter((a) => a.url.includes('anthropic')).length).toBe(1)
+  })
+
+  it('T14 — une sortie par exception n’est pas enregistrée comme un coût nul', async () => {
+    // ⚠️ ON N'INVENTE AUCUN JETON. Un tour interrompu AVANT réponse n'en fournit
+    // aucun : il reste NON MESURÉ, ce qui est la vérité — pas un zéro. Et la
+    // sûreté ne repose pas sur cette comptabilité : elle repose sur la
+    // réservation faite AVANT l'émission.
+    const fs = await import('fs')
+    const code = fs.readFileSync('lib/prospector/llm.ts', 'utf8')
+      .split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n')
+
+    // La comptabilisation est dans un `finally` : tous les chemins de sortie y passent.
+    expect(code).toMatch(/finally\s*\{[\s\S]{0,400}recordAiUsage/)
+    // Et elle n'écrit jamais un zéro fabriqué.
+    expect(code).toMatch(/inTokens > 0 \|\| outTokens > 0/)
+    // La réservation, elle, précède l'émission.
+    expect(code).toMatch(/reserveCall\(/)
+    expect(code).toMatch(/reserveMicros\(/)
   })
 })
