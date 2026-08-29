@@ -30,6 +30,8 @@ import {
   type SourceEvidence,
   type SourceLineage,
 } from '../lib/prospector/proactive/signalBridge'
+import { readFileSync } from 'node:fs'
+
 import { listItems } from '../lib/supabase/store'
 import type { SignalHit } from '../types/prospector'
 
@@ -455,5 +457,161 @@ describe('F — drapeau et isolation', () => {
     expect(r.evidence).toHaveLength(1)
     expect(r.promotions).toHaveLength(1)
     expect(r.promotions[0].qualifyingSources).toHaveLength(2)
+  })
+})
+
+// ── ÉTATS : VERSIONNÉS PAR JOUR D'OBSERVATION DE LA SOURCE ──────────────────
+//
+// ⚠️ LA COLLISION QUE CES TESTS FERMENT. `canonicalClaimKey` d'un état vaut
+// `sales_hiring|<compte>|STATE` — CONSTANTE dans le temps. Même URL + même
+// compte rendaient donc le MÊME identifiant à jamais. Et comme l'écriture est
+// une INSERTION, la seconde observation n'était pas écrasée : elle n'était
+// SILENCIEUSEMENT PAS ENREGISTRÉE, `saveSourceAssertion` rendant
+// `{ ok: true, created: false }` — indiscernable d'un rejeu légitime.
+
+const CLE_ETAT = `sales_hiring|${COMPTE}|STATE`
+const CARRIERES = 'https://careers.acme.fr/jobs'
+
+/** Poste Sales OUVERT — la seule revendication d'état promouvable aujourd'hui. */
+function etatSales(retrievedAt: string | undefined): SourceEvidence {
+  const hit = {
+    company: 'Acme', signalType: 'recrutement', detail: '', icebreaker: '',
+    sourceUrl: CARRIERES, verified: false,
+    claimNature: 'STATE', eventStatus: 'UNKNOWN',
+    eventDate: null, eventDatePrecision: 'UNKNOWN', sourcePublishedAt: null,
+    roleStatus: 'OPEN', roleFunction: 'SALES',
+    extraction: { mode: 'claude-web', promptVersion: 'signal-acquisition-v2' },
+  } as unknown as SignalHit
+  const s = sourceEvidenceFromHit(hit, 'https://careers.acme.fr',
+    { kind: 'ORIGINAL' }, ANCRE, retrievedAt)
+  if (!s) throw new Error('fixture invalide')
+  return s
+}
+
+/**
+ * Promotion d'un ÉTAT, avec les DEUX horloges dissociées.
+ *
+ * `recupereA` = quand Prospector a vu la page carrière.
+ * `adjugeA`   = quand une personne l'a confirmée. En production, `promote.ts`
+ *               l'écrit avec `new Date()` : c'est bien l'adjudication.
+ */
+function assertionsEtat(recupereA: string | undefined, adjugeA: string, ws = WS) {
+  const sources = [etatSales(recupereA)]
+  const r = promoteToEvidence({
+    accountId: COMPTE, observedAt: adjugeA, sources,
+    confirmations: [confirme([CARRIERES], CLE_ETAT)],
+  })
+  if (r.ok === false) throw new Error(`promotion refusée : ${r.reason}`)
+  return {
+    evidence: r.evidence,
+    assertions: buildSourceAssertions({
+      workspaceId: ws, accountId: COMPTE, canonicalClaimKey: r.canonicalKey,
+      evidence: r.evidence, qualifyingSources: r.qualifyingSources,
+    }),
+  }
+}
+
+describe('R1 — l’identité d’état vient de `retrievedAt`, jamais de `observedAt`', () => {
+  it('T1 — récupérée le 1er, adjugée le 5 ⇒ le jour retenu est le 1er', () => {
+    // ⚠️ LE CŒUR DE LA CORRECTION. Sur une source MUTABLE, dater l'observation
+    // du jour de l'adjudication enregistre l'état du monde du 1er sous une date
+    // à laquelle personne ne l'a observé. C'est une falsification d'historique,
+    // pas un décalage.
+    const { assertions } = assertionsEtat('2026-09-01T06:00:00.000Z', '2026-09-05T14:00:00.000Z')
+    expect(assertions).toHaveLength(1)
+    expect(assertions[0].sourceObservedDay).toBe('2026-09-01')
+    expect(assertions[0].observedAt).toBe('2026-09-05T14:00:00.000Z')  // non resémantisé
+    expect(assertions[0].assertionTemporality).toBe('undated_state')
+  })
+
+  it('T2 — deux récupérations distinctes ⇒ DEUX assertions', async () => {
+    const a = assertionsEtat('2026-09-01T06:00:00.000Z', '2026-09-05T14:00:00.000Z')
+    const b = assertionsEtat('2026-09-15T06:00:00.000Z', '2026-09-20T14:00:00.000Z')
+    expect(a.assertions[0].id).not.toBe(b.assertions[0].id)
+    expect(a.evidence.id).toBe(b.evidence.id)   // MÊME evidence : la convergence tient
+
+    await saveSourceAssertion(a.assertions[0], WS)
+    await saveSourceAssertion(b.assertions[0], WS)
+    const toutes = await lignes()
+    expect(toutes).toHaveLength(2)
+    expect(toutes.map((x) => x.sourceObservedDay).sort()).toEqual(['2026-09-01', '2026-09-15'])
+  })
+
+  it('T3 — même jour UTC récupéré, adjudications différentes ⇒ UNE assertion', () => {
+    const a = assertionsEtat('2026-09-01T06:00:00.000Z', '2026-09-05T14:00:00.000Z')
+    const b = assertionsEtat('2026-09-01T22:45:00.000Z', '2026-09-08T09:00:00.000Z')
+    expect(a.assertions[0].id).toBe(b.assertions[0].id)
+  })
+
+  it('T4 — `observedAt` seul NE CHANGE PAS l’identité d’un état', () => {
+    const a = assertionsEtat('2026-09-01T06:00:00.000Z', '2026-09-05T14:00:00.000Z')
+    const b = assertionsEtat('2026-09-01T06:00:00.000Z', '2027-01-01T00:00:00.000Z')
+    expect(b.assertions[0].id).toBe(a.assertions[0].id)
+    expect(b.assertions[0].observedAt).not.toBe(a.assertions[0].observedAt)
+  })
+
+  it('T5 — `retrievedAt` absent ou non strict ⇒ AUCUNE assertion d’état', () => {
+    // ⚠️ FAIL CLOSED. On ignore QUAND cet état a été observé ; le dater d'autre
+    // chose inventerait la seule information qui fait son identité.
+    // L'adjudication, elle, reste parfaitement valide — l'evidence est produite.
+    for (const mauvais of [undefined, '2026-09-01', 'hier', '2026-09-01T24:00:00.000Z']) {
+      const r = assertionsEtat(mauvais as any, '2026-09-05T14:00:00.000Z')
+      expect(r.evidence.id).toBeTruthy()      // la promotion aboutit
+      expect(r.assertions).toEqual([])        // le registre s'abstient
+    }
+  })
+
+  it('T6 — l’identité d’un ÉVÉNEMENT est inchangée, octet pour octet', () => {
+    // ⚠️ VERROU DE NON-RÉGRESSION LITTÉRAL. Cette valeur a été relevée AVANT la
+    // correction. Ajouter un jour à l'identité d'un événement ferait de deux
+    // découvertes du même fait daté deux assertions — la fausse nouveauté que
+    // ce registre existe pour empêcher.
+    const { assertions } = assertionsPour([sourceA()])
+    expect(assertions[0].id).toBe('sa_5a07eb5746391b23bd232460dac2a2c6')
+    expect(assertions[0].assertionTemporality).toBe('dated_event')
+    expect('sourceObservedDay' in assertions[0]).toBe(false)
+  })
+
+  it('le jour est dérivé par `toISOString`, jamais par une horloge LOCALE', () => {
+    // ⚠️ VERROU STRUCTUREL, ET IL FAUT DIRE POURQUOI. Un jour local et un jour
+    // UTC sont IDENTIQUES quand le processus tourne en UTC — ce qui est le cas
+    // de la CI. Aucune assertion de valeur ne peut donc distinguer les deux :
+    // un mutant remplaçant `toISOString()` par `getFullYear/getMonth/getDate`
+    // resterait vert ici et fausserait l'identité sur toute machine décalée.
+    //
+    // On verrouille donc la FORME, comme le fait déjà
+    // `tests/signal-product-reachability.test.ts` pour la frontière de vérité.
+    const code = readFileSync(
+      new URL('../lib/prospector/proactive/sourceAssertion.ts', import.meta.url), 'utf8')
+    const corps = code.slice(code.indexOf('export function sourceObservedDay'))
+      .slice(0, code.slice(code.indexOf('export function sourceObservedDay')).indexOf('\n}'))
+    expect(corps).toMatch(/toISOString\(\)\.slice\(0, 10\)/)
+    expect(corps).not.toMatch(/getFullYear|getMonth|getDate|getHours/)
+  })
+
+  it('le jour est UTC, jamais local — conséquence dite', () => {
+    // 01 h 30 à Paris le 2 septembre = 23 h 30 UTC le 1er.
+    const { assertions } = assertionsEtat('2026-09-01T23:30:00.000Z', '2026-09-05T14:00:00.000Z')
+    expect(assertions[0].sourceObservedDay).toBe('2026-09-01')
+  })
+
+  it('le validateur exige le jour sur un état, et l’interdit sur un événement', () => {
+    const etat = assertionsEtat('2026-09-01T06:00:00.000Z', '2026-09-05T14:00:00.000Z').assertions[0]
+    const evt = assertionsPour([sourceA()]).assertions[0]
+    expect(isSourceAssertion(etat)).toBe(true)
+    expect(isSourceAssertion(evt)).toBe(true)
+
+    const { sourceObservedDay, ...etatSansJour } = etat as any
+    expect(isSourceAssertion(etatSansJour)).toBe(false)
+    expect(isSourceAssertion({ ...evt, sourceObservedDay: '2026-09-01' })).toBe(false)
+    expect(isSourceAssertion({ ...etat, sourceObservedDay: '2026-09-02' })).toBe(false)
+    expect(isSourceAssertion({ ...etat, assertionTemporality: 'autre' })).toBe(false)
+  })
+
+  it('rejeu du même jour récupéré ⇒ une seule ligne, idempotent', async () => {
+    const a = assertionsEtat('2026-09-01T06:00:00.000Z', '2026-09-05T14:00:00.000Z')
+    expect(await saveSourceAssertion(a.assertions[0], WS)).toEqual({ ok: true, created: true })
+    expect(await saveSourceAssertion(a.assertions[0], WS)).toEqual({ ok: true, created: false })
+    expect(await lignes()).toHaveLength(1)
   })
 })

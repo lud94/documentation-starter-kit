@@ -34,7 +34,8 @@ import { createHash } from 'node:crypto'
 
 import { getItemStrict, insertItemIfAbsent } from '../../supabase/store'
 import type { KnownEvidenceEvent } from './catalog'
-import type { EvidenceAcceptance, EvidenceProvenance } from './types'
+import { isStrictInstant } from './types'
+import type { EvidenceAcceptance, EvidenceProvenance, EvidenceTemporality } from './types'
 import type { SourceEvidence } from './signalBridge'
 
 /**
@@ -99,8 +100,35 @@ export interface SourceAssertion {
   /** Qualification de CETTE source-ci, au moment de la décision. */
   provenance: EvidenceProvenance
 
-  /** Instant d'adjudication. N'est NI une date de publication NI une date de survenue. */
+  /**
+   * Instant d'ADJUDICATION — inchangé, et NON RESÉMANTISÉ.
+   *
+   * ⚠️ IL N'ENTRE DANS AUCUNE IDENTITÉ. Ni celle d'un événement, ni celle d'un
+   * état. C'est une donnée d'audit : quand ce fait est-il né dans le moteur.
+   */
   observedAt: string
+
+  /**
+   * Nature temporelle de la revendication — SÉLECTIONNE la fonction d'identité.
+   *
+   * ⚠️ TRANSPORTÉE, JAMAIS REDEVINÉE. L'alternative serait de renifler
+   * `canonicalClaimKey.endsWith('|STATE')` : une seconde implémentation de la
+   * règle de `canonicalClaimKey`, dans un module qui ne la possède pas. Deux
+   * algorithmes pour une même distinction divergent toujours.
+   *
+   * ⚠️ AUCUN VOCABULAIRE NOUVEAU : c'est `EvidenceTemporality` de `types.ts`,
+   * portée telle quelle depuis l'evidence promue.
+   */
+  assertionTemporality: EvidenceTemporality
+
+  /**
+   * Jour UTC où la SOURCE a été observée — présent SI ET SEULEMENT SI l'état.
+   *
+   * ⚠️ DÉRIVÉ DE `retrievedAt`, JAMAIS DE `observedAt`. Voir `sourceObservedDay`.
+   * Persisté parce qu'il entre dans l'identité : un champ d'identité doit être
+   * lisible pour que l'identité reste auditable et recalculable.
+   */
+  sourceObservedDay?: string
 
   acceptance?: EvidenceAcceptance
 }
@@ -176,12 +204,55 @@ export function normalizeSourceUrl(raw: unknown): string | null {
  * est la lecture cloisonnée par `(kind, id, workspace_id)` et la RLS. On le
  * garde pour qu'un identifiant ne voyage pas d'un espace à l'autre, sans le
  * présenter comme la garde.
+ *
+ * ⚠️ QUATRIÈME SEGMENT POUR LES ÉTATS SEULEMENT — voir `sourceObservedDay`.
+ * Un événement daté en a TROIS, un état en a QUATRE. L'identité d'un événement
+ * déjà écrit reste donc OCTET POUR OCTET la même : ce paramètre est absent sur
+ * ce chemin, et la charge condensée est inchangée. Aucune migration.
  */
 export function sourceAssertionId(
-  workspaceId: string, canonicalClaimKey: string, normalizedUrl: string,
+  workspaceId: string,
+  canonicalClaimKey: string,
+  normalizedUrl: string,
+  sourceObservedDay?: string,
 ): string {
-  const charge = `source-assertion:v1:${workspaceId}\n${canonicalClaimKey}\n${normalizedUrl}`
+  const base = `source-assertion:v1:${workspaceId}\n${canonicalClaimKey}\n${normalizedUrl}`
+  const charge = sourceObservedDay ? `${base}\n${sourceObservedDay}` : base
   return `sa_${createHash('sha256').update(charge, 'utf8').digest('hex').slice(0, 32)}`
+}
+
+/**
+ * JOUR UTC D'OBSERVATION DE LA SOURCE — dérivé de `retrievedAt`, et de lui seul.
+ *
+ * ── LA HORLOGE QU'IL FAUT, ET CELLE QU'IL NE FAUT PAS ──────────────────────
+ * Quatre instants distincts cohabitent, et les confondre falsifie l'histoire :
+ *
+ *   `sourcePublishedAt`      quand la source a été publiée
+ *   `retrievedAt`            quand PROSPECTOR a récupéré le document   ← CELUI-CI
+ *   `Evidence.observedAt`    quand l'evidence est née dans le moteur
+ *   `acceptance.confirmedAt` quand une personne a adjugé
+ *
+ * ⚠️ POURQUOI PAS `Evidence.observedAt`. En production, `promote.ts` l'écrit
+ * avec `new Date().toISOString()` : c'est l'instant de l'ADJUDICATION. Une page
+ * carrière récupérée le 1er septembre et confirmée le 5 serait alors versionnée
+ * au 5 — l'état du monde du 1er serait enregistré sous une date à laquelle
+ * personne ne l'a observé. Sur une source MUTABLE, c'est une falsification
+ * d'historique, pas un décalage.
+ *
+ * ⚠️ STRICT, PAS `validDate`. `Date.parse` NORMALISE : `2026-09-01T24:00:00Z` y
+ * devient le 2 septembre. Un jour dérivé d'une lecture permissive déplacerait
+ * donc l'identité en silence. `isStrictInstant` refuse la forme, et le refus
+ * vaut ABSENCE D'ASSERTION — jamais un jour deviné.
+ *
+ * ⚠️ JOUR UTC, JAMAIS LOCAL. Aucun fuseau n'est connu de l'espace client ; en
+ * inventer un serait pire que d'assumer UTC. Conséquence dite : une observation
+ * à 01 h 30 à Paris le 2 septembre est enregistrée au 1er.
+ */
+export function sourceObservedDay(retrievedAt: unknown): string | null {
+  if (!isStrictInstant(retrievedAt)) return null
+  const ms = Date.parse(retrievedAt as string)
+  if (!Number.isFinite(ms)) return null
+  return new Date(ms).toISOString().slice(0, 10)
 }
 
 export interface AssertionBuildInput {
@@ -222,8 +293,31 @@ export function buildSourceAssertions(input: AssertionBuildInput): SourceAsserti
     const url = normalizeSourceUrl(s?.url)
     if (!url) continue // source illisible ⇒ aucune assertion, jamais une inventée
 
-    const id = sourceAssertionId(ws, input.canonicalClaimKey, url)
-    if (vus.has(id)) continue // même document deux fois dans un même lot
+    // ── UN ÉTAT EST VERSIONNÉ PAR JOUR D'OBSERVATION, UN ÉVÉNEMENT NON ────
+    // ⚠️ LA COLLISION QUE CECI FERME. `canonicalClaimKey` d'un état vaut
+    // `sales_hiring|<compte>|STATE` — constante dans le temps. Même URL + même
+    // compte rendaient donc LE MÊME identifiant à jamais, et comme l'écriture
+    // est une INSERTION, la seconde observation n'était pas écrasée : elle
+    // n'était SILENCIEUSEMENT PAS ENREGISTRÉE, avec un retour
+    // `{ ok: true, created: false }` indiscernable d'un rejeu légitime.
+    //
+    // ⚠️ L'ÉVÉNEMENT NE CHANGE PAS. Ajouter un jour à son identité ferait de
+    // deux découvertes du même fait daté deux assertions — exactement la fausse
+    // nouveauté que ce registre existe pour empêcher.
+    const etat = input.evidence.temporality === 'undated_state'
+    let jour: string | undefined
+    if (etat) {
+      const derive = sourceObservedDay(s.retrievedAt)
+      // ⚠️ SANS INSTANT DE RÉCUPÉRATION STRICT, AUCUNE ASSERTION D'ÉTAT. On ne
+      // sait pas QUAND cet état a été observé ; le dater d'autre chose
+      // inventerait la seule information qui fait l'identité. L'adjudication,
+      // elle, reste parfaitement valide.
+      if (!derive) continue
+      jour = derive
+    }
+
+    const id = sourceAssertionId(ws, input.canonicalClaimKey, url, jour)
+    if (vus.has(id)) continue // même document, même jour, dans un même lot
     vus.add(id)
 
     // ⚠️ CONSTRUITE DEPUIS `s`, ET DE `s` SEULEMENT.
@@ -249,6 +343,8 @@ export function buildSourceAssertions(input: AssertionBuildInput): SourceAsserti
       sourceUrl: url,
       provenance,
       observedAt: input.evidence.observedAt,
+      assertionTemporality: input.evidence.temporality,
+      ...(jour ? { sourceObservedDay: jour } : {}),
       ...(input.evidence.acceptance ? { acceptance: input.evidence.acceptance } : {}),
     })
   }
@@ -266,10 +362,24 @@ export function isSourceAssertion(v: any): v is SourceAssertion {
   if (!nonVide(v.sourceUrl)) return false
   if (!nonVide(v.observedAt)) return false
   if (!v.provenance || typeof v.provenance !== 'object' || Array.isArray(v.provenance)) return false
+
+  // ⚠️ LE JOUR EST PRÉSENT SI ET SEULEMENT SI L'ASSERTION EST UN ÉTAT. Un
+  // événement qui en porterait un, ou un état qui n'en porterait pas, décrit
+  // une identité que ce module n'a pas pu produire.
+  if (v.assertionTemporality === 'undated_state') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v.sourceObservedDay)) return false
+  } else if (v.assertionTemporality === 'dated_event') {
+    if (v.sourceObservedDay !== undefined) return false
+  } else {
+    return false
+  }
+
   // L'identité doit être RECALCULABLE depuis le contenu : une assertion dont
   // l'identifiant ne correspond plus à ses champs a été déplacée d'une
-  // revendication vers une autre.
-  return v.id === sourceAssertionId(v.workspaceId, v.canonicalClaimKey, v.sourceUrl)
+  // revendication vers une autre — ou d'un jour d'observation vers un autre.
+  return v.id === sourceAssertionId(
+    v.workspaceId, v.canonicalClaimKey, v.sourceUrl, v.sourceObservedDay,
+  )
 }
 
 export type AssertionWrite =
