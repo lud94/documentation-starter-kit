@@ -32,9 +32,14 @@ import { loadBusinessContext } from '../../../lib/prospector/proactive/lens/cont
 import {
   bridgeSignals,
   sourceEvidenceFromHit,
+  type BridgePromotion,
   type HumanFactConfirmation,
   type SourceEvidence,
 } from '../../../lib/prospector/proactive/signalBridge'
+import {
+  recordSourceAssertions,
+  sourceAssertionsEnabled,
+} from '../../../lib/prospector/proactive/sourceAssertion'
 import { evaluate, persistEvaluation } from '../../../lib/prospector/proactive/orchestrator'
 import { accountIdForLead } from '../../../lib/prospector/proactive/dataBridge'
 import { listEvidenceStrict } from '../../../lib/prospector/proactive/persistence'
@@ -253,6 +258,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // produit ne pouvait donc structurellement produire aucune Situation
     // multi-faits.
     //
+    // ── REGISTRE DES ASSERTIONS DE SOURCE — AVANT QUE LA PROJECTION N'ÉCRASE ──
+    // ⚠️ ÉCRIT ICI, ET PAS APRÈS. `save()` écrit l'evidence par `upsertItem`,
+    // qui REMPLACE le document : une seconde adjudication de la même
+    // revendication efface la provenance de la première. Le registre doit donc
+    // capter l'assertion AVANT cette écriture, sinon il n'enregistrerait que ce
+    // qui a survécu — c'est-à-dire rien de ce qu'il existe pour conserver.
+    //
+    // ⚠️ COUCHE SECONDAIRE, ET STRICTEMENT SECONDAIRE. Une panne du registre ne
+    // doit JAMAIS invalider une adjudication humaine : l'utilisateur a confirmé
+    // un fait, et un journal d'audit indisponible ne rend pas ce fait faux.
+    // L'échec est journalisé côté serveur et n'apparaît dans aucune réponse.
+    await journaliserAssertions(pont.promotions, ws)
+
     // ⚠️ ET UNE HISTOIRE ILLISIBLE ARRÊTE TOUT. Voir `accumulerFaitsExternes`.
     const accumulation = await accumulerFaitsExternes(pont.evidence, accountId, ws)
     if (accumulation.ok === false) {
@@ -478,6 +496,42 @@ export function urlOfficielleAbsolue(valeur: unknown): string | undefined {
  *
  * Une histoire illisible n'est pas une histoire vide : on s'arrête.
  */
+/**
+ * Enregistre UNE assertion par source qualifiante de chaque promotion.
+ *
+ * ⚠️ NE PROPAGE AUCUNE ERREUR, ET C'EST LE CONTRAT. Cette fonction ne peut pas
+ * faire échouer une adjudication : elle est enveloppée d'un `try` qui absorbe
+ * tout, y compris une exception de la couche de persistance. Un registre
+ * d'audit qui casserait le produit qu'il observe serait un mauvais échange.
+ *
+ * ⚠️ AUCUN DÉTAIL NE PART DANS LA RÉPONSE HTTP. `logSafeError` seul — un état
+ * d'écriture du registre renseignerait un appelant sur la configuration
+ * interne, et il n'a rien à en faire.
+ */
+async function journaliserAssertions(
+  promotions: readonly BridgePromotion[], ws: string,
+): Promise<void> {
+  if (!sourceAssertionsEnabled()) return
+  const bilan = await recordSourceAssertions(
+    promotions.map((p) => ({
+      workspaceId: ws,
+      accountId: p.evidence.accountId,
+      canonicalClaimKey: p.canonicalKey,
+      evidence: p.evidence,
+      qualifyingSources: p.qualifyingSources,
+    })),
+    ws,
+  )
+  // ⚠️ OBSERVABLE EN INTERNE, MUET VERS L'EXTÉRIEUR. Un état d'écriture du
+  // registre renseignerait un appelant sur la configuration interne, et il n'a
+  // rien à en faire.
+  if (bilan.failed > 0) {
+    logSafeError('signals.source_assertion_write', new Error('ledger_write_failed'), {
+      operation: 'signals_promote',
+    })
+  }
+}
+
 async function accumulerFaitsExternes(
   nouveaux: readonly KnownEvidenceEvent[],
   accountId: string,

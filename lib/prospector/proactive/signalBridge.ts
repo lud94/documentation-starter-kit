@@ -645,7 +645,25 @@ export interface PromotionInput {
 }
 
 export type PromotionResult =
-  | { ok: true; evidence: KnownEvidenceEvent; canonicalKey: string; corroboration: string[] }
+  | {
+      ok: true
+      evidence: KnownEvidenceEvent
+      canonicalKey: string
+      corroboration: string[]
+      /**
+       * Les sources QUALIFIANTES — celles qui ont réellement porté la décision.
+       *
+       * ⚠️ EXPOSÉES, PAS RECALCULÉES PAR L'APPELANT. `qualifyingSources` est la
+       * politique de source ; la rejouer dehors ferait exister deux définitions
+       * de « qualifiante », et la divergence passerait pour une cohérence.
+       *
+       * ⚠️ ET C'EST LA SEULE VOIE VERS LA PROVENANCE DE CHACUNE. `evidence.source`
+       * ne décrit QUE la source principale (`urls[0]`) : un registre construit
+       * depuis elle perdrait le grade, la lignée et l'ancrage de toutes les
+       * autres — exactement ce que ce registre existe pour conserver.
+       */
+      qualifyingSources: readonly SourceEvidence[]
+    }
   | { ok: false; reason: BridgeRefusal }
 
 /**
@@ -808,7 +826,13 @@ export function promoteToEvidence(input: PromotionInput): PromotionResult {
   // Une source faible ou non classée présente dans le même groupe n'a fondé
   // aucune décision : la faire figurer comme corroboration donnerait à une
   // preuve écartée l'apparence d'un appui.
-  return { ok: true, evidence, canonicalKey: cle, corroboration: independentPublishers(qualifiantes) }
+  return {
+    ok: true,
+    evidence,
+    canonicalKey: cle,
+    corroboration: independentPublishers(qualifiantes),
+    qualifyingSources: qualifiantes,
+  }
 }
 
 /**
@@ -877,9 +901,25 @@ export function groupSourcesByClaim(
   return { groups, rejected }
 }
 
+/** UNE promotion réussie, avec les preuves qui l'ont portée. */
+export interface BridgePromotion {
+  evidence: KnownEvidenceEvent
+  canonicalKey: string
+  qualifyingSources: readonly SourceEvidence[]
+}
+
 export interface BridgeOutcome {
   evidence: KnownEvidenceEvent[]
   refusals: { canonicalKey: string | null; reason: BridgeRefusal }[]
+  /**
+   * Détail par promotion — ADDITIF, `evidence` reste inchangé.
+   *
+   * ⚠️ AJOUTÉ, ET NON SUBSTITUÉ. Tous les appelants existants lisent
+   * `evidence` ; en changer la forme pour y loger les sources aurait touché la
+   * route, les tests et le Golden pour une couche d'audit qui ne doit rien
+   * perturber.
+   */
+  promotions: BridgePromotion[]
 }
 
 /**
@@ -892,9 +932,10 @@ export interface BridgeOutcome {
 export function bridgeSignals(input: PromotionInput): BridgeOutcome {
   const evidence: KnownEvidenceEvent[] = []
   const refusals: { canonicalKey: string | null; reason: BridgeRefusal }[] = []
+  const promotions: BridgePromotion[] = []
 
   if (!input?.accountId || !COMPTE_VERIFIE.test(input.accountId)) {
-    return { evidence: [], refusals: [{ canonicalKey: null, reason: 'NO_VERIFIED_ACCOUNT' }] }
+    return { evidence: [], promotions: [], refusals: [{ canonicalKey: null, reason: 'NO_VERIFIED_ACCOUNT' }] }
   }
 
   // ── ÉTAPE 1 : CONTRADICTION, AVANT TOUT MAPPING ──────────────────────────
@@ -919,9 +960,15 @@ export function bridgeSignals(input: PromotionInput): BridgeOutcome {
     // et une union discriminée n'y est PAS rétrécie par un test de véracité.
     const r = promoteToEvidence({ ...input, sources })
     if (r.ok === false) refusals.push({ canonicalKey: cle, reason: r.reason })
-    else evidence.push(r.evidence)
+    else {
+      evidence.push(r.evidence)
+      promotions.push({
+        evidence: r.evidence, canonicalKey: r.canonicalKey, qualifyingSources: r.qualifyingSources,
+      })
+    }
   }
 
   evidence.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-  return { evidence, refusals }
+  promotions.sort((a, b) => (a.evidence.id < b.evidence.id ? -1 : a.evidence.id > b.evidence.id ? 1 : 0))
+  return { evidence, promotions, refusals }
 }
