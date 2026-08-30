@@ -286,6 +286,164 @@ export interface SignalHit {
   roleStatus: SignalRoleStatus
   roleFunction: SignalRoleFunction
   extraction: SignalExtraction
+
+  /**
+   * CONTRAT D'ACQUISITION V2 (SIGNAL_ACQUISITION_CONTRACT_002) — ADDITIF.
+   *
+   * Absent = hit V1 pleinement valide (aucune migration des données
+   * existantes). Présent = doit être ENTIER et valide (`isAcquisitionFactV2`) :
+   * un bloc à moitié rempli ment, l'absence est silencieuse.
+   */
+  v2?: AcquisitionFactV2
+}
+
+// ── CONTRAT D'ACQUISITION V2 (SIGNAL_ACQUISITION_CONTRACT_002) ──────────────
+//
+// Principe fondateur : AUCUNE couche aval ne doit analyser de la prose libre
+// pour établir une identité factuelle. Tout ce qui alimente identité,
+// contradiction, temporalité ou Situation est un champ CLOS et validé ;
+// la prose (`rawDetail`) reste un détail d'audit et d'affichage.
+//
+// Interdit par construction : une « confiance » numérique universelle (la confiance
+// source vit dans la provenance, la validité d'extraction dans le schéma,
+// la confiance de fait sera DÉRIVÉE du registre d'assertions durables).
+
+export type AcquisitionFamilyV2 = 'FUNDING' | 'EXECUTIVE_CHANGE' | 'HIRING_SNAPSHOT'
+
+export type MoneyCurrency = 'EUR' | 'USD' | 'GBP' | 'CHF'
+
+/**
+ * Montant EXACT énoncé par la source. `amountMinor` en centimes.
+ * Jamais fabriqué à partir d'une formulation approximative.
+ */
+export interface MoneyExact {
+  amountMinor: number
+  currency: MoneyCurrency
+  asPublished: string
+}
+
+/**
+ * Montant APPROXIMATIF (« environ 12 M€ »). L'approximation est portée par le
+ * TYPE lui-même — volontairement AUCUNE borne basse/haute : inventer un
+ * intervalle serait fabriquer des nombres que la source n'a pas publiés.
+ */
+export interface MoneyApprox {
+  magnitudeMinor: number
+  currency: MoneyCurrency
+  asPublished: string
+}
+
+export type FundingInvestorRole = 'LEAD' | 'PARTICIPANT' | 'UNKNOWN'
+
+/**
+ * Investisseur DESCRIPTIF. Pas d'identité d'organisation, pas de graphe, pas
+ * de normalisation : `nameRaw` tel que publié. NE PARTICIPE JAMAIS à
+ * l'identité d'un FUNDING_ROUND.
+ */
+export interface FundingInvestor {
+  nameRaw: string
+  role: FundingInvestorRole
+}
+
+export type FundingRoundStage =
+  | 'SEED'
+  | 'SERIES_A'
+  | 'SERIES_B'
+  | 'SERIES_C_PLUS'
+  | 'DEBT'
+  | 'UNKNOWN'
+
+export interface FundingPayloadV2 {
+  family: 'FUNDING'
+  /** Exclusifs : un fait est exact OU approximatif, jamais les deux. */
+  amount?: MoneyExact
+  amountApprox?: MoneyApprox
+  roundStage: FundingRoundStage
+  investors?: FundingInvestor[]
+}
+
+export type PersonVerification = 'VERIFIED_EXTERNAL_REF' | 'NAME_ONLY'
+export type PersonExternalRefKind = 'LINKEDIN_URL' | 'PAPPERS_DIRIGEANT_ID'
+
+/**
+ * Identité de personne MINIMALE — refus explicite du graphe de personnes.
+ *
+ * `NAME_ONLY` est admis dans une identité factuelle V2, mais cette identité
+ * est TOUJOURS scopée au compte (deux « Jean Dupont » dans deux entreprises ne
+ * fusionnent jamais). Pas de fuzzy matching : la fausse scission (« Jean
+ * Dupont » / « Jean P. Dupont » = deux clés) est ACCEPTÉE, car visible et
+ * corrigeable ; la fausse fusion empoisonne en silence.
+ */
+export interface PersonRef {
+  fullNameRaw: string
+  /** DOIT être exactement `normalizePersonName(fullNameRaw)` — recalculée à la validation. */
+  normalizedName: string
+  externalRef?: { kind: PersonExternalRefKind; value: string }
+  verification: PersonVerification
+}
+
+export type ExecutiveChangeDirection = 'APPOINTMENT' | 'DEPARTURE' | 'UNKNOWN'
+export type ExecutiveRoleSeniority = 'C_LEVEL' | 'VP_DIRECTOR' | 'OTHER' | 'UNKNOWN'
+
+export interface ExecutivePayloadV2 {
+  family: 'EXECUTIVE_CHANGE'
+  /** `UNKNOWN` reste représentable (audit) mais BLOQUERA tout ancrage canonique futur. */
+  direction: ExecutiveChangeDirection
+  roleFunction: SignalRoleFunction
+  roleSeniority: ExecutiveRoleSeniority
+  person: PersonRef
+  roleTitleRaw?: string
+}
+
+export type HiringCountMethod = 'SOURCE_DECLARED' | 'ENUMERATED_POSTINGS'
+
+/**
+ * Décompte OBSERVÉ d'ouvertures. Zéro est une valeur PLEINE (une source
+ * déterministe peut confirmer zéro poste ouvert). Jamais estimé depuis la
+ * prose (« recrute massivement » ⇒ champ absent, pas un nombre inventé).
+ * Attribut d'ÉTAT descriptif : n'entre dans AUCUNE identité.
+ */
+export interface HiringCount {
+  value: number
+  method: HiringCountMethod
+  asPublished?: string
+}
+
+export interface HiringPayloadV2 {
+  family: 'HIRING_SNAPSHOT'
+  roleFunction: SignalRoleFunction
+  roleStatus: SignalRoleStatus
+  openingsObserved?: HiringCount
+}
+
+export type AcquisitionPayloadV2 = FundingPayloadV2 | ExecutivePayloadV2 | HiringPayloadV2
+
+/** Prose d'audit et d'affichage UNIQUEMENT — jamais lue par identité/mapping. */
+export interface AcquisitionRawDetail {
+  detail: string
+  icebreaker: string
+  sourceExcerpt?: string
+}
+
+/**
+ * Enveloppe commune V2. Double discriminant (`family` sur l'enveloppe ET sur
+ * le payload) : une incohérence entre les deux est un rejet, pas une devinette.
+ *
+ * Cohérence temporelle imposée par la validation :
+ *   FUNDING / EXECUTIVE_CHANGE → claimNature EVENT
+ *   HIRING_SNAPSHOT            → claimNature STATE (occurredAt null, précision UNKNOWN)
+ */
+export interface AcquisitionFactV2 {
+  contractVersion: 'v2'
+  family: AcquisitionFamilyV2
+  claimNature: SignalClaimNature
+  eventStatus: SignalEventStatus
+  occurredAt: string | null
+  occurredAtPrecision: SignalDatePrecision
+  sourcePublishedAt: string | null
+  rawDetail: AcquisitionRawDetail
+  extraction: SignalExtraction
+  payload: AcquisitionPayloadV2
 }
 
 // Étape 3 : contact résolu (Pappers dirigeants / Unipile LinkedIn personas).
