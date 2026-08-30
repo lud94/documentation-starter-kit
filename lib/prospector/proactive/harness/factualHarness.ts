@@ -21,7 +21,7 @@
 // synthétique — jamais un identifiant de production. L'exécution REFUSE tout
 // environnement qui ne se prouve pas non-production (fail closed).
 import {
-  registerCandidates, readCandidate,
+  hitFromCandidate, registerCandidates, readCandidate,
 } from '../signalCandidates'
 import {
   promoteToEvidence, sourceEvidenceFromHit,
@@ -215,6 +215,36 @@ function v2Hiring(valeur: number): AcquisitionFactV2 {
   }
 }
 
+/**
+ * COQUILLE HÉRITÉE HONNÊTE d'un cas MANUEL — dérivée du fait V2, champ à
+ * champ, JAMAIS inventée (FACTUAL_MANUAL_REPLAY_PARITY_001, défaut A).
+ *
+ * ⚠️ Les six fixtures dorées gardent `hitDe` tel quel : leurs identités de
+ * candidats signées ne doivent pas bouger d'un octet. Ici, un EXECUTIVE réel
+ * ne peut plus être enregistré sous une revendication héritée « levée » datée
+ * d'un jour synthétique, et `sourcePublishedAt` du fait V2 atteint la
+ * provenance. `UNKNOWN` reste préférable à une valeur de compatibilité
+ * fabriquée.
+ */
+function hitManuel(url: string, v2: AcquisitionFactV2, identite: IdentiteCompte): SignalHit {
+  const etat = v2.family === 'HIRING_SNAPSHOT'
+  const type = v2.family === 'FUNDING' ? 'levée' : v2.family === 'EXECUTIVE_CHANGE' ? 'actu' : 'recrutement'
+  return {
+    company: identite.company, signalType: type,
+    detail: v2.rawDetail.detail, icebreaker: v2.rawDetail.icebreaker,
+    sourceUrl: url, verified: false, siren: identite.siren,
+    claimNature: v2.claimNature,
+    eventStatus: v2.eventStatus,
+    eventDate: etat ? null : v2.occurredAt,
+    eventDatePrecision: etat ? 'UNKNOWN' : v2.occurredAtPrecision,
+    sourcePublishedAt: v2.sourcePublishedAt,
+    roleStatus: etat ? (v2.payload as any).roleStatus : 'UNKNOWN',
+    roleFunction: v2.family === 'FUNDING' ? 'UNKNOWN' : (v2.payload as any).roleFunction,
+    extraction: v2.extraction,
+    v2,
+  } as SignalHit
+}
+
 function hitDe(url: string, v2: AcquisitionFactV2, identite: IdentiteCompte): SignalHit {
   const etat = v2.family === 'HIRING_SNAPSHOT'
   return {
@@ -302,6 +332,8 @@ interface CasHarnais {
   attendu: { assertions: number; events: number; snapshots: number }
   /** Absente ⇒ identité synthétique ACME TEST (les six cas dorés, inchangés). */
   identite?: IdentiteCompte
+  /** Cas MANUEL réel : coquille héritée HONNÊTE dérivée du fait V2. */
+  manuel?: true
 }
 
 const D = (j: string) => `${j}T07:30:00.000Z`
@@ -392,6 +424,7 @@ function casManuel(brut: unknown): { ok: true; cas: CasHarnais } | { ok: false; 
       description: `Cas manuel ${fact.family}`,
       rondes: [{ url: m.sourceUrl, fact, retrievedAt: m.retrievedAt }],
       attendu: { assertions: 1, events: etat ? 0 : 1, snapshots: etat ? 1 : 0 },
+      manuel: true,
       // ⚠️ L'identité FOURNIE fait foi : `acc_siren_<siren réel>`, dans le
       // SEUL espace du harnais. Rien n'est créé côté production/staging.
       identite: {
@@ -461,24 +494,39 @@ export async function runFactualCase(
     return passe
   }
 
-  for (const [i, ronde] of cas.rondes.entries()) {
+  for (const [i, rondePartagee] of cas.rondes.entries()) {
     const tag = cas.rondes.length > 1 ? ` (ronde ${i + 1})` : ''
+    // ⚠️ COPIE PROFONDE PAR RONDE. Le repli mémoire du magasin stocke des
+    // RÉFÉRENCES : sans copie, un objet persisté puis muté (une couture de
+    // sabotage, un consommateur aval) muterait la FIXTURE partagée du module,
+    // et chaque exécution suivante partirait d'un fait silencieusement altéré.
+    const ronde: Ronde = JSON.parse(JSON.stringify(rondePartagee))
 
     // 1 — VALIDATION V2, par le validateur de production.
     if (!etape(`V2 validation${tag}`, isAcquisitionFactV2(ronde.fact))) continue
 
     // 2 — CANDIDAT : enregistrement serveur puis RELECTURE cloisonnée.
-    const hit = hitDe(ronde.url, ronde.fact, identite)
+    const hit = cas.manuel === true
+      ? hitManuel(ronde.url, ronde.fact, identite)
+      : hitDe(ronde.url, ronde.fact, identite)
     const [cid] = await registerCandidates([hit], HARNESS_WORKSPACE)
     const luCandidat = cid ? await readCandidate(cid, HARNESS_WORKSPACE) : null
     const diag = diagnoseCandidateReadBack(luCandidat, ronde.fact)
     if (!etape(`Candidate${tag}`, diag.ok, diag.ok ? (cid as string) : `${diag.reason}${cid ? ` (${cid})` : ''}`)) continue
     persisted.push({ id: cid as string, kind: SIGNAL_CANDIDATE_KIND, summary: 'candidat (bloc V2 relu conforme)' })
 
+    // ── REJEU COMME EN PRODUCTION (défaut B) ──────────────────────────────
+    // ⚠️ À PARTIR D'ICI, LE HIT ORIGINAL N'EST PLUS UNE ENTRÉE. La route
+    // `/api/signals/promote` reconstruit le hit DEPUIS LE REGISTRE
+    // (`hitFromCandidate(readCandidate(...))`) — c'est la frontière de
+    // confiance que ce banc doit exercer. L'objet en mémoire n'a servi qu'à
+    // ÉMETTRE le candidat.
+    const hitRejoue = hitFromCandidate((luCandidat as { ok: true; candidate: any }).candidate)
+
     // 3 — PROMOTION : Bridge réel, adjudication synthétique EXPLICITE.
-    const source = sourceEvidenceFromHit(hit, identite.officialWebsite, { kind: 'ORIGINAL' }, { kind: 'UNVERIFIABLE' }, ronde.retrievedAt)
+    const source = sourceEvidenceFromHit(hitRejoue, identite.officialWebsite, { kind: 'ORIGINAL' }, { kind: 'UNVERIFIABLE' }, ronde.retrievedAt)
     if (!etape(`SourceEvidence${tag}`, !!source && sameSemanticFact(source.hit.v2, ronde.fact))) continue
-    const claim = mapClaim(hit)
+    const claim = mapClaim(hitRejoue)
     if (typeof claim === 'string') { etape(`Evidence${tag}`, false, `mapClaim: ${claim}`); continue }
     const cle = canonicalKey(identite.accountId, claim)
     const promotion = promoteToEvidence({

@@ -352,6 +352,124 @@ describe('mode manuel — identité de compte RÉELLE (FACTUAL_REAL_WORLD_MANUAL
   })
 })
 
+describe('parité de rejeu du candidat (FACTUAL_MANUAL_REPLAY_PARITY_001)', () => {
+  const faitExec = (): any => ({
+    contractVersion: 'v2', family: 'EXECUTIVE_CHANGE', claimNature: 'EVENT', eventStatus: 'COMPLETED',
+    occurredAt: '2026-08-26', occurredAtPrecision: 'DAY', sourcePublishedAt: '2026-08-27',
+    rawDetail: { detail: 'nomination réelle', icebreaker: 'félicitations' },
+    extraction: { mode: 'manual-curated', promptVersion: 'real-world-manual-v1' },
+    payload: {
+      family: 'EXECUTIVE_CHANGE', direction: 'APPOINTMENT', roleFunction: 'SALES',
+      roleSeniority: 'C_LEVEL',
+      person: { fullNameRaw: 'Marie Dupont', normalizedName: 'marie dupont', verification: 'NAME_ONLY' },
+    },
+  })
+  const faitFunding = (): any => ({
+    contractVersion: 'v2', family: 'FUNDING', claimNature: 'EVENT', eventStatus: 'COMPLETED',
+    occurredAt: '2026-08-26', occurredAtPrecision: 'DAY', sourcePublishedAt: '2026-08-27',
+    rawDetail: { detail: 'levée réelle', icebreaker: 'bravo' },
+    extraction: { mode: 'manual-curated', promptVersion: 'real-world-manual-v1' },
+    payload: { family: 'FUNDING', roundStage: 'SEED' },
+  })
+  const faitHiring = (): any => ({
+    contractVersion: 'v2', family: 'HIRING_SNAPSHOT', claimNature: 'STATE', eventStatus: 'UNKNOWN',
+    occurredAt: null, occurredAtPrecision: 'UNKNOWN', sourcePublishedAt: '2026-08-27',
+    rawDetail: { detail: '3 postes ouverts', icebreaker: 'ça recrute' },
+    extraction: { mode: 'manual-curated', promptVersion: 'real-world-manual-v1' },
+    payload: { family: 'HIRING_SNAPSHOT', roleFunction: 'SALES', roleStatus: 'OPEN',
+      openingsObserved: { value: 3, method: 'ENUMERATED_POSTINGS' } },
+  })
+  const enveloppe = (fact: any) => ({
+    account: { company: 'Lupin Dental', siren: '850067877', officialWebsite: 'https://presse.example.test' },
+    sourceUrl: 'https://presse.example.test/annonce',
+    retrievedAt: '2026-08-28T07:30:00.000Z',
+    fact,
+  })
+  const candidatEnBase = () => {
+    const [, v] = [...g.__prospectorStore.entries()]
+      .find(([k]: any) => k.startsWith('proactive_signal_candidate|'))!
+    return v.claim
+  }
+
+  it('R1/R6/R10 — FUNDING manuel : la coquille héritée MIROIRE le fait V2, sourcePublishedAt survit', async () => {
+    const r = await run('manual', { manualCase: enveloppe(faitFunding()) })
+    expect(r.verdict).toBe('PASS')
+    const claim = candidatEnBase()
+    expect(claim.signalType).toBe('levée')
+    expect(claim.eventDate).toBe('2026-08-26')       // R1 — jamais le jour synthétique
+    expect(claim.eventDatePrecision).toBe('DAY')
+    expect(claim.sourcePublishedAt).toBe('2026-08-27') // R6
+    expect(claim.v2.sourcePublishedAt).toBe('2026-08-27') // R10 — le fait V2 inchangé
+  })
+
+  it('R2/R3/R4 — EXECUTIVE manuel : actu, jour du fait, fonction du fait — jamais « levée » datée d’ailleurs', async () => {
+    const r = await run('manual', { manualCase: enveloppe(faitExec()) })
+    expect(r.verdict).toBe('PASS')
+    const claim = candidatEnBase()
+    expect(claim.signalType).toBe('actu')            // R2
+    expect(claim.signalType).not.toBe('levée')
+    expect(claim.eventDate).toBe('2026-08-26')       // R3
+    expect(claim.eventDate).not.toBe('2026-08-12')
+    expect(claim.roleFunction).toBe('SALES')         // R4
+  })
+
+  it('R5 — HIRING manuel : champs d’ÉTAT reflétés (OPEN/SALES, pas de date inventée)', async () => {
+    const r = await run('manual', { manualCase: enveloppe(faitHiring()) })
+    expect(r.verdict).toBe('PASS')
+    const claim = candidatEnBase()
+    expect(claim.signalType).toBe('recrutement')
+    expect(claim.claimNature).toBe('STATE')
+    expect(claim.eventDate).toBeNull()
+    expect(claim.eventDatePrecision).toBe('UNKNOWN')
+    expect(claim.roleStatus).toBe('OPEN')
+    expect(claim.roleFunction).toBe('SALES')
+  })
+
+  it('R7/R8/R9 — sourcePublishedAt traverse rejeu → SourceEvidence → provenance PERSISTÉE de l’assertion', async () => {
+    const r = await run('manual', { manualCase: enveloppe(faitFunding()) })
+    expect(r.verdict).toBe('PASS')
+    // R7 — le hit REJOUÉ (reconstruit du registre, comme en production).
+    const { readCandidate, hitFromCandidate, candidateId } = await import('../lib/prospector/proactive/signalCandidates')
+    const claim = candidatEnBase()
+    const lu = await readCandidate(candidateId(claim, HARNESS_WORKSPACE), HARNESS_WORKSPACE)
+    if (lu.ok === false) throw new Error(lu.state)
+    const rejoue = hitFromCandidate(lu.candidate)
+    expect(rejoue.sourcePublishedAt).toBe('2026-08-27')
+    // R9 — la provenance PERSISTÉE de l'assertion porte la date de publication.
+    const assertion = [...g.__prospectorStore.entries()]
+      .find(([k]: any) => k.startsWith('proactive_source_assertion|'))![1]
+    expect(assertion.provenance.sourcePublishedAt).toBe('2026-08-27')
+    expect(assertion.structuredFact.sourcePublishedAt).toBe('2026-08-27') // R10 encore
+  })
+
+  it('R11 — verrou structurel : l’aval consomme le hit REJOUÉ du registre, jamais l’objet original', () => {
+    const src = readFileSync(join(process.cwd(), 'lib/prospector/proactive/harness/factualHarness.ts'), 'utf8')
+    expect(src).toMatch(/const hitRejoue = hitFromCandidate\(/)
+    expect(src).toMatch(/sourceEvidenceFromHit\(hitRejoue,/)
+    expect(src).toMatch(/mapClaim\(hitRejoue\)/)
+    // L'original ne nourrit RIEN en aval : ni preuve, ni mapping.
+    expect(src).not.toMatch(/sourceEvidenceFromHit\(hit,/)
+    expect(src).not.toMatch(/mapClaim\(hit\)/)
+  })
+
+  it('R12 — les six identifiants de candidats synthétiques sont inchangés (verrous littéraux)', async () => {
+    const attendus: Record<string, string[]> = {
+      funding: ['cand_b181e56e7d776f039d1828ec6052ea1e'],
+      executive: ['cand_78f5f76180a88a9b01e65810a33704bc'],
+      hiring: ['cand_38e6efde9ec01752724e0b7cff19ba8d', 'cand_b05da52ca68751b488546e8406695de8', 'cand_e81ecc7532a812f1e6f7b259a7dbcc59'],
+      'funding-correction': ['cand_ddcb0b5d78245f3276089f6a80f4ef3d', 'cand_b181e56e7d776f039d1828ec6052ea1e'],
+      'funding-disagreement': ['cand_54452b3f40df9c32a0686ecb5c68ca03', 'cand_a6f06c2575dca236c9fda4221e20dae7'],
+      'hiring-same-day-correction': ['cand_38e6efde9ec01752724e0b7cff19ba8d', 'cand_cd7dd9e313cacf6250e11dda0b850996'],
+    }
+    for (const [cas, ids] of Object.entries(attendus)) {
+      if (g.__prospectorStore) g.__prospectorStore.clear()
+      const r = await run(cas)
+      expect(r.verdict, cas).toBe('PASS')
+      expect(r.persisted.filter((p) => p.kind === 'proactive_signal_candidate').map((p) => p.id), cas).toEqual(ids)
+    }
+  })
+})
+
 describe('rapport PERSISTED — objets durables UNIQUES (POLISH_001)', () => {
   const parKind = (r: Awaited<ReturnType<typeof runFactualCase>>) => {
     const m: Record<string, number> = {}
