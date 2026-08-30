@@ -39,7 +39,12 @@ import {
 import {
   recordSourceAssertions,
   sourceAssertionsEnabled,
+  type AssertionBuildInput,
 } from '../../../lib/prospector/proactive/sourceAssertion'
+import {
+  canonicalFactsEnabled,
+  recordCanonicalAnchors,
+} from '../../../lib/prospector/proactive/canonicalFact'
 import { evaluate, persistEvaluation } from '../../../lib/prospector/proactive/orchestrator'
 import { accountIdForLead } from '../../../lib/prospector/proactive/dataBridge'
 import { listEvidenceStrict } from '../../../lib/prospector/proactive/persistence'
@@ -511,24 +516,41 @@ export function urlOfficielleAbsolue(valeur: unknown): string | undefined {
 async function journaliserAssertions(
   promotions: readonly BridgePromotion[], ws: string,
 ): Promise<void> {
-  if (!sourceAssertionsEnabled()) return
-  const bilan = await recordSourceAssertions(
-    promotions.map((p) => ({
-      workspaceId: ws,
-      accountId: p.evidence.accountId,
-      canonicalClaimKey: p.canonicalKey,
-      evidence: p.evidence,
-      qualifyingSources: p.qualifyingSources,
-    })),
-    ws,
-  )
-  // ⚠️ OBSERVABLE EN INTERNE, MUET VERS L'EXTÉRIEUR. Un état d'écriture du
-  // registre renseignerait un appelant sur la configuration interne, et il n'a
-  // rien à en faire.
-  if (bilan.failed > 0) {
-    logSafeError('signals.source_assertion_write', new Error('ledger_write_failed'), {
-      operation: 'signals_promote',
-    })
+  const lots: AssertionBuildInput[] = promotions.map((p) => ({
+    workspaceId: ws,
+    accountId: p.evidence.accountId,
+    canonicalClaimKey: p.canonicalKey,
+    evidence: p.evidence,
+    qualifyingSources: p.qualifyingSources,
+  }))
+
+  if (sourceAssertionsEnabled()) {
+    const bilan = await recordSourceAssertions(lots, ws)
+    // ⚠️ OBSERVABLE EN INTERNE, MUET VERS L'EXTÉRIEUR. Un état d'écriture du
+    // registre renseignerait un appelant sur la configuration interne, et il
+    // n'a rien à en faire.
+    if (bilan.failed > 0) {
+      logSafeError('signals.source_assertion_write', new Error('ledger_write_failed'), {
+        operation: 'signals_promote',
+      })
+    }
+  }
+
+  // ── ANCRES CANONIQUES — DÉRIVÉES, ET SOUS LEUR PROPRE DRAPEAU ───────────
+  // ⚠️ DRAPEAU INDÉPENDANT DE CELUI DU REGISTRE. Les deux couches n'ont ni le
+  // même risque ni le même moment d'activation ; les fondre obligerait à
+  // allumer l'une pour observer l'autre.
+  //
+  // ⚠️ AUCUNE ÉCRITURE CROISÉE. Les ancres sont DÉRIVÉES des mêmes entrées que
+  // les assertions ; aucune assertion n'est mutée pour y inscrire un
+  // identifiant d'ancre, donc aucune cohérence bidirectionnelle à tenir.
+  if (canonicalFactsEnabled()) {
+    const ancres = await recordCanonicalAnchors(lots, ws)
+    if (ancres.failed > 0) {
+      logSafeError('signals.canonical_anchor_write', new Error('anchor_write_failed'), {
+        operation: 'signals_promote',
+      })
+    }
   }
 }
 

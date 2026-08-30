@@ -77,7 +77,7 @@ const JOUR_LEXICAL = /^(\d{4})-(\d{2})-(\d{2})$/
  * vient d'une extraction : rien n'empêche `DAY` d'accompagner `'garbage'` ou
  * `'2026-02-30'`. Le typage TypeScript ne contrôle aucune donnée d'exécution.
  */
-function jourReel(valeur: unknown): valeur is string {
+export function jourReel(valeur: unknown): valeur is string {
   if (typeof valeur !== 'string') return false
   const m = JOUR_LEXICAL.exec(valeur)
   if (!m) return false
