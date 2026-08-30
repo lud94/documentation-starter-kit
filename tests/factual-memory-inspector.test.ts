@@ -103,7 +103,7 @@ describe('lecture seule et traçabilité (R3/R4/R8/R9)', () => {
     expect(groupe.uniqueSourceUrls).toBe(1)
     // Traçabilité : l'ancre unique est soutenue par les DEUX versions.
     expect(r.view.events.length).toBe(1)
-    expect(supportingAssertions(r.view.events[0], r.view.claims).length).toBe(2)
+    expect(supportingAssertions(r.view.events[0], r.view).length).toBe(2)
   })
 
   it('R9 — une ligne persistée malformée est REJETÉE (kind+id), jamais présentée comme un fait', async () => {
@@ -141,10 +141,200 @@ describe('lecture seule et traçabilité (R3/R4/R8/R9)', () => {
     if (r.ok === false) throw new Error(r.reason)
     expect(r.view.snapshots.length).toBe(2)
     for (const s of r.view.snapshots) {
-      const soutien = supportingAssertions(s, r.view.claims)
+      const soutien = supportingAssertions(s, r.view)
       expect(soutien.length).toBe(1)
       expect(soutien[0].sourceObservedDay).toBe(s.stateObservedDay)
     }
+  })
+})
+
+describe('traçabilité exécutive et horloges (TRACEABILITY_FIX_001)', () => {
+  const faitExec = (nom: string, normalise: string, direction = 'APPOINTMENT'): any => fait('EXECUTIVE_CHANGE', {
+    occurredAt: '2026-08-26',
+    payload: {
+      family: 'EXECUTIVE_CHANGE', direction, roleFunction: 'SALES', roleSeniority: 'C_LEVEL',
+      person: { fullNameRaw: nom, normalizedName: normalise, verification: 'NAME_ONLY' },
+    },
+  })
+  const semerExec = (nom: string, normalise: string, chemin: string, direction = 'APPOINTMENT') =>
+    runFactualCase('manual', {
+      allowMemory: true,
+      manualCase: {
+        account: { company: 'Valeo', siren: '552030967', officialWebsite: 'https://presse.example.test' },
+        sourceUrl: `https://presse.example.test/${chemin}`,
+        retrievedAt: '2026-08-27T07:30:00.000Z',
+        fact: faitExec(nom, normalise, direction),
+      },
+    })
+
+  it('COLLISION OBLIGATOIRE — Alice et Bob, même jour, même clé canonique : chaque ancre n’est soutenue QUE par SA source', async () => {
+    expect((await semerExec('Alice Martin', 'alice martin', 'alice')).verdict).toBe('PASS')
+    expect((await semerExec('Bob Durand', 'bob durand', 'bob')).verdict).toBe('PASS')
+    const r = await inspectFactualMemory('acc_siren_552030967', HARNESS_WORKSPACE)
+    if (r.ok === false) throw new Error(r.reason)
+
+    // Deux ancres distinctes sous la MÊME clé canonique — le piège exact.
+    expect(r.view.events.length).toBe(2)
+    expect(new Set(r.view.events.map((e) => e.canonicalClaimKey)).size).toBe(1)
+    expect(r.view.claims[0].assertions.length).toBe(2)
+
+    for (const e of r.view.events as any[]) {
+      const soutien = supportingAssertions(e, r.view)
+      expect(soutien.length).toBe(1) // JAMAIS A + B
+      const personne = soutien[0].structuredFact!.payload as any
+      const attendu = e.personKey.includes('alice') ? 'Alice Martin' : 'Bob Durand'
+      expect(personne.person.fullNameRaw).toBe(attendu)
+      expect(e.personKey).toContain(personne.person.normalizedName)
+    }
+  })
+
+  it('une ancre FUNDING n’est jamais soutenue par les assertions d’une AUTRE revendication du compte', async () => {
+    await semer('Lupin Dental', '850067877') // FUNDING
+    const etat = await runFactualCase('manual', {
+      allowMemory: true,
+      manualCase: {
+        account: { company: 'Lupin Dental', siren: '850067877', officialWebsite: 'https://presse.example.test' },
+        sourceUrl: 'https://presse.example.test/careers',
+        retrievedAt: '2026-07-03T07:30:00.000Z',
+        fact: fait('HIRING_SNAPSHOT', {
+          claimNature: 'STATE', eventStatus: 'UNKNOWN', occurredAt: null, occurredAtPrecision: 'UNKNOWN',
+          payload: { family: 'HIRING_SNAPSHOT', roleFunction: 'SALES', roleStatus: 'OPEN',
+            openingsObserved: { value: 2, method: 'ENUMERATED_POSTINGS' } },
+        }),
+      },
+    })
+    expect(etat.verdict).toBe('PASS')
+    const r = await inspectFactualMemory('acc_siren_850067877', HARNESS_WORKSPACE)
+    if (r.ok === false) throw new Error(r.reason)
+    const funding = r.view.events.find((e) => e.type === 'FUNDING_ROUND')!
+    const soutien = supportingAssertions(funding, r.view)
+    expect(soutien.length).toBe(1)
+    expect(soutien[0].canonicalClaimKey).toBe(funding.canonicalClaimKey)
+  })
+
+  it('la FONCTION sépare deux ancres de même clé canonique et même personne', async () => {
+    expect((await semerExec('Alice Martin', 'alice martin', 'sales')).verdict).toBe('PASS')
+    // Même personne, même jour, même clé canonique — fonction EXEC_OTHER.
+    const autre = await runFactualCase('manual', {
+      allowMemory: true,
+      manualCase: {
+        account: { company: 'Valeo', siren: '552030967', officialWebsite: 'https://presse.example.test' },
+        sourceUrl: 'https://presse.example.test/exec-other',
+        retrievedAt: '2026-08-27T07:30:00.000Z',
+        fact: fait('EXECUTIVE_CHANGE', {
+          occurredAt: '2026-08-26',
+          payload: {
+            family: 'EXECUTIVE_CHANGE', direction: 'APPOINTMENT', roleFunction: 'EXEC_OTHER', roleSeniority: 'C_LEVEL',
+            person: { fullNameRaw: 'Alice Martin', normalizedName: 'alice martin', verification: 'NAME_ONLY' },
+          },
+        }),
+      },
+    })
+    expect(autre.verdict).toBe('PASS')
+    const r = await inspectFactualMemory('acc_siren_552030967', HARNESS_WORKSPACE)
+    if (r.ok === false) throw new Error(r.reason)
+    expect(r.view.events.length).toBe(2)
+    for (const e of r.view.events as any[]) {
+      const soutien = supportingAssertions(e, r.view)
+      expect(soutien.length).toBe(1)
+      expect((soutien[0].structuredFact!.payload as any).roleFunction).toBe(e.roleFunction)
+    }
+  })
+
+  it('lignes FORGÉES incohérentes clé↔fait : direction, jour et fait absent restent des gardes de frontière', async () => {
+    // Une ancre légitime d'abord.
+    expect((await semerExec('Alice Martin', 'alice martin', 'legitime')).verdict).toBe('PASS')
+    const { buildSourceAssertions, saveSourceAssertion } = await import('../lib/prospector/proactive/sourceAssertion')
+    const { sourceEvidenceFromHit } = await import('../lib/prospector/proactive/signalBridge')
+    const CLE = 'executive_appointment|acc_siren_552030967|2026-08-26'
+    const forger = async (v2: any, chemin: string) => {
+      const hit: any = {
+        company: 'Valeo', signalType: 'actu', detail: '', icebreaker: '',
+        sourceUrl: `https://presse.example.test/${chemin}`, verified: false,
+        claimNature: 'EVENT', eventStatus: 'COMPLETED', eventDate: '2026-08-26',
+        eventDatePrecision: 'DAY', sourcePublishedAt: null,
+        roleStatus: 'UNKNOWN', roleFunction: 'SALES',
+        extraction: { mode: 'manual-curated', promptVersion: 'forge' },
+        ...(v2 ? { v2 } : {}),
+      }
+      const src = sourceEvidenceFromHit(hit, 'https://presse.example.test', { kind: 'ORIGINAL' }, { kind: 'UNVERIFIABLE' }, '2026-08-27T07:30:00.000Z')!
+      // ⚠️ ENTRÉE FORGÉE : la clé canonique dit APPOINTMENT du 26, le fait dit autre chose.
+      const [a] = buildSourceAssertions({
+        workspaceId: HARNESS_WORKSPACE, accountId: 'acc_siren_552030967', canonicalClaimKey: CLE,
+        evidence: { id: 'ev_forge', type: 'executive_appointment', temporality: 'dated_event', observedAt: '2026-08-27T08:00:00.000Z' } as any,
+        qualifyingSources: [src],
+      })
+      expect((await saveSourceAssertion(a, HARNESS_WORKSPACE)).ok).toBe(true)
+    }
+    // fait DEPARTURE sous clé APPOINTMENT ; fait daté d'un AUTRE jour ; V1 sans fait.
+    await forger(fait('EXECUTIVE_CHANGE', { occurredAt: '2026-08-26', payload: { family: 'EXECUTIVE_CHANGE', direction: 'DEPARTURE', roleFunction: 'SALES', roleSeniority: 'C_LEVEL', person: { fullNameRaw: 'Alice Martin', normalizedName: 'alice martin', verification: 'NAME_ONLY' } } }), 'forge-direction')
+    await forger(fait('EXECUTIVE_CHANGE', { occurredAt: '2026-08-25', payload: { family: 'EXECUTIVE_CHANGE', direction: 'APPOINTMENT', roleFunction: 'SALES', roleSeniority: 'C_LEVEL', person: { fullNameRaw: 'Alice Martin', normalizedName: 'alice martin', verification: 'NAME_ONLY' } } }), 'forge-jour')
+    await forger(undefined, 'forge-v1')
+
+    const r = await inspectFactualMemory('acc_siren_552030967', HARNESS_WORKSPACE)
+    if (r.ok === false) throw new Error(r.reason)
+    expect(r.view.events.length).toBe(1)
+    expect(r.view.claims[0].assertions.length).toBe(4) // toutes visibles au registre…
+    const soutien = supportingAssertions(r.view.events[0], r.view)
+    expect(soutien.length).toBe(1) // …mais UNE SEULE soutient l'ancre
+    expect((soutien[0].structuredFact!.payload as any).direction).toBe('APPOINTMENT')
+    expect(soutien[0].structuredFact!.occurredAt).toBe('2026-08-26')
+  })
+
+  it('une assertion APPOINTMENT ne soutient JAMAIS une ancre DEPARTURE', async () => {
+    expect((await semerExec('Alice Martin', 'alice martin', 'arrivee', 'APPOINTMENT')).verdict).toBe('PASS')
+    expect((await semerExec('Alice Martin', 'alice martin', 'depart', 'DEPARTURE')).verdict).toBe('PASS')
+    const r = await inspectFactualMemory('acc_siren_552030967', HARNESS_WORKSPACE)
+    if (r.ok === false) throw new Error(r.reason)
+    expect(r.view.events.length).toBe(2)
+    for (const e of r.view.events as any[]) {
+      const soutien = supportingAssertions(e, r.view)
+      expect(soutien.length).toBe(1)
+      const direction = (soutien[0].structuredFact!.payload as any).direction
+      expect(direction).toBe(e.type === 'EXECUTIVE_APPOINTMENT' ? 'APPOINTMENT' : 'DEPARTURE')
+    }
+  })
+
+  it('HORLOGES — observedAt (T1) et confirmedAt (T2) sont exposés SÉPARÉMENT, sans repli', async () => {
+    const { promoteToEvidence, sourceEvidenceFromHit } = await import('../lib/prospector/proactive/signalBridge')
+    const { recordSourceAssertions } = await import('../lib/prospector/proactive/sourceAssertion')
+    const T1 = '2026-09-30T12:00:00.000Z' // EVIDENCE OBSERVED
+    const T2 = '2026-10-01T09:00:00.000Z' // HUMAN CONFIRMED
+    const hit: any = {
+      company: 'Lupin Dental', signalType: 'levée', detail: '', icebreaker: '',
+      sourceUrl: 'https://presse.example.test/t1t2', verified: false, siren: '850067877',
+      claimNature: 'EVENT', eventStatus: 'COMPLETED', eventDate: '2026-07-01',
+      eventDatePrecision: 'DAY', sourcePublishedAt: '2026-07-02',
+      roleStatus: 'UNKNOWN', roleFunction: 'UNKNOWN',
+      extraction: { mode: 'manual-curated', promptVersion: 'clocks' },
+      v2: fait('FUNDING', { payload: { family: 'FUNDING', roundStage: 'SEED' } }),
+    }
+    const source = sourceEvidenceFromHit(hit, 'https://presse.example.test', { kind: 'ORIGINAL' }, { kind: 'UNVERIFIABLE' }, '2026-07-03T07:30:00.000Z')!
+    const promotion = promoteToEvidence({
+      accountId: 'acc_siren_850067877', observedAt: T1, sources: [source],
+      confirmations: [{ kind: 'HUMAN_CONFIRMED', canonicalKey: 'recent_funding|acc_siren_850067877|2026-07-01', confirmedBy: 'op', confirmedAt: T2, sourceUrls: [hit.sourceUrl] }],
+    })
+    if (promotion.ok === false) throw new Error(promotion.reason)
+    await recordSourceAssertions([{
+      workspaceId: HARNESS_WORKSPACE, accountId: 'acc_siren_850067877',
+      canonicalClaimKey: promotion.canonicalKey, evidence: promotion.evidence,
+      qualifyingSources: promotion.qualifyingSources,
+    }], HARNESS_WORKSPACE)
+
+    const r = await inspectFactualMemory('acc_siren_850067877', HARNESS_WORKSPACE)
+    if (r.ok === false) throw new Error(r.reason)
+    const [a] = r.view.claims[0].assertions
+    expect(a.observedAt).toBe(T1)
+    expect(a.acceptance!.confirmedAt).toBe(T2)
+    expect(a.observedAt).not.toBe(a.acceptance!.confirmedAt) // deux horloges, deux valeurs
+  })
+
+  it('HORLOGES — sans acceptance, observedAt n’apparaît JAMAIS comme HUMAN CONFIRMED', () => {
+    // La lecture de la page pour HUMAN CONFIRMED est STRICTEMENT
+    // `a.acceptance?.confirmedAt` — aucune autre horloge sur cette ligne.
+    const src = readFileSync(join(process.cwd(), 'pages/internal/factual-memory.tsx'), 'utf8')
+    expect(src).toMatch(/\['HUMAN CONFIRMED', \(a\) => a\.acceptance\?\.confirmedAt\]/)
+    expect(src).toMatch(/\['EVIDENCE OBSERVED', \(a\) => a\.observedAt\]/)
   })
 })
 
@@ -196,10 +386,15 @@ describe('route interne (R5/R6/R11)', () => {
 describe('présentation et périmètre (R7/R12/R13)', () => {
   const page = readFileSync(join(process.cwd(), 'pages/internal/factual-memory.tsx'), 'utf8')
 
-  it('R7 — les quatre horloges restent NOMMÉES et distinctes, jamais une « date » générique', () => {
-    for (const label of ['SOURCE PUBLISHED', 'SOURCE RETRIEVED', 'ADJUDICATED', 'STATE OBSERVED DAY']) {
+  it('R7 — les CINQ horloges restent NOMMÉES et distinctes, sans repli de l’une vers l’autre', () => {
+    for (const label of ['SOURCE PUBLISHED', 'SOURCE RETRIEVED', 'EVIDENCE OBSERVED', 'HUMAN CONFIRMED', 'STATE OBSERVED DAY']) {
       expect(page).toContain(label)
     }
+    // ⚠️ Le repli qui fondait deux horloges est INTERDIT : `confirmedAt` ne
+    // retombe jamais sur `observedAt`, ni l'inverse. « ADJUDICATED » générique
+    // a disparu.
+    expect(page).not.toMatch(/confirmedAt \?\? a\.observedAt/)
+    expect(page).not.toContain("'ADJUDICATED'")
   })
 
   it('R8bis — la page distingue « assertions » et « URLs uniques », et marque INTERNAL / READ ONLY', () => {

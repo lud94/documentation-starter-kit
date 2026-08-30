@@ -29,6 +29,7 @@ import {
   type CanonicalEvent, type CanonicalExecutiveEvent, type CanonicalStateSnapshot,
 } from './canonicalFact'
 import { candidateId, SIGNAL_CANDIDATE_KIND } from './signalCandidates'
+import { personKeyV2 } from './acquisitionV2'
 import { listItemsStrict } from '../../supabase/store'
 
 const COMPTE_VERIFIE = /^acc_siren_(\d{9})$/
@@ -130,6 +131,35 @@ export async function inspectFactualMemory(
     }))
     .sort((x, y) => (x.canonicalClaimKey < y.canonicalClaimKey ? -1 : 1))
 
+  // ── SOUTIEN EXACT ancre → assertions (TRACEABILITY_FIX_001) ──────────────
+  // ⚠️ LA CLÉ CANONIQUE NE SUFFIT PAS POUR UNE ANCRE EXÉCUTIVE. Son identité
+  // canonique inclut aussi direction, fonction, clé de personne et jour :
+  // deux personnes distinctes partagent LÉGITIMEMENT la même clé de
+  // revendication. Le soutien est donc recalculé ici avec les règles de
+  // PRODUCTION — `personKeyV2` incluse, jamais réimplémentée.
+  const support: Record<string, string[]> = {}
+  const soutient = (ancre: CanonicalEvent | CanonicalExecutiveEvent, a: SourceAssertion): boolean => {
+    if (a.canonicalClaimKey !== ancre.canonicalClaimKey) return false
+    if (ancre.type === 'FUNDING_ROUND') return true // identité = compte + jour, déjà dans la clé
+    // EXECUTIVE_* : les SEPT conditions, toutes.
+    const fait = a.structuredFact
+    if (!fait || fait.payload.family !== 'EXECUTIVE_CHANGE') return false
+    if (fait.occurredAt !== ancre.occurredAt) return false
+    const p = fait.payload
+    if (p.roleFunction !== (ancre as CanonicalExecutiveEvent).roleFunction) return false
+    const attendu = ancre.type === 'EXECUTIVE_APPOINTMENT' ? 'APPOINTMENT' : 'DEPARTURE'
+    if (p.direction !== attendu) return false
+    return personKeyV2(p.person, ancre.accountId) === (ancre as CanonicalExecutiveEvent).personKey
+  }
+  for (const e of events) {
+    support[e.id] = assertions.filter((a) => soutient(e, a)).map((a) => a.id).sort()
+  }
+  for (const sn of snapshots) {
+    support[sn.id] = assertions
+      .filter((a) => a.canonicalClaimKey === sn.canonicalClaimKey && a.sourceObservedDay === sn.stateObservedDay)
+      .map((a) => a.id).sort()
+  }
+
   return {
     ok: true,
     view: {
@@ -138,6 +168,11 @@ export async function inspectFactualMemory(
       snapshots: snapshots.sort(parId),
       claims,
       rejected,
+      support,
     },
   }
 }
+
+// Optimisation de lecture par compte (index/scan côté base) : suivie
+// séparément sous INSPECTOR_ACCOUNT_SCOPED_READ_OPTIMIZATION_001 (P2) —
+// hors du périmètre de ce correctif.

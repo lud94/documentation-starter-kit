@@ -4,7 +4,6 @@ import Head from 'next/head'
 import {
   supportingAssertions,
   type FactualMemoryView,
-  type InspectorClaimGroup,
 } from '../../lib/prospector/proactive/inspectorView'
 import type { SourceAssertion } from '../../lib/prospector/proactive/sourceAssertion'
 
@@ -20,10 +19,16 @@ import type { SourceAssertion } from '../../lib/prospector/proactive/sourceAsser
 // ⚠️ Ce fichier n'importe QUE le modèle de vue pur (`inspectorView`, sans I/O)
 // et des types : aucune primitive de persistance n'entre dans le bundle client.
 
+// ⚠️ CINQ HORLOGES, AUCUN REPLI DE L'UNE VERS L'AUTRE (TRACEABILITY_FIX_001).
+// « EVIDENCE OBSERVED » (naissance dans le moteur) et « HUMAN CONFIRMED »
+// (adjudication) sont DEUX instants : les fondre ferait passer une naissance
+// d'evidence pour une confirmation humaine. Une valeur absente s'affiche
+// « — », jamais remplacée par une autre horloge.
 const CLOCHES: Array<[string, (a: SourceAssertion) => string | undefined]> = [
   ['SOURCE PUBLISHED', (a) => a.provenance?.sourcePublishedAt],
   ['SOURCE RETRIEVED', (a) => a.provenance?.retrievedAt],
-  ['ADJUDICATED', (a) => a.acceptance?.confirmedAt ?? a.observedAt],
+  ['EVIDENCE OBSERVED', (a) => a.observedAt],
+  ['HUMAN CONFIRMED', (a) => a.acceptance?.confirmedAt],
   ['STATE OBSERVED DAY', (a) => a.sourceObservedDay],
 ]
 
@@ -85,10 +90,9 @@ function AssertionCard({ a }: { a: SourceAssertion }) {
         grade {a.provenance?.grade ?? '—'} · lignée {a.provenance?.lineage ?? '—'} · ancrage {a.provenance?.grounding ?? '—'}
       </div>
       <div className="text-xs mt-1 grid grid-cols-2 gap-x-4">
-        {CLOCHES.map(([nom, lire]) => {
-          const v = lire(a)
-          return v ? <div key={nom}><span className="text-gray-500">{nom}</span> : {v}</div> : null
-        })}
+        {CLOCHES.map(([nom, lire]) => (
+          <div key={nom}><span className="text-gray-500">{nom}</span> : {lire(a) ?? '—'}</div>
+        ))}
       </div>
       <div className="text-xs text-gray-500 mt-1 break-all">
         claim : {a.canonicalClaimKey} · evidence : {a.evidenceId} ({a.evidenceType}) · temporalité : {a.assertionTemporality}
@@ -127,8 +131,6 @@ export default function FactualMemoryInspector() {
     if (!r.ok) { setErreur(d?.error || `HTTP ${r.status}`); return }
     setView(d.view)
   }
-
-  const claims: InspectorClaimGroup[] = view?.claims ?? []
 
   return (
     <div className="max-w-4xl mx-auto p-6">
@@ -174,7 +176,7 @@ export default function FactualMemoryInspector() {
                 {e.roleFunction && <div className="text-xs">roleFunction : {e.roleFunction}</div>}
                 {e.personKey && <div className="text-xs break-all">personKey : {e.personKey}</div>}
                 <div className="text-xs break-all">canonicalClaimKey : {e.canonicalClaimKey}</div>
-                <GroupeSoutien liste={supportingAssertions(e, claims)} />
+                <GroupeSoutien liste={supportingAssertions(e, view)} />
               </div>
             ))}
           </section>
@@ -188,7 +190,7 @@ export default function FactualMemoryInspector() {
                 <div className="text-xs text-gray-600 break-all">id : {s.id}</div>
                 <div className="text-xs">STATE OBSERVED DAY : {s.stateObservedDay}</div>
                 <div className="text-xs break-all">canonicalClaimKey : {s.canonicalClaimKey}</div>
-                <GroupeSoutien liste={supportingAssertions(s, claims)} />
+                <GroupeSoutien liste={supportingAssertions(s, view)} />
               </div>
             ))}
           </section>
