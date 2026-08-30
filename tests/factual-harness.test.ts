@@ -108,7 +108,7 @@ describe('fail closed (H7–H10)', () => {
       extraction: { mode: 'claude-web', promptVersion: 'manual' },
       payload: { family: 'FUNDING', roundStage: 'SEED' },
     }
-    const r = await run('manual', { manualCase: { account: { company: 'X', siren: '999000001' }, sourceUrl: 'https://example.test/manuel', retrievedAt: '2026-07-02T07:30:00.000Z', fact } })
+    const r = await run('manual', { manualCase: { account: { company: 'X', siren: '999000001', officialWebsite: 'https://example.test' }, sourceUrl: 'https://example.test/manuel', retrievedAt: '2026-07-02T07:30:00.000Z', fact } })
     expect(r.verdict).toBe('PASS')
     expect(r.actual).toEqual({ assertions: 1, events: 1, snapshots: 0 })
   })
@@ -259,6 +259,96 @@ describe('cycle de vie du CLI (R9/R10)', () => {
 
   it('R9 — la table des codes de sortie est inchangée', () => {
     expect(cli).toMatch(/const EXIT = \{ PASS: 0, FAIL: 1, BLOCKED: 2, INVALID_INPUT: 3 \}/)
+  })
+})
+
+describe('mode manuel — identité de compte RÉELLE (FACTUAL_REAL_WORLD_MANUAL_001)', () => {
+  const faitManuel = (extra: Record<string, unknown> = {}): any => ({
+    contractVersion: 'v2', family: 'FUNDING', claimNature: 'EVENT', eventStatus: 'COMPLETED',
+    occurredAt: '2026-07-01', occurredAtPrecision: 'DAY', sourcePublishedAt: null,
+    rawDetail: { detail: 'levée réelle documentée', icebreaker: 'ok' },
+    extraction: { mode: 'manual-curated', promptVersion: 'real-world-manual-v1', model: 'GPT-5.6 Sol' },
+    payload: { family: 'FUNDING', roundStage: 'SEED' },
+    ...extra,
+  })
+  const enveloppeManuelle = (company: string, siren: string) => ({
+    // `officialWebsite` : seul chemin vers le grade A pour une source unique —
+    // la politique de source de production n'est PAS contournée.
+    account: { company, siren, officialWebsite: 'https://presse.example.test' },
+    sourceUrl: 'https://presse.example.test/annonce',
+    retrievedAt: '2026-07-02T07:30:00.000Z',
+    fact: faitManuel(),
+  })
+
+  it('R1/R3/R4/R5 — Lupin Dental 850067877 : le compte FOURNI traverse tout le pipeline', async () => {
+    const r = await run('manual', { manualCase: enveloppeManuelle('Lupin Dental', '850067877') })
+    expect(r.verdict).toBe('PASS')
+    expect(r.input.company).toBe('Lupin Dental')
+    expect(r.input.account).toBe('acc_siren_850067877')
+
+    // Rien ne reste sous l'identité synthétique, et TOUT porte le compte réel.
+    const tout = [...g.__prospectorStore.entries()]
+    expect(JSON.stringify(tout)).not.toContain('999000001')
+    const candidat = tout.find(([k]: any) => k.startsWith('proactive_signal_candidate|'))![1]
+    expect(candidat.claim.company).toBe('Lupin Dental') // R3
+    const assertion = tout.find(([k]: any) => k.startsWith('proactive_source_assertion|'))![1]
+    expect(assertion.accountId).toBe('acc_siren_850067877') // R4
+    expect(assertion.canonicalClaimKey).toBe('recent_funding|acc_siren_850067877|2026-07-01')
+    const ancre = tout.find(([k]: any) => k.startsWith('proactive_canonical_event|'))![1]
+    expect(ancre.accountId).toBe('acc_siren_850067877') // R5
+    // Et toujours dans le SEUL espace du harnais.
+    for (const [k] of tout) expect(k).toContain(`|${HARNESS_WORKSPACE}|`)
+  })
+
+  it('R2 — OVHcloud 537407926 → acc_siren_537407926 exactement', async () => {
+    const r = await run('manual', { manualCase: enveloppeManuelle('OVHcloud', '537407926') })
+    expect(r.verdict).toBe('PASS')
+    expect(r.input.account).toBe('acc_siren_537407926')
+  })
+
+  it('R6/R7 — les cas dorés restent OCTET POUR OCTET sous ACME TEST / acc_siren_999000001', async () => {
+    for (const cas of ['funding', 'executive', 'hiring']) {
+      const r = await run(cas)
+      expect(r.input.company, cas).toBe('ACME TEST')
+      expect(r.input.account, cas).toBe('acc_siren_999000001')
+      expect(r.verdict, cas).toBe('PASS')
+    }
+  })
+
+  it('R8 — SIREN invalide ou company absente : INVALID_INPUT, rien n’est persisté', async () => {
+    const mauvais = enveloppeManuelle('Lupin Dental', '85006787') // 8 chiffres
+    expect((await run('manual', { manualCase: mauvais })).verdict).toBe('INVALID_INPUT')
+    const sansNom = enveloppeManuelle('  ', '850067877')
+    expect((await run('manual', { manualCase: sansNom })).verdict).toBe('INVALID_INPUT')
+    expect(g.__prospectorStore.size).toBe(0)
+  })
+
+  it('R9/R10/R11 — vocabulaire d’extraction clos : manual-curated accepté, hérités inchangés, inconnu rejeté', async () => {
+    const { isAcquisitionFactV2 } = await import('../lib/prospector/proactive/acquisitionV2')
+    expect(isAcquisitionFactV2(faitManuel())).toBe(true) // R9
+    for (const mode of ['exa+claude', 'claude-web']) { // R10
+      expect(isAcquisitionFactV2(faitManuel({ extraction: { mode, promptVersion: 'p' } })), mode).toBe(true)
+    }
+    for (const mode of ['scraped', 'manual', 'MANUAL-CURATED', '']) { // R11
+      expect(isAcquisitionFactV2(faitManuel({ extraction: { mode, promptVersion: 'p' } })), mode).toBe(false)
+    }
+  })
+
+  it('R12 — la provenance d’extraction ne participe à AUCUNE identité factuelle', async () => {
+    const { assertedFactHash, semanticFactProjection } = await import('../lib/prospector/proactive/acquisitionV2')
+    const manuel = faitManuel()
+    const web = faitManuel({ extraction: { mode: 'claude-web', promptVersion: 'autre', model: 'x' } })
+    // Même projection sémantique, même condensat de version — l'extraction est
+    // une métadonnée d'assemblage, délibérément EXCLUE du fait affirmé.
+    expect(semanticFactProjection(manuel, 'acc_siren_850067877'))
+      .toEqual(semanticFactProjection(web, 'acc_siren_850067877'))
+    expect(assertedFactHash(manuel, 'acc_siren_850067877'))
+      .toBe(assertedFactHash(web, 'acc_siren_850067877'))
+    // Et l'ancre canonique est identique : mêmes ws/compte/jour ⇒ même id,
+    // quel que soit le mode d'extraction des assertions qui la soutiennent.
+    const { canonicalEventId } = await import('../lib/prospector/proactive/canonicalFact')
+    expect(canonicalEventId('ws_factual_harness', 'acc_siren_850067877', '2026-07-01'))
+      .toBe(canonicalEventId('ws_factual_harness', 'acc_siren_850067877', '2026-07-01'))
   })
 })
 

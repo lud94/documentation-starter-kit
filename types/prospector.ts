@@ -234,7 +234,14 @@ export type SignalRoleFunction = 'SALES' | 'TECH' | 'OFFICE_PEOPLE' | 'EXEC_OTHE
  * jamais à fonder une confiance.
  */
 export interface SignalExtraction {
-  mode: 'exa+claude' | 'claude-web'
+  /**
+   * `manual-curated` (FACTUAL_REAL_WORLD_MANUAL_001) : fait assemblé À LA MAIN
+   * depuis des sources publiques explicitement identifiées, soumis par le
+   * harnais manuel. C'est une provenance d'EXTRACTION/ASSEMBLAGE, pas une
+   * qualité de preuve : elle n'augmente aucune confiance et ne contourne
+   * aucun validateur, adjudication ni canonicalisation.
+   */
+  mode: 'exa+claude' | 'claude-web' | 'manual-curated'
   promptVersion: string
   model?: string
 }

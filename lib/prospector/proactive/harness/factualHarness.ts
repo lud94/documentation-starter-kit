@@ -215,12 +215,12 @@ function v2Hiring(valeur: number): AcquisitionFactV2 {
   }
 }
 
-function hitDe(url: string, v2: AcquisitionFactV2): SignalHit {
+function hitDe(url: string, v2: AcquisitionFactV2, identite: IdentiteCompte): SignalHit {
   const etat = v2.family === 'HIRING_SNAPSHOT'
   return {
-    company: 'ACME TEST', signalType: etat ? 'recrutement' : 'levée',
+    company: identite.company, signalType: etat ? 'recrutement' : 'levée',
     detail: '', icebreaker: '', sourceUrl: url, verified: false,
-    siren: '999000001',
+    siren: identite.siren,
     claimNature: etat ? 'STATE' : 'EVENT',
     eventStatus: etat ? 'UNKNOWN' : 'COMPLETED',
     eventDate: etat ? null : JOUR_FAIT, eventDatePrecision: etat ? 'UNKNOWN' : 'DAY',
@@ -269,10 +269,39 @@ export function diagnoseCandidateReadBack(
 
 interface Ronde { url: string; fact: AcquisitionFactV2; retrievedAt: string }
 
+/**
+ * Identité de COMPTE d'un cas — synthétique par défaut, RÉELLE en mode manuel.
+ *
+ * ⚠️ BLOCKER 1 (FACTUAL_REAL_WORLD_MANUAL_001) : l'enveloppe manuelle
+ * acceptait `account` puis l'IGNORAIT — un cas Lupin Dental passait sous
+ * l'identité ACME TEST. Le compte fourni traverse désormais tout le pipeline
+ * (candidat → SourceEvidence → Evidence → assertions → ancres), TOUJOURS dans
+ * l'espace isolé du harnais : aucune identité de production n'est créée.
+ */
+interface IdentiteCompte {
+  company: string
+  siren: string
+  accountId: string
+  /**
+   * Site officiel du compte — le SEUL chemin vers le grade A pour une source
+   * mono-URL (politique de source inchangée : une seule source B ne qualifie
+   * pas). Optionnel et fourni par l'enveloppe manuelle ; absent ⇒ la politique
+   * normale s'applique, aucun grade n'est offert.
+   */
+  officialWebsite: string | null
+}
+
+const IDENTITE_SYNTHETIQUE: IdentiteCompte = Object.freeze({
+  company: 'ACME TEST', siren: '999000001', accountId: HARNESS_ACCOUNT,
+  officialWebsite: SITE,
+})
+
 interface CasHarnais {
   description: string
   rondes: Ronde[]
   attendu: { assertions: number; events: number; snapshots: number }
+  /** Absente ⇒ identité synthétique ACME TEST (les six cas dorés, inchangés). */
+  identite?: IdentiteCompte
 }
 
 const D = (j: string) => `${j}T07:30:00.000Z`
@@ -353,13 +382,24 @@ function casManuel(brut: unknown): { ok: true; cas: CasHarnais } | { ok: false; 
   }
   const fact = m.fact as AcquisitionFactV2
   const etat = fact.family === 'HIRING_SNAPSHOT'
-  const exec = fact.family === 'EXECUTIVE_CHANGE'
+  const company = String(m?.account?.company ?? '').trim()
+  if (company === '') {
+    return { ok: false, reason: 'MANUAL_INVALID: account.company est requis' }
+  }
   return {
     ok: true,
     cas: {
       description: `Cas manuel ${fact.family}`,
       rondes: [{ url: m.sourceUrl, fact, retrievedAt: m.retrievedAt }],
       attendu: { assertions: 1, events: etat ? 0 : 1, snapshots: etat ? 1 : 0 },
+      // ⚠️ L'identité FOURNIE fait foi : `acc_siren_<siren réel>`, dans le
+      // SEUL espace du harnais. Rien n'est créé côté production/staging.
+      identite: {
+        company, siren, accountId: `acc_siren_${siren}`,
+        officialWebsite: typeof m?.account?.officialWebsite === 'string' && m.account.officialWebsite.trim() !== ''
+          ? m.account.officialWebsite.trim()
+          : null,
+      },
     },
   }
 }
@@ -404,8 +444,9 @@ export async function runFactualCase(
     cas = defini
   }
 
+  const identite = cas.identite ?? IDENTITE_SYNTHETIQUE
   const input: Record<string, unknown> = {
-    company: 'ACME TEST', account: HARNESS_ACCOUNT, description: cas.description,
+    company: identite.company, account: identite.accountId, description: cas.description,
     sources: cas.rondes.map((r) => r.url),
   }
 
@@ -427,7 +468,7 @@ export async function runFactualCase(
     if (!etape(`V2 validation${tag}`, isAcquisitionFactV2(ronde.fact))) continue
 
     // 2 — CANDIDAT : enregistrement serveur puis RELECTURE cloisonnée.
-    const hit = hitDe(ronde.url, ronde.fact)
+    const hit = hitDe(ronde.url, ronde.fact, identite)
     const [cid] = await registerCandidates([hit], HARNESS_WORKSPACE)
     const luCandidat = cid ? await readCandidate(cid, HARNESS_WORKSPACE) : null
     const diag = diagnoseCandidateReadBack(luCandidat, ronde.fact)
@@ -435,13 +476,13 @@ export async function runFactualCase(
     persisted.push({ id: cid as string, kind: SIGNAL_CANDIDATE_KIND, summary: 'candidat (bloc V2 relu conforme)' })
 
     // 3 — PROMOTION : Bridge réel, adjudication synthétique EXPLICITE.
-    const source = sourceEvidenceFromHit(hit, SITE, { kind: 'ORIGINAL' }, { kind: 'UNVERIFIABLE' }, ronde.retrievedAt)
+    const source = sourceEvidenceFromHit(hit, identite.officialWebsite, { kind: 'ORIGINAL' }, { kind: 'UNVERIFIABLE' }, ronde.retrievedAt)
     if (!etape(`SourceEvidence${tag}`, !!source && sameSemanticFact(source.hit.v2, ronde.fact))) continue
     const claim = mapClaim(hit)
     if (typeof claim === 'string') { etape(`Evidence${tag}`, false, `mapClaim: ${claim}`); continue }
-    const cle = canonicalKey(HARNESS_ACCOUNT, claim)
+    const cle = canonicalKey(identite.accountId, claim)
     const promotion = promoteToEvidence({
-      accountId: HARNESS_ACCOUNT, observedAt: OBSERVED, sources: [source as SourceEvidence],
+      accountId: identite.accountId, observedAt: OBSERVED, sources: [source as SourceEvidence],
       confirmations: [confirmation(cle, [ronde.url])],
     })
     if (promotion.ok === false) { etape(`Evidence${tag}`, false, `refus: ${promotion.reason}`); continue }
@@ -452,7 +493,7 @@ export async function runFactualCase(
 
     // 4 — REGISTRE DES ASSERTIONS : écriture réelle puis relecture par id.
     const lot = {
-      workspaceId: HARNESS_WORKSPACE, accountId: HARNESS_ACCOUNT, canonicalClaimKey: promotion.canonicalKey,
+      workspaceId: HARNESS_WORKSPACE, accountId: identite.accountId, canonicalClaimKey: promotion.canonicalKey,
       evidence: promotion.evidence, qualifyingSources: promotion.qualifyingSources,
     }
     const bilan = await recordSourceAssertions([lot], HARNESS_WORKSPACE)

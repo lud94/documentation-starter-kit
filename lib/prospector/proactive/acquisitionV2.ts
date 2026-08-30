@@ -265,7 +265,8 @@ function rawDetailValide(v: unknown): v is AcquisitionRawDetail {
 function extractionValide(v: unknown): boolean {
   if (!objetSimple(v)) return false
   if (!clesCloses(v, ['mode', 'promptVersion'], ['model'])) return false
-  if (v.mode !== 'exa+claude' && v.mode !== 'claude-web') return false
+  // Vocabulaire CLOS — tout mode inconnu est un rejet, jamais une coercition.
+  if (v.mode !== 'exa+claude' && v.mode !== 'claude-web' && v.mode !== 'manual-curated') return false
   if (typeof v.promptVersion !== 'string' || v.promptVersion.length === 0) return false
   return v.model === undefined || typeof v.model === 'string'
 }
