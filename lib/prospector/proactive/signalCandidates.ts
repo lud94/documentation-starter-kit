@@ -34,7 +34,8 @@
 import { createHash } from 'crypto'
 
 import { getItemStrict, upsertItem } from '../../supabase/store'
-import type { SignalHit } from '../../../types/prospector'
+import type { AcquisitionFactV2, SignalHit } from '../../../types/prospector'
+import { canonicalJson, isAcquisitionFactV2 } from './acquisitionV2'
 
 /**
  * `kind` du magasin.
@@ -74,6 +75,20 @@ export interface CandidateClaim {
    * exactement comme dans `importSignalToPipeline`.
    */
   candidateSiren: string | null
+
+  /**
+   * Fait structuré V2 VALIDÉ, porté verbatim (SIGNAL_ACQUISITION_CONTRACT_002).
+   *
+   * ⚠️ PORTEUR DE VÉRITÉ : il entre dans la construction des `SourceEvidence`
+   * et du mapping V2, donc dans le condensat d'identité — mais par un SEGMENT
+   * SÉPARÉ, absent quand il vaut `null`, pour que l'identité de tout candidat
+   * V1 déjà émis reste octet pour octet inchangée.
+   *
+   * ⚠️ `null`, JAMAIS ABSENT : `readCandidate` vérifie la présence de chaque
+   * champ signé ; un champ optionnel ne serait pas vérifiable. Les lignes
+   * héritées sans ce champ restent lisibles (voir `readCandidate`).
+   */
+  v2: AcquisitionFactV2 | null
 }
 
 export interface SignalCandidate {
@@ -114,9 +129,16 @@ const CHAMPS_SIGNES: readonly (keyof CandidateClaim)[] = [
  */
 export function candidateId(claim: CandidateClaim, ws: string): string {
   const charge = CHAMPS_SIGNES.map((c) => `${c}=${String(claim[c] ?? '')}`).join(' ')
+  // ⚠️ SEGMENT V2 SÉPARÉ, ABSENT QUAND `v2` EST NUL. Tout candidat V1 déjà émis
+  // garde ainsi une identité octet pour octet inchangée. Le bloc V2 est
+  // porteur de vérité (il construit `SourceEvidence` et le mapping V2) : le
+  // laisser hors du condensat permettrait de substituer son contenu sous un
+  // identifiant existant. Sérialisation canonique — l'ordre des clés d'un
+  // `jsonb` relu n'est pas garanti, et `String(objet)` ne condense rien.
+  const v2 = claim.v2 ? `\nv2=${canonicalJson(claim.v2)}` : ''
   // Séparation de domaine : ce condensat ne doit jamais entrer en collision
   // avec un autre usage du même magasin.
-  const h = createHash('sha256').update(`signal-candidate:v1:${ws} ${charge}`).digest('hex')
+  const h = createHash('sha256').update(`signal-candidate:v1:${ws} ${charge}${v2}`).digest('hex')
   return `cand_${h.slice(0, 32)}`
 }
 
@@ -128,8 +150,15 @@ export function claimFromHit(hit: SignalHit): CandidateClaim | null {
   // un candidat qui ne pourra jamais devenir un fait.
   if (!company || !sourceUrl) return null
 
+  // ⚠️ V2 PRÉSENT MAIS MALFORMÉ ⇒ AUCUN CANDIDAT — le même refus qu'une ligne
+  // inécrivable : pas d'identifiant émis. On ne DÉPOUILLE jamais un bloc V2
+  // abîmé pour continuer en V1 : un hit qui prétendait porter un fait structuré
+  // et ne le porte pas n'est pas un hit V1, c'est un hit invalide.
+  if (hit?.v2 !== undefined && !isAcquisitionFactV2(hit.v2)) return null
+
   const siren = String(hit?.siren || '').trim()
   return {
+    v2: hit?.v2 ?? null,
     company,
     signalType: hit.signalType,
     sourceUrl,
@@ -171,6 +200,8 @@ export function hitFromCandidate(candidate: SignalCandidate): SignalHit {
     sourcePublishedAt: c.sourcePublishedAt,
     roleStatus: c.roleStatus,
     roleFunction: c.roleFunction,
+    // ⚠️ LE BLOC V2 VIENT DU REGISTRE, PAS DE LA REQUÊTE — comme tout le reste.
+    ...(c.v2 ? { v2: c.v2 } : {}),
   } as SignalHit
 }
 
@@ -242,7 +273,14 @@ export async function readCandidate(id: unknown, ws: string): Promise<CandidateR
   for (const champ of CHAMPS_SIGNES) {
     if (!(champ in claim)) return { ok: false, state: 'CANDIDATE_UNKNOWN' }
   }
-  if (candidateId(claim, ws) !== cle) return { ok: false, state: 'CANDIDATE_UNKNOWN' }
+  // ⚠️ V2 : ABSENT (ligne héritée) ⇒ `null` ; PRÉSENT ⇒ bloc ENTIER et valide,
+  // revalidé à la relecture comme tout le reste — un `jsonb` ne contraint rien.
+  // L'identité est ensuite recalculée AVEC ce bloc : une substitution du fait
+  // structuré sous un identifiant existant ne peut pas passer pour lui.
+  const v2 = (claim as any).v2 ?? null
+  if (v2 !== null && !isAcquisitionFactV2(v2)) return { ok: false, state: 'CANDIDATE_UNKNOWN' }
+  const normalise: CandidateClaim = { ...claim, v2 }
+  if (candidateId(normalise, ws) !== cle) return { ok: false, state: 'CANDIDATE_UNKNOWN' }
 
-  return { ok: true, candidate: { id: cle, claim, issuedAt: String(brut.issuedAt || '') } }
+  return { ok: true, candidate: { id: cle, claim: normalise, issuedAt: String(brut.issuedAt || '') } }
 }

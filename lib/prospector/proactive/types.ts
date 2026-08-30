@@ -1,4 +1,5 @@
 import type { AuthorizedMotion, HumanControl } from './motions'
+import type { AcquisitionFactV2 } from '../../../types/prospector'
 
 // JARVIS-PROACTIVE V0
 // Contrats métier du Decision Model.
@@ -48,6 +49,30 @@ export function isStrictInstant(valeur: unknown): boolean {
   if (Number(h) > 23 || Number(mi) > 59 || Number(sec) > 59) return false
   if (oh !== undefined && (Number(oh) > 23 || Number(om) > 59)) return false
   return true
+}
+
+const JOUR_LEXICAL = /^(\d{4})-(\d{2})-(\d{2})$/
+
+/**
+ * Le jour existe-t-il RÉELLEMENT au calendrier ? — L'UNIQUE définition du dépôt.
+ *
+ * ⚠️ DÉPLACÉE ICI DEPUIS `signalBridge.ts`, À L'IDENTIQUE (E2E_BRIDGE_001) :
+ * `acquisitionV2.ts` et le Bridge la lisent tous deux, et le Bridge lit
+ * `acquisitionV2` — ce module est le seul point acyclique où les trois se
+ * rencontrent. Le Bridge la ré-exporte, la surface historique est inchangée.
+ *
+ * ⚠️ REVALIDÉE AUX FRONTIÈRES, et non déléguée au type. `eventDatePrecision`
+ * vient d'une extraction : rien n'empêche `DAY` d'accompagner `'garbage'` ou
+ * `'2026-02-30'`. Le typage TypeScript ne contrôle aucune donnée d'exécution.
+ */
+export function jourReel(valeur: unknown): valeur is string {
+  if (typeof valeur !== 'string') return false
+  const m = JOUR_LEXICAL.exec(valeur)
+  if (!m) return false
+  const [a, mo, j] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  if (mo < 1 || mo > 12 || j < 1 || j > 31) return false
+  const d = new Date(Date.UTC(a, mo - 1, j))
+  return d.getUTCFullYear() === a && d.getUTCMonth() === mo - 1 && d.getUTCDate() === j
 }
 
 /**
@@ -305,6 +330,22 @@ interface EvidenceBase<T extends string = string> {
    * elle-même.
    */
   corroboration?: EvidenceCorroboration
+
+  /**
+   * Fait structuré V2 de la SOURCE PRINCIPALE — PROJECTION COURANTE, pas
+   * l'histoire (SIGNAL_ACQUISITION_CONTRACT_002_E2E_BRIDGE_001).
+   *
+   * ⚠️ L'HISTOIRE PAR SOURCE VIT DANS LE REGISTRE `SourceAssertion`, où chaque
+   * source conserve SON instantané sémantique versionné. Ce champ-ci peut être
+   * réécrit par une adjudication ultérieure (même limite que la provenance,
+   * EVIDENCE_PROVENANCE_OVERWRITE_001) : il sert à l'inspection aval, jamais de
+   * source primaire. Absent = evidence héritée valide ; présent = bloc entier
+   * et validé.
+   *
+   * ⚠️ N'ENTRE DANS AUCUNE IDENTITÉ : ni montant, ni investisseur, ni stade, ni
+   * décompte, ni intitulé de poste ne modifient `Evidence.id`.
+   */
+  structuredFact?: AcquisitionFactV2
 }
 
 /** Un fait daté : la date de survenue est connue, et elle est exigée. */

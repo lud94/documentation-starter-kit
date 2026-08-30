@@ -24,7 +24,8 @@
 import { createHash } from 'node:crypto'
 
 import type { EvidenceType, KnownEvidenceEvent } from './catalog'
-import { EXTERNAL_SIGNAL_PROVIDER, canonicalClaimKey, isStrictInstant } from './types'
+import { EXTERNAL_SIGNAL_PROVIDER, canonicalClaimKey, isStrictInstant, jourReel } from './types'
+import { isAcquisitionFactV2 } from './acquisitionV2'
 import type {
   EvidenceCorroboration,
   EvidenceProvenance,
@@ -32,7 +33,7 @@ import type {
   SourceGrade,
   SourceLineageKind,
 } from './types'
-import type { SignalHit } from '../../../types/prospector'
+import type { ExecutivePayloadV2, HiringPayloadV2, SignalHit } from '../../../types/prospector'
 
 /**
  * CONSTANTE DE COMPATIBILITÉ V0 — NON PROBABILISTE ET NON CALIBRÉE.
@@ -68,24 +69,15 @@ export { EXTERNAL_SIGNAL_PROVIDER }
  */
 const COMPTE_VERIFIE = /^acc_siren_\d{9}$/
 
-const JOUR_LEXICAL = /^(\d{4})-(\d{2})-(\d{2})$/
-
 /**
- * Le jour existe-t-il RÉELLEMENT au calendrier ?
- *
- * ⚠️ REVALIDÉ ICI, à la frontière, et non délégué au type. `eventDatePrecision`
- * vient d'une extraction : rien n'empêche `DAY` d'accompagner `'garbage'` ou
- * `'2026-02-30'`. Le typage TypeScript ne contrôle aucune donnée d'exécution.
+ * ⚠️ DÉFINITION DÉPLACÉE DANS `types.ts`, RÉ-EXPORTÉE ICI À L'IDENTIQUE.
+ * `acquisitionV2.ts` doit la lire, et ce Bridge doit lire `acquisitionV2` :
+ * la garder ici créerait un cycle. `types.ts` est le seul point acyclique où
+ * les deux se rencontrent — même arbitrage que `EXTERNAL_SIGNAL_PROVIDER`.
+ * Toute la surface historique (`import { jourReel } from './signalBridge'`)
+ * reste valide.
  */
-export function jourReel(valeur: unknown): valeur is string {
-  if (typeof valeur !== 'string') return false
-  const m = JOUR_LEXICAL.exec(valeur)
-  if (!m) return false
-  const [a, mo, j] = [Number(m[1]), Number(m[2]), Number(m[3])]
-  if (mo < 1 || mo > 12 || j < 1 || j > 31) return false
-  const d = new Date(Date.UTC(a, mo - 1, j))
-  return d.getUTCFullYear() === a && d.getUTCMonth() === mo - 1 && d.getUTCDate() === j
-}
+export { jourReel } from './types'
 
 // ── QUALITÉ DE SOURCE ───────────────────────────────────────────────────────
 
@@ -439,6 +431,13 @@ export interface MappedClaim {
 export function mapClaim(hit: SignalHit): MappedClaim | BridgeRefusal {
   if (!hit || typeof hit !== 'object') return 'NO_HONEST_EVIDENCE_TYPE'
 
+  // ── CONTRAT V2 D'ABORD (SIGNAL_ACQUISITION_CONTRACT_002) ─────────────────
+  // ⚠️ UN BLOC V2 PRÉSENT MAIS MALFORMÉ EST UN REFUS, JAMAIS UN REPLI V1. Un
+  // hit qui prétendait porter un fait structuré et ne le porte pas ne redevient
+  // pas silencieusement un hit V1 : le dépouiller ferait adjuger une
+  // revendication différente de celle que l'acquisition a émise.
+  if (hit.v2 !== undefined) return mapClaimV2(hit.v2)
+
   // ── ÉTAT OBSERVÉ : poste Sales actuellement ouvert ────────────────────────
   if (hit.claimNature === 'STATE') {
     if (hit.roleStatus === 'OPEN' && hit.roleFunction === 'SALES') {
@@ -484,6 +483,50 @@ export function mapClaim(hit: SignalHit): MappedClaim | BridgeRefusal {
 function typeEvenement(hit: SignalHit): EvidenceType | null {
   if (hit.signalType === 'levée') return 'recent_funding' as EvidenceType
   return null
+}
+
+/**
+ * Correspondance FERMÉE du contrat V2 — champs clos uniquement, aucune prose.
+ *
+ * ⚠️ LA PROSE D'AUDIT DU BLOC V2 N'EST JAMAIS LUE ICI (verrou structurel dans
+ * les tests). Toute décision factuelle vient des champs discriminés du
+ * payload, validés par `isAcquisitionFactV2`.
+ *
+ * ⚠️ DIRECTION `UNKNOWN` ⇒ REFUS AVANT L'EVIDENCE. Le contrat Evidence ne
+ * connaît pas d'événement de direction indéterminée : « quelque chose est
+ * arrivé à cette personne » n'est pas un type honnête. L'assertion de source
+ * reste possible en amont si un jour un chemin l'exige ; ici, on s'abstient.
+ */
+function mapClaimV2(v2: unknown): MappedClaim | BridgeRefusal {
+  if (!isAcquisitionFactV2(v2)) return 'NO_HONEST_EVIDENCE_TYPE'
+
+  if (v2.family === 'HIRING_SNAPSHOT') {
+    const p = v2.payload as HiringPayloadV2
+    if (p.roleStatus === 'OPEN' && p.roleFunction === 'SALES') {
+      return { type: 'sales_hiring' as EvidenceType, temporality: 'undated_state' }
+    }
+    return 'NO_HONEST_EVIDENCE_TYPE'
+  }
+
+  // FUNDING et EXECUTIVE_CHANGE sont des ÉVÉNEMENTS (imposé par le validateur).
+  if (v2.eventStatus === 'ANNOUNCED_FUTURE') return 'INTENT_NOT_REALIZED'
+  if (v2.eventStatus !== 'COMPLETED') return 'NO_HONEST_EVIDENCE_TYPE'
+  if (v2.occurredAtPrecision !== 'DAY' || !jourReel(v2.occurredAt)) {
+    return 'NO_EXACT_EVENT_DATE'
+  }
+
+  if (v2.family === 'FUNDING') {
+    return { type: 'recent_funding' as EvidenceType, temporality: 'dated_event', occurredAt: v2.occurredAt }
+  }
+
+  const p = v2.payload as ExecutivePayloadV2
+  if (p.direction === 'APPOINTMENT') {
+    return { type: 'executive_appointment' as EvidenceType, temporality: 'dated_event', occurredAt: v2.occurredAt }
+  }
+  if (p.direction === 'DEPARTURE') {
+    return { type: 'executive_departure' as EvidenceType, temporality: 'dated_event', occurredAt: v2.occurredAt }
+  }
+  return 'NO_HONEST_EVIDENCE_TYPE'
 }
 
 // ── CANONICALISATION ────────────────────────────────────────────────────────
@@ -814,6 +857,14 @@ export function promoteToEvidence(input: PromotionInput): PromotionResult {
       canonicalKey: cle,
       sourceUrls: [...confirmees].sort(),
     },
+    // ── FAIT STRUCTURÉ V2 — PROJECTION COURANTE DE LA SOURCE PRINCIPALE ────
+    // ⚠️ CELLE QUE `source.url` DÉSIGNE, comme la provenance : l'evidence doit
+    // décrire la preuve qu'elle cite. Les instantanés de TOUTES les sources —
+    // y compris celles qui affirment un autre montant — vivent dans le registre
+    // `SourceAssertion`, chacune sous sa propre version sémantique. Ce champ
+    // n'entre dans AUCUNE identité et peut être réécrit par une adjudication
+    // ultérieure (même limite tracée que EVIDENCE_PROVENANCE_OVERWRITE_001).
+    ...(principale.hit?.v2 ? { structuredFact: principale.hit.v2 } : {}),
   }
 
   const evidence = (

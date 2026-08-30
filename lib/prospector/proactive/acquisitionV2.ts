@@ -21,7 +21,12 @@ import type {
   SignalRoleFunction,
   SignalRoleStatus,
 } from '../../../types/prospector'
-import { jourReel } from './signalBridge'
+import { createHash } from 'node:crypto'
+
+// ⚠️ DEPUIS `types.ts`, PAS DEPUIS LE BRIDGE : le Bridge importe ce module
+// (mapping V2), et l'importer en retour créerait un cycle. `types.ts` est le
+// point acyclique du domaine — c'est là que `jourReel` vit désormais.
+import { jourReel } from './types'
 
 // CONTRAT D'ACQUISITION V2 — helpers PURS et déterministes.
 // (SIGNAL_ACQUISITION_CONTRACT_002_IMPLEMENTATION_CORE_001)
@@ -352,4 +357,131 @@ export function isAcquisitionFactV2(v: unknown): v is AcquisitionFactV2 {
   if (v.family === 'FUNDING') return payloadFunding(v.payload)
   if (v.family === 'EXECUTIVE_CHANGE') return payloadExecutive(v.payload)
   return payloadHiring(v.payload)
+}
+
+// ── PROJECTION SÉMANTIQUE & VERSION DE CONTENU ──────────────────────────────
+// (SIGNAL_ACQUISITION_CONTRACT_002_E2E_BRIDGE_001_R1, arbitrage A)
+//
+// Une assertion de source signifie désormais : « CETTE source a affirmé CETTE
+// version sémantique de CETTE revendication canonique. » La version est un
+// condensat d'une projection FERMÉE du fait structuré — jamais de l'objet brut.
+//
+// EXCLUS du condensat, délibérément :
+//   rawDetail / detail / icebreaker / sourceExcerpt  → prose d'audit
+//   extraction                                        → métadonnée de fabrication
+//   provenance / publisher / sourcePublishedAt        → qualification de source
+//   retrievedAt / observedAt / acceptance             → horloges de traitement
+//   URL / candidateId / Evidence.id                   → identités portées ailleurs
+//   asPublished                                       → la PHRASE publiée ; « €12M »
+//                                                       et « 12 M€ » énoncent le
+//                                                       MÊME fait sémantique
+//   occurredAt / accountId / type                     → déjà dans canonicalClaimKey
+//                                                       (les dupliquer créerait une
+//                                                       seconde source de vérité)
+
+/**
+ * Sérialisation canonique déterministe : clés triées récursivement, aucune
+ * dépendance à l'ordre d'insertion. Réservée aux objets JSON purs.
+ */
+export function canonicalJson(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v)
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`
+  const cles = Object.keys(v as Record<string, unknown>).sort()
+  const corps = cles
+    .filter((k) => (v as Record<string, unknown>)[k] !== undefined)
+    .map((k) => `${JSON.stringify(k)}:${canonicalJson((v as Record<string, unknown>)[k])}`)
+  return `{${corps.join(',')}}`
+}
+
+/**
+ * Empreinte CONSERVATRICE d'un nom d'investisseur — pour le tri et le condensat
+ * SEULEMENT. NFKC, espaces réduits, trim. PAS de minuscules, pas de
+ * suppression de diacritiques : aucune identité d'organisation n'est créée,
+ * `nameRaw` original reste ce qui est persisté.
+ */
+function empreinteInvestisseur(nameRaw: string): string {
+  return nameRaw.normalize('NFKC').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Projection sémantique FERMÉE d'un fait V2 — l'entrée du condensat de version.
+ *
+ * `accountId` sert UNIQUEMENT à la clé de personne (scopée au compte pour
+ * NAME_ONLY) ; il n'est pas réinjecté par ailleurs.
+ *
+ * ⚠️ L'ORDRE DU TABLEAU `investors` NE CHANGE PAS LA SÉMANTIQUE : il est trié
+ * sur une représentation déterministe avant condensat.
+ */
+export function semanticFactProjection(
+  fact: AcquisitionFactV2, accountId: string,
+): Record<string, unknown> | null {
+  if (!isAcquisitionFactV2(fact)) return null
+
+  if (fact.payload.family === 'FUNDING') {
+    const p = fact.payload
+    const investisseurs = (p.investors ?? [])
+      .map((i) => ({ name: empreinteInvestisseur(i.nameRaw), role: i.role }))
+      .sort((a, b) => {
+        const ka = `${a.name}\n${a.role}`
+        const kb = `${b.name}\n${b.role}`
+        return ka < kb ? -1 : ka > kb ? 1 : 0
+      })
+    return {
+      family: 'FUNDING',
+      ...(p.amount
+        ? { amount: { amountMinor: p.amount.amountMinor, currency: p.amount.currency } }
+        : {}),
+      ...(p.amountApprox
+        ? {
+            amountApprox: {
+              magnitudeMinor: p.amountApprox.magnitudeMinor,
+              currency: p.amountApprox.currency,
+            },
+          }
+        : {}),
+      roundStage: p.roundStage,
+      ...(investisseurs.length > 0 ? { investors: investisseurs } : {}),
+    }
+  }
+
+  if (fact.payload.family === 'EXECUTIVE_CHANGE') {
+    const p = fact.payload
+    const personne = personKeyV2(p.person, accountId)
+    if (personne === null) return null
+    // ⚠️ `roleTitleRaw` EXCLU : c'est de la prose descriptive. Deux articles
+    // titrant « CRO » et « Chief Revenue Officer » énoncent le même fait.
+    return {
+      family: 'EXECUTIVE_CHANGE',
+      direction: p.direction,
+      personKey: personne,
+      roleFunction: p.roleFunction,
+      roleSeniority: p.roleSeniority,
+    }
+  }
+
+  const p = fact.payload
+  return {
+    family: 'HIRING_SNAPSHOT',
+    roleFunction: p.roleFunction,
+    roleStatus: p.roleStatus,
+    ...(p.openingsObserved
+      ? {
+          openingsObserved: {
+            value: p.openingsObserved.value,
+            method: p.openingsObserved.method,
+          },
+        }
+      : {}),
+  }
+}
+
+/**
+ * Version sémantique du fait affirmé — le 4e (événement) ou 5e (état) segment
+ * de l'identité `source-assertion:v2:`. `null` ⇒ fait inexploitable ⇒ AUCUNE
+ * assertion (fail closed), jamais un condensat deviné.
+ */
+export function assertedFactHash(fact: AcquisitionFactV2, accountId: string): string | null {
+  const projection = semanticFactProjection(fact, accountId)
+  if (projection === null) return null
+  return createHash('sha256').update(canonicalJson(projection), 'utf8').digest('hex').slice(0, 32)
 }

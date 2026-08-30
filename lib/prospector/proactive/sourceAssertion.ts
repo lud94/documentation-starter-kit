@@ -37,6 +37,8 @@ import type { KnownEvidenceEvent } from './catalog'
 import { isStrictInstant } from './types'
 import type { EvidenceAcceptance, EvidenceProvenance, EvidenceTemporality } from './types'
 import type { SourceEvidence } from './signalBridge'
+import type { AcquisitionFactV2 } from '../../../types/prospector'
+import { assertedFactHash, isAcquisitionFactV2 } from './acquisitionV2'
 
 /**
  * `kind` du magasin.
@@ -131,6 +133,22 @@ export interface SourceAssertion {
   sourceObservedDay?: string
 
   acceptance?: EvidenceAcceptance
+
+  /**
+   * INSTANTANÉ SÉMANTIQUE affirmé par CETTE source (contrat V2) — PERSISTÉ EN
+   * ENTIER, jamais réduit à son condensat : le condensat vérifie, l'instantané
+   * reconstruit. Présents ENSEMBLE ou absents ENSEMBLE (assertion V1 héritée).
+   *
+   * ⚠️ SÉMANTIQUE ÉLARGIE (E2E_BRIDGE_001_R1, arbitrage A) : une assertion V2
+   * signifie « CETTE source a affirmé CETTE VERSION SÉMANTIQUE de cette
+   * revendication ». Même URL + même revendication n'est PLUS automatiquement
+   * un rejeu : une correction éditoriale (10 M€ → 12 M€) est une NOUVELLE
+   * assertion immuable, pas un rejeu écarté. Le rejeu n'existe que quand le
+   * fait sémantique est identique lui aussi.
+   */
+  structuredFact?: AcquisitionFactV2
+  /** Condensat de la PROJECTION SÉMANTIQUE fermée — entre dans l'identité V2. */
+  assertedFactHash?: string
 }
 
 // ── NORMALISATION D'URL — CONSERVATRICE, ET C'EST TOUT L'ENJEU ──────────────
@@ -218,6 +236,37 @@ export function sourceAssertionId(
 ): string {
   const base = `source-assertion:v1:${workspaceId}\n${canonicalClaimKey}\n${normalizedUrl}`
   const charge = sourceObservedDay ? `${base}\n${sourceObservedDay}` : base
+  return `sa_${createHash('sha256').update(charge, 'utf8').digest('hex').slice(0, 32)}`
+}
+
+/**
+ * Identité V2 — VERSIONNÉE PAR LE CONTENU SÉMANTIQUE (arbitrage A).
+ *
+ * ⚠️ ESPACE DE NOMS DISTINCT (`source-assertion:v2:`) : l'algorithme V1 et ses
+ * identités déjà écrites restent octet pour octet inchangés. Aucune migration,
+ * aucun backfill.
+ *
+ *   ÉVÉNEMENT : ws \n claimKey \n url \n factHash
+ *   ÉTAT      : ws \n claimKey \n url \n jourObservé \n factHash
+ *
+ * ⚠️ NI `retrievedAt` NI `observedAt` dans l'identité d'un événement. Rejouer
+ * la même page inchangée un autre jour EST un rejeu ; seul un fait sémantique
+ * différent fait une assertion nouvelle. Pour un ÉTAT, le jour d'observation
+ * reste souverain (doctrine temporelle inchangée) : même jour + même fait ⇒
+ * rejeu ; même jour + fait changé ⇒ nouvelle assertion ; autre jour ⇒ nouvelle
+ * assertion même à fait identique — c'est l'historique d'observation.
+ */
+export function sourceAssertionIdV2(
+  workspaceId: string,
+  canonicalClaimKey: string,
+  normalizedUrl: string,
+  factHash: string,
+  sourceObservedDay?: string,
+): string {
+  const base = `source-assertion:v2:${workspaceId}\n${canonicalClaimKey}\n${normalizedUrl}`
+  const charge = sourceObservedDay
+    ? `${base}\n${sourceObservedDay}\n${factHash}`
+    : `${base}\n${factHash}`
   return `sa_${createHash('sha256').update(charge, 'utf8').digest('hex').slice(0, 32)}`
 }
 
@@ -316,8 +365,24 @@ export function buildSourceAssertions(input: AssertionBuildInput): SourceAsserti
       jour = derive
     }
 
-    const id = sourceAssertionId(ws, input.canonicalClaimKey, url, jour)
-    if (vus.has(id)) continue // même document, même jour, dans un même lot
+    // ── FAIT STRUCTURÉ V2 : PAR SOURCE, JAMAIS RECOPIÉ DE LA PRINCIPALE ────
+    // ⚠️ CHAQUE SOURCE AFFIRME SON PROPRE FAIT. Source A dit 10 M€, source B
+    // dit 12 M€ : recopier le fait de la principale attribuerait à B un montant
+    // qu'elle n'a jamais publié. Présent mais malformé ⇒ AUCUNE assertion pour
+    // cette source (fail closed), jamais un repli V1 silencieux.
+    const v2 = s.hit?.v2
+    let empreinte: string | undefined
+    if (v2 !== undefined) {
+      if (!isAcquisitionFactV2(v2)) continue
+      const h = assertedFactHash(v2, input.accountId)
+      if (h === null) continue
+      empreinte = h
+    }
+
+    const id = empreinte
+      ? sourceAssertionIdV2(ws, input.canonicalClaimKey, url, empreinte, jour)
+      : sourceAssertionId(ws, input.canonicalClaimKey, url, jour)
+    if (vus.has(id)) continue // même document, même jour, même fait, dans un même lot
     vus.add(id)
 
     // ⚠️ CONSTRUITE DEPUIS `s`, ET DE `s` SEULEMENT.
@@ -346,6 +411,9 @@ export function buildSourceAssertions(input: AssertionBuildInput): SourceAsserti
       assertionTemporality: input.evidence.temporality,
       ...(jour ? { sourceObservedDay: jour } : {}),
       ...(input.evidence.acceptance ? { acceptance: input.evidence.acceptance } : {}),
+      // ⚠️ L'INSTANTANÉ ENTIER, PAS SEULEMENT SON CONDENSAT. Le condensat
+      // vérifie l'identité ; l'instantané permet la reconstruction et l'audit.
+      ...(empreinte ? { structuredFact: v2, assertedFactHash: empreinte } : {}),
     })
   }
 
@@ -372,6 +440,23 @@ export function isSourceAssertion(v: any): v is SourceAssertion {
     if (v.sourceObservedDay !== undefined) return false
   } else {
     return false
+  }
+
+  // ── V2 : L'INSTANTANÉ ET SON CONDENSAT VONT ENSEMBLE, OU PAS DU TOUT ─────
+  // ⚠️ Un condensat sans instantané ne reconstruit rien ; un instantané sans
+  // condensat n'est pas vérifiable. Et le condensat est RECALCULÉ depuis
+  // l'instantané : un fait substitué sous une identité existante ne peut pas
+  // se faire passer pour elle.
+  const aFait = v.structuredFact !== undefined
+  const aHash = v.assertedFactHash !== undefined
+  if (aFait !== aHash) return false
+  if (aFait) {
+    if (!isAcquisitionFactV2(v.structuredFact)) return false
+    const recalcule = assertedFactHash(v.structuredFact, v.accountId)
+    if (recalcule === null || recalcule !== v.assertedFactHash) return false
+    return v.id === sourceAssertionIdV2(
+      v.workspaceId, v.canonicalClaimKey, v.sourceUrl, recalcule, v.sourceObservedDay,
+    )
   }
 
   // L'identité doit être RECALCULABLE depuis le contenu : une assertion dont

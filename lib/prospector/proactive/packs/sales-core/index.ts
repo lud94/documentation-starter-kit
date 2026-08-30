@@ -30,6 +30,12 @@ const SITUATION_TYPES = [
 const EVIDENCE_TYPES = [
   'recent_funding',
   'sales_hiring',
+  // ⚠️ PRODUCTEUR RÉEL : `mapClaim` V2 (SIGNAL_ACQUISITION_CONTRACT_002).
+  // La DIRECTION vient d'un champ clos du contrat d'acquisition V2, jamais
+  // d'une lecture de prose — contrairement à `new_sales_leader`, qui reste
+  // sans producteur faute de champ de séniorité prouvé à l'époque V1.
+  'executive_appointment',
+  'executive_departure',
   'new_sales_leader',
   'headcount_acceleration',
   'positive_reply',

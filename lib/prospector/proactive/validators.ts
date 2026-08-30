@@ -20,6 +20,7 @@ import { rulePackById } from './packs/registry'
 import { isLensId } from './lens/registry'
 import { AUTHORIZED_MOTIONS } from './motions'
 import { EXTERNAL_SIGNAL_PROVIDER, canonicalClaimKey, isStrictInstant } from './types'
+import { isAcquisitionFactV2 } from './acquisitionV2'
 import type {
   EvidenceEvent,
   GroundingKind,
@@ -83,8 +84,21 @@ export function isEvidenceEvent(value: any): value is EvidenceEvent {
     acceptationCoherente(value) &&
     provenanceCoherente(value?.source?.provenance) &&
     corroborationCoherente(value?.corroboration) &&
+    faitStructureCoherent(value?.structuredFact) &&
     temporaliteCoherente(value)
   )
+}
+
+/**
+ * FAIT STRUCTURÉ V2 — absent OU entier et valide, jamais à moitié.
+ *
+ * ⚠️ ABSENT EST VALIDE : toutes les evidences déjà persistées en sont
+ * dépourvues, et l'exiger les invaliderait toutes à la relecture. PRÉSENT MAIS
+ * ABÎMÉ ⇒ INVALIDE : un payload discriminé tronqué relu comme acceptable
+ * ferait entrer dans le moteur un fait que l'acquisition n'a jamais validé.
+ */
+function faitStructureCoherent(v: unknown): boolean {
+  return v === undefined || isAcquisitionFactV2(v)
 }
 
 /** Vocabulaires REVALIDÉS à la relecture — un `jsonb` ne contraint rien. */

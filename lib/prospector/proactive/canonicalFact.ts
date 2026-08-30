@@ -37,6 +37,7 @@ import {
   buildSourceAssertions,
   type AssertionBuildInput,
 } from './sourceAssertion'
+import { isPersonRef, personKeyV2 } from './acquisitionV2'
 
 /**
  * `kind`s du magasin — SERVEUR UNIQUEMENT.
@@ -74,11 +75,20 @@ export function canonicalFactsEnabled(): boolean {
 // les packs mais sans producteur (`new_sales_leader`, `site_expansion`,
 // `hiring_freeze`…) restent hors du chemin factuel tant que rien ne les
 // fabrique réellement.
-export type CanonicalFactType = 'FUNDING_ROUND' | 'HIRING_SNAPSHOT'
+export type CanonicalFactType =
+  | 'FUNDING_ROUND'
+  | 'HIRING_SNAPSHOT'
+  | 'EXECUTIVE_APPOINTMENT'
+  | 'EXECUTIVE_DEPARTURE'
 
 const CARTE_AUTORITE: Readonly<Record<string, CanonicalFactType>> = Object.freeze({
   recent_funding: 'FUNDING_ROUND',
   sales_hiring: 'HIRING_SNAPSHOT',
+  // ⚠️ PRODUCTEUR RÉEL : `mapClaim` V2. La direction vient d'un champ CLOS du
+  // contrat d'acquisition (jamais de prose), et `UNKNOWN` est refusé AVANT le
+  // mapping — aucun de ces deux types n'est atteignable sans direction établie.
+  executive_appointment: 'EXECUTIVE_APPOINTMENT',
+  executive_departure: 'EXECUTIVE_DEPARTURE',
 })
 
 /** Type canonique d'un `EvidenceType`, ou `null`. Table close, jamais devinée. */
@@ -166,11 +176,51 @@ export function canonicalSnapshotId(
   return `csn_${createHash('sha256').update(charge, 'utf8').digest('hex').slice(0, 32)}`
 }
 
+/**
+ * ANCRE D'ÉVÉNEMENT DE DIRECTION — immuable (E2E_BRIDGE_001).
+ *
+ * ⚠️ IDENTITÉ : espace + type(direction) + compte + fonction + clé de personne
+ * + jour. JAMAIS : `roleTitleRaw` (prose — « CRO » et « Chief Revenue
+ * Officer » désignent le même fait), `roleSeniority` (attribut contestable,
+ * pas identité), URL, éditeur, `Evidence.id`, `observedAt`, `retrievedAt`.
+ *
+ * ⚠️ LA CLÉ DE PERSONNE `NAME_ONLY` EST DÉJÀ SCOPÉE AU COMPTE
+ * (`name:<nom>@<accountId>`) : deux homonymes dans deux entreprises ne peuvent
+ * pas converger. Aucune entité personne inter-comptes n'existe ni n'est créée.
+ */
+export interface CanonicalExecutiveEvent {
+  id: string
+  workspaceId: string
+  type: 'EXECUTIVE_APPOINTMENT' | 'EXECUTIVE_DEPARTURE'
+  accountId: string
+  roleFunction: string
+  personKey: string
+  occurredAt: string
+  occurredAtPrecision: 'DAY'
+  canonicalClaimKey: string
+}
+
+export function canonicalExecutiveEventId(
+  workspaceId: string, type: CanonicalExecutiveEvent['type'], accountId: string,
+  roleFunction: string, personKey: string, occurredAt: string,
+): string {
+  const charge =
+    `canonical-event:v1:${workspaceId}\n${type}\n${accountId}\n${roleFunction}\n${personKey}\n${occurredAt}`
+  return `cev_${createHash('sha256').update(charge, 'utf8').digest('hex').slice(0, 32)}`
+}
+
 const COMPTE_VERIFIE = /^acc_siren_\d{9}$/
 const JOUR = /^\d{4}-\d{2}-\d{2}$/
 
 export interface CanonicalAnchors {
   event: CanonicalEvent | null
+  /**
+   * Ancres de direction — TABLEAU, pas un singleton : rien dans la clé
+   * canonique de la revendication ne contient la personne, deux sources
+   * durables peuvent donc affirmer deux personnes distinctes le même jour.
+   * Deux ancres visibles valent mieux qu'une fusion invisible.
+   */
+  execEvents: CanonicalExecutiveEvent[]
   snapshots: CanonicalStateSnapshot[]
 }
 
@@ -208,7 +258,7 @@ export interface AnchorDerivationInput extends AssertionBuildInput {
  * reste parfaitement valide — une ancre est une vue, jamais le fait.
  */
 export function buildCanonicalAnchors(input: AnchorDerivationInput): CanonicalAnchors {
-  const vide: CanonicalAnchors = { event: null, snapshots: [] }
+  const vide: CanonicalAnchors = { event: null, execEvents: [], snapshots: [] }
 
   const ws = typeof input?.workspaceId === 'string' ? input.workspaceId.trim() : ''
   if (ws === '') return vide
@@ -257,8 +307,50 @@ export function buildCanonicalAnchors(input: AnchorDerivationInput): CanonicalAn
         occurredAtPrecision: 'DAY',
         canonicalClaimKey: input.canonicalClaimKey,
       },
+      execEvents: [],
       snapshots: [],
     }
+  }
+
+  // ── EXECUTIVE_APPOINTMENT / EXECUTIVE_DEPARTURE ──────────────────────────
+  if (type === 'EXECUTIVE_APPOINTMENT' || type === 'EXECUTIVE_DEPARTURE') {
+    if (input.evidence.temporality !== 'dated_event') return vide
+    const occurredAt = (input.evidence as any).occurredAt
+    if (!JOUR.test(String(occurredAt)) || !jourReel(occurredAt)) return vide
+
+    // ⚠️ L'ANCRE SE DÉRIVE DES ASSERTIONS DURABLES, ET DE LEURS INSTANTANÉS.
+    // La personne et la fonction viennent du fait structuré que CHAQUE source
+    // durable a affirmé — jamais d'un objet en mémoire, jamais de prose.
+    const attendu = type === 'EXECUTIVE_APPOINTMENT' ? 'APPOINTMENT' : 'DEPARTURE'
+    const execEvents: CanonicalExecutiveEvent[] = []
+    const vusExec = new Set<string>()
+    for (const a of assertions) {
+      const fait = a.structuredFact
+      if (!fait || fait.payload.family !== 'EXECUTIVE_CHANGE') continue
+      const p = fait.payload
+      // ⚠️ `UNKNOWN` N'ANCRE JAMAIS — fail closed, revalidé à cette frontière
+      // même si `mapClaim` l'a déjà refusé en amont.
+      if (p.direction !== attendu) continue
+      if (!isPersonRef(p.person)) continue
+      const personne = personKeyV2(p.person, accountId)
+      if (personne === null) continue
+      // Cohérence temporelle : l'instantané doit affirmer LE jour de la
+      // revendication — un instantané daté d'ailleurs décrit un autre fait.
+      if (fait.occurredAt !== occurredAt) continue
+
+      const id = canonicalExecutiveEventId(ws, type, accountId, p.roleFunction, personne, occurredAt)
+      if (vusExec.has(id)) continue
+      vusExec.add(id)
+      execEvents.push({
+        id, workspaceId: ws, type, accountId,
+        roleFunction: p.roleFunction, personKey: personne,
+        occurredAt, occurredAtPrecision: 'DAY',
+        canonicalClaimKey: input.canonicalClaimKey,
+      })
+    }
+
+    execEvents.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
+    return { event: null, execEvents, snapshots: [] }
   }
 
   // ── HIRING_SNAPSHOT ──────────────────────────────────────────────────────
@@ -290,7 +382,7 @@ export function buildCanonicalAnchors(input: AnchorDerivationInput): CanonicalAn
   }
 
   snapshots.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
-  return { event: null, snapshots }
+  return { event: null, execEvents: [], snapshots }
 }
 
 // ── GARDES DE FORME — l'identité doit être RECALCULABLE ────────────────────
@@ -305,6 +397,19 @@ export function isCanonicalEvent(v: any): v is CanonicalEvent {
   if (v.occurredAtPrecision !== 'DAY') return false
   if (!JOUR.test(String(v.occurredAt)) || !jourReel(v.occurredAt)) return false
   return v.id === canonicalEventId(v.workspaceId, v.accountId, v.occurredAt)
+}
+
+export function isCanonicalExecutiveEvent(v: any): v is CanonicalExecutiveEvent {
+  if (!v || typeof v !== 'object') return false
+  if (v.type !== 'EXECUTIVE_APPOINTMENT' && v.type !== 'EXECUTIVE_DEPARTURE') return false
+  if (!nonVide(v.id) || !nonVide(v.workspaceId) || !nonVide(v.canonicalClaimKey)) return false
+  if (!COMPTE_VERIFIE.test(String(v.accountId))) return false
+  if (!nonVide(v.roleFunction) || !nonVide(v.personKey)) return false
+  if (v.occurredAtPrecision !== 'DAY') return false
+  if (!JOUR.test(String(v.occurredAt)) || !jourReel(v.occurredAt)) return false
+  return v.id === canonicalExecutiveEventId(
+    v.workspaceId, v.type, v.accountId, v.roleFunction, v.personKey, v.occurredAt,
+  )
 }
 
 export function isCanonicalStateSnapshot(v: any): v is CanonicalStateSnapshot {
@@ -397,6 +502,11 @@ export async function recordCanonicalAnchors(
       const ancres = buildCanonicalAnchors({ ...p, workspaceId: ws, durableAssertionIds })
       if (ancres.event) {
         try { compter(await saveCanonicalEvent(ancres.event, ws)) } catch { bilan.failed++ }
+      }
+      for (const e of ancres.execEvents) {
+        try {
+          compter(await ecrire(CANONICAL_EVENT_KIND, e, ws, isCanonicalExecutiveEvent))
+        } catch { bilan.failed++ }
       }
       for (const s of ancres.snapshots) {
         try { compter(await saveCanonicalStateSnapshot(s, ws)) } catch { bilan.failed++ }
