@@ -26,7 +26,7 @@ import { randomBytes } from 'node:crypto'
 //
 // Prérequis : `npx supabase start` puis `npx supabase db reset --local`.
 
-const URL_ = process.env.SUPABASE_TEST_URL || 'http://127.0.0.1:54321'
+const URL_ = process.env.SUPABASE_TEST_URL || 'http://127.0.0.1:55321'
 const KEY = process.env.SUPABASE_TEST_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 const ANON = process.env.SUPABASE_TEST_ANON_KEY || ''
 

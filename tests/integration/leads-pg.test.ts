@@ -19,7 +19,7 @@ import type { Lead } from '../../types/prospector'
 // Le schema provient de la baseline A3b versionnee dans supabase/migrations/.
 // npm run db:test:up reconstruit la base locale via supabase db reset --local.
 
-const URL_ = process.env.SUPABASE_TEST_URL || 'http://127.0.0.1:54321'
+const URL_ = process.env.SUPABASE_TEST_URL || 'http://127.0.0.1:55321'
 const KEY = process.env.SUPABASE_TEST_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 
 let leads: typeof import('../../lib/supabase/leads')

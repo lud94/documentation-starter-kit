@@ -22,7 +22,7 @@ import { createClient } from '@supabase/supabase-js'
 // AUCUNE migration : la table et sa clé `(kind, id, workspace_id)` existent
 // depuis C2a-1.
 
-const URL_ = process.env.SUPABASE_TEST_URL || 'http://127.0.0.1:54321'
+const URL_ = process.env.SUPABASE_TEST_URL || 'http://127.0.0.1:55321'
 const KEY = process.env.SUPABASE_TEST_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 
 // Le vrai espace technique de l'autorité — on éprouve le chemin réel, pas une

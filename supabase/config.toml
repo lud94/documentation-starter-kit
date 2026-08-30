@@ -4,8 +4,25 @@
 # se fait par `supabase link --project-ref <ref>`, qui écrit dans supabase/.temp/
 # (ignoré par git). Aucun identifiant de projet, aucune URL, aucun secret ne doit
 # apparaître dans ce fichier versionné.
+#
+# ── ISOLATION LOCALE (LOCAL_SUPABASE_ISOLATION_001) ─────────────────────────
+# `project_id` est UNIQUEMENT l'espace de noms des CONTENEURS LOCAUX du CLI
+# (supabase_db_prospector-factual-local, supabase_kong_…, etc.) — ce n'est PAS
+# une référence de projet distant, et aucun `supabase link` n'est utilisé.
+# Le poste de développement héberge déjà une pile indépendante `jarvis-v31`
+# sur les ports hôte 5432x (54321 API / 54322 DB / 54324 Inbucket) : Prospector
+# prend l'espace de noms ET la plage de ports 5532x ci-dessous, pour que
+# `npm run db:test:up` (supabase start && supabase db reset --local) ne puisse
+# démarrer, réinitialiser ou toucher QUE sa propre pile. `db reset --local`
+# vise le conteneur de CE project_id ; sans lien distant, il n'existe aucun
+# chemin vers jarvis-v31 ni vers un projet distant.
+project_id = "prospector-factual-local"
 
 [db]
+# Port hôte PostgreSQL — jarvis-v31 occupe 54322.
+port = 55322
+# Base fantôme de `db diff` — même plage isolée (défaut CLI : 54320).
+shadow_port = 55320
 # Doit correspondre à la version PostgreSQL du projet distant.
 # À CONFIRMER lors du lot A3b : non vérifiable sans accès au projet.
 major_version = 17
@@ -17,6 +34,10 @@ enabled = false
 # (lib/supabase/*.ts via supabase-js) et donc tous les tests d'intégration.
 [api]
 enabled = true
+# Port hôte Kong/API — jarvis-v31 occupe 54321. Les tests d'intégration et le
+# harnais factuel lisent l'URL effective via `supabase status -o env`, jamais
+# un port codé en dur.
+port = 55321
 
 # ⚠️ AUTH ACTIVÉ POUR L'INSTANCE LOCALE UNIQUEMENT — et pas pour s'en servir.
 #
@@ -45,3 +66,21 @@ enabled = false
 
 [studio]
 enabled = true
+port = 55323
+
+# Serveur mail local du CLI (« Inbucket ») — jarvis-v31 occupe 54324.
+# Aucun test n'envoie d'e-mail ; les ports sont fixés pour que la pile
+# démarre sans jamais entrer en collision avec l'existant.
+[local_smtp]
+port = 55324
+smtp_port = 55325
+pop3_port = 55326
+
+# Hors du besoin des tests : désactivés pour ne réclamer AUCUN port hôte
+# supplémentaire (défauts du CLI : analytics 54327, inspecteur edge 8083 —
+# tous deux susceptibles d'être déjà tenus par la pile jarvis-v31).
+[analytics]
+enabled = false
+
+[edge_runtime]
+enabled = false

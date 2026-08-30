@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto'
 // Prérequis : `npx supabase start` puis `npx supabase db reset --local`
 // (la baseline A3b + la migration C2a-1). Docker requis.
 
-const URL_ = process.env.SUPABASE_TEST_URL || 'http://127.0.0.1:54321'
+const URL_ = process.env.SUPABASE_TEST_URL || 'http://127.0.0.1:55321'
 const KEY = process.env.SUPABASE_TEST_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 
 let sb: SupabaseClient
