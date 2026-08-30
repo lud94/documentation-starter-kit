@@ -25,6 +25,7 @@
     "check:error-boundary": "node scripts/check-error-boundary.mjs",
     "proactive:eval": "node --experimental-strip-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve-hook.mjs scripts/proactive-eval.mjs",
     "proactive:golden": "node --experimental-strip-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve-hook.mjs scripts/proactive-golden-eval.mjs",
+    "factual:test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./scripts/ts-resolve-hook.mjs scripts/factual-harness.mjs",
     "check:extension": "node scripts/check-extension-origin.mjs",
     "check:extension:release": "node scripts/check-extension-origin.mjs --release"
   },
