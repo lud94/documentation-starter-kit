@@ -6,9 +6,14 @@
 // exactement comme le drapeau `-Memory` de l'enveloppe PowerShell.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import {
   cleanupHarnessWorkspace,
+  diagnoseCandidateReadBack,
   runFactualCase,
+  sameSemanticFact,
   verifyHarnessEnvironment,
   HARNESS_WORKSPACE,
 } from '../lib/prospector/proactive/harness/factualHarness'
@@ -189,3 +194,96 @@ describe('sortie machine et hygiène (H11)', () => {
 // H12 — le comportement de production hérité est inchangé : c'est l'ensemble
 // de la suite (2293 tests précédents) qui le prouve ; ce fichier n'ajoute que
 // des lectures/écritures dans l'espace réservé du harnais.
+
+// ── RUNTIME_FIX_001 — la leçon du premier run Windows réel ──────────────────
+
+describe('égalité sémantique — insensible au réordonnancement jsonb', () => {
+  const fact: any = {
+    contractVersion: 'v2', family: 'FUNDING', claimNature: 'EVENT', eventStatus: 'COMPLETED',
+    occurredAt: '2026-08-12', occurredAtPrecision: 'DAY', sourcePublishedAt: null,
+    rawDetail: { detail: 'd', icebreaker: 'i' },
+    extraction: { mode: 'claude-web', promptVersion: 'p' },
+    payload: {
+      family: 'FUNDING', roundStage: 'SERIES_A',
+      amount: { amountMinor: 1_200_000_000, currency: 'EUR', asPublished: '€12M' },
+      investors: [{ nameRaw: 'Index Ventures', role: 'LEAD' }],
+    },
+  }
+  const reordonne = (v: any): any => Array.isArray(v)
+    ? v.map(reordonne)
+    : (v && typeof v === 'object'
+        ? Object.fromEntries(Object.keys(v).sort().reverse().map((k) => [k, reordonne(v[k])]))
+        : v)
+
+  it('un bloc V2 aux clés réordonnées (comme le rend jsonb) reste LE MÊME fait', () => {
+    const autre = reordonne(fact)
+    expect(JSON.stringify(autre)).not.toBe(JSON.stringify(fact)) // le piège d'origine
+    expect(sameSemanticFact(autre, fact)).toBe(true)             // la comparaison correcte
+    expect(diagnoseCandidateReadBack(
+      { ok: true, candidate: { id: 'cand_x', issuedAt: '', claim: { v2: autre } as any } },
+      fact,
+    )).toEqual({ ok: true, reason: 'OK' })
+  })
+
+  it('mais un fait RÉELLEMENT différent reste différent', () => {
+    const change = JSON.parse(JSON.stringify(fact))
+    change.payload.amount.amountMinor = 999
+    expect(sameSemanticFact(change, fact)).toBe(false)
+  })
+
+  it('R5 — diagnostic fermé : indisponible ≠ absent ≠ V2 manquant ≠ fait divergent', () => {
+    expect(diagnoseCandidateReadBack(null, fact).reason).toBe('CANDIDATE_NOT_ISSUED')
+    expect(diagnoseCandidateReadBack({ ok: false, state: 'CANDIDATE_STORE_UNAVAILABLE' }, fact).reason)
+      .toBe('CANDIDATE_STORE_UNAVAILABLE')
+    expect(diagnoseCandidateReadBack({ ok: false, state: 'CANDIDATE_UNKNOWN' }, fact).reason)
+      .toBe('CANDIDATE_UNKNOWN')
+    expect(diagnoseCandidateReadBack(
+      { ok: true, candidate: { id: 'cand_x', issuedAt: '', claim: { v2: null } as any } }, fact,
+    ).reason).toBe('CANDIDATE_V2_ABSENT_AFTER_READ')
+    const change = JSON.parse(JSON.stringify(fact))
+    change.payload.roundStage = 'SEED'
+    expect(diagnoseCandidateReadBack(
+      { ok: true, candidate: { id: 'cand_x', issuedAt: '', claim: { v2: change } as any } }, fact,
+    ).reason).toBe('CANDIDATE_V2_MISMATCH_AFTER_READ')
+  })
+})
+
+describe('cycle de vie du CLI (R9/R10)', () => {
+  const cli = readFileSync(join(process.cwd(), 'scripts/factual-harness.mjs'), 'utf8')
+  const directives = cli.split('\n').filter((l) => !l.trim().startsWith('//'))
+
+  it('R10 — aucun `process.exit(` après le travail asynchrone : exitCode seulement', () => {
+    for (const l of directives) expect(l, l).not.toMatch(/process\.exit\(/)
+    expect(cli).toMatch(/process\.exitCode = await main\(\)/)
+  })
+
+  it('R9 — la table des codes de sortie est inchangée', () => {
+    expect(cli).toMatch(/const EXIT = \{ PASS: 0, FAIL: 1, BLOCKED: 2, INVALID_INPUT: 3 \}/)
+  })
+})
+
+describe('amorçage PowerShell (R6/R7 — verrous structurels)', () => {
+  const ps1 = readFileSync(join(process.cwd(), 'scripts/factual-test.ps1'), 'utf8')
+
+  it('R7 — l’hôte de l’API est vérifié local AVANT usage, et le refus n’imprime aucune valeur', () => {
+    expect(ps1).toMatch(/\[uri\]\$apiUrl\)\.Host/)
+    expect(ps1).toMatch(/'localhost', '127\.0\.0\.1', '::1'/)
+    expect(ps1).toMatch(/REFUSED/)
+    expect(ps1).not.toMatch(/Write-\w+[^\n]*\$serviceKey/)
+    expect(ps1).not.toMatch(/Write-\w+[^\n]*\$apiUrl/)
+  })
+
+  it('R6/R8 — portée processus : restauration en finally, et un env déjà fourni court-circuite l’amorçage', () => {
+    expect(ps1).toMatch(/envDejaFourni/)
+    expect(ps1).toMatch(/-not \$Memory -and -not \$envDejaFourni/)
+    expect(ps1).toMatch(/finally/)
+    expect(ps1).toMatch(/Remove-Item Env:SUPABASE_SERVICE_ROLE_KEY/)
+    // Sur les LIGNES DIRECTIVES uniquement — les commentaires documentent
+    // précisément ce qui est interdit, ils ont le droit de le nommer.
+    const directives = ps1.split('\n').filter((l) => !l.trim().startsWith('#'))
+    for (const l of directives) {
+      expect(l, l).not.toMatch(/supabase link/)
+      expect(l, l).not.toMatch(/\.env\b/)
+    }
+  })
+})

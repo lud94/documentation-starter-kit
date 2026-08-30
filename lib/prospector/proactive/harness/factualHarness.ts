@@ -36,7 +36,8 @@ import {
   readCanonicalEvent, readCanonicalStateSnapshot,
   CANONICAL_EVENT_KIND, CANONICAL_STATE_SNAPSHOT_KIND,
 } from '../canonicalFact'
-import { isAcquisitionFactV2 } from '../acquisitionV2'
+import { canonicalJson, isAcquisitionFactV2 } from '../acquisitionV2'
+import type { CandidateRead } from '../signalCandidates'
 import { isEvidenceEvent } from '../validators'
 import { mapClaim, canonicalKey } from '../signalBridge'
 import { supabaseConfigured } from '../../../supabase/client'
@@ -230,6 +231,42 @@ function hitDe(url: string, v2: AcquisitionFactV2): SignalHit {
   } as SignalHit
 }
 
+/**
+ * ÉGALITÉ SÉMANTIQUE de deux blocs V2 — par la sérialisation CANONIQUE de
+ * production (clés triées récursivement), JAMAIS par `JSON.stringify`.
+ *
+ * ⚠️ LA LEÇON DU PREMIER RUN WINDOWS RÉEL. PostgreSQL `jsonb` NE PRÉSERVE PAS
+ * l'ordre des clés : un bloc relu de la base revient réordonné. Le validateur
+ * (`isAcquisitionFactV2`, structurel) et les identités (`candidateId`,
+ * `assertedFactHash`, bâtis sur `canonicalJson`) y sont insensibles — mesuré.
+ * Mais une comparaison `JSON.stringify` dépend de l'ordre d'insertion : elle
+ * était vraie en mémoire et fausse contre la vraie base, faisant échouer le
+ * harnais sur un fait pourtant intact.
+ */
+export function sameSemanticFact(a: unknown, b: unknown): boolean {
+  return canonicalJson(a) === canonicalJson(b)
+}
+
+/**
+ * Diagnostic SÛR d'une relecture de candidat — une raison fermée, jamais une
+ * valeur d'environnement ni un contenu brut.
+ */
+export function diagnoseCandidateReadBack(
+  lu: CandidateRead | null, attendu: AcquisitionFactV2,
+): { ok: boolean; reason: string } {
+  if (lu === null) return { ok: false, reason: 'CANDIDATE_NOT_ISSUED' }
+  if (lu.ok === false) {
+    // Les DEUX états de `readCandidate` restent distincts : « absent ici » et
+    // « je n'ai pas pu regarder » n'appellent pas le même geste.
+    return { ok: false, reason: lu.state }
+  }
+  if (lu.candidate.claim.v2 === null) return { ok: false, reason: 'CANDIDATE_V2_ABSENT_AFTER_READ' }
+  if (!sameSemanticFact(lu.candidate.claim.v2, attendu)) {
+    return { ok: false, reason: 'CANDIDATE_V2_MISMATCH_AFTER_READ' }
+  }
+  return { ok: true, reason: 'OK' }
+}
+
 interface Ronde { url: string; fact: AcquisitionFactV2; retrievedAt: string }
 
 interface CasHarnais {
@@ -393,14 +430,13 @@ export async function runFactualCase(
     const hit = hitDe(ronde.url, ronde.fact)
     const [cid] = await registerCandidates([hit], HARNESS_WORKSPACE)
     const luCandidat = cid ? await readCandidate(cid, HARNESS_WORKSPACE) : null
-    const candidatOk = !!luCandidat && luCandidat.ok === true
-      && JSON.stringify(luCandidat.candidate.claim.v2) === JSON.stringify(ronde.fact)
-    if (!etape(`Candidate${tag}`, candidatOk, cid ?? 'aucun identifiant émis')) continue
+    const diag = diagnoseCandidateReadBack(luCandidat, ronde.fact)
+    if (!etape(`Candidate${tag}`, diag.ok, diag.ok ? (cid as string) : `${diag.reason}${cid ? ` (${cid})` : ''}`)) continue
     persisted.push({ id: cid as string, kind: SIGNAL_CANDIDATE_KIND, summary: 'candidat (bloc V2 relu conforme)' })
 
     // 3 — PROMOTION : Bridge réel, adjudication synthétique EXPLICITE.
     const source = sourceEvidenceFromHit(hit, SITE, { kind: 'ORIGINAL' }, { kind: 'UNVERIFIABLE' }, ronde.retrievedAt)
-    if (!etape(`SourceEvidence${tag}`, !!source && JSON.stringify(source.hit.v2) === JSON.stringify(ronde.fact))) continue
+    if (!etape(`SourceEvidence${tag}`, !!source && sameSemanticFact(source.hit.v2, ronde.fact))) continue
     const claim = mapClaim(hit)
     if (typeof claim === 'string') { etape(`Evidence${tag}`, false, `mapClaim: ${claim}`); continue }
     const cle = canonicalKey(HARNESS_ACCOUNT, claim)
@@ -410,7 +446,7 @@ export async function runFactualCase(
     })
     if (promotion.ok === false) { etape(`Evidence${tag}`, false, `refus: ${promotion.reason}`); continue }
     const evidenceOk = isEvidenceEvent(promotion.evidence)
-      && JSON.stringify((promotion.evidence as any).structuredFact) === JSON.stringify(ronde.fact)
+      && sameSemanticFact((promotion.evidence as any).structuredFact, ronde.fact)
     // ⚠️ VALIDÉE, PAS PERSISTÉE PAR LE HARNAIS — voir l'en-tête du module.
     if (!etape(`Evidence${tag}`, evidenceOk, `${String(promotion.evidence.type)} (validée ; projection non persistée par le harnais)`)) continue
 
@@ -431,7 +467,7 @@ export async function runFactualCase(
         && isSourceAssertion(relu.value)
         && relu.value.workspaceId === HARNESS_WORKSPACE
         && relu.value.id === a.id
-        && JSON.stringify(relu.value.structuredFact) === JSON.stringify(ronde.fact)
+        && sameSemanticFact(relu.value.structuredFact, ronde.fact)
       if (!present) { assertionsOk = false; continue }
       assertionsVues.set(a.id, { sourceUrl: a.sourceUrl, fact: ronde.fact })
       persisted.push({ id: a.id, kind: SOURCE_ASSERTION_KIND, summary: `assertion versionnée (${a.sourceUrl})` })
