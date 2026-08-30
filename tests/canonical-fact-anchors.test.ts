@@ -36,6 +36,7 @@ import {
   type HumanFactConfirmation,
   type SourceEvidence,
 } from '../lib/prospector/proactive/signalBridge'
+import { buildSourceAssertions } from '../lib/prospector/proactive/sourceAssertion'
 import { listItems } from '../lib/supabase/store'
 import type { SignalHit } from '../types/prospector'
 
@@ -91,18 +92,34 @@ function etat(o: { url?: string; retrievedAt?: string } = {}): SourceEvidence {
   return s
 }
 
-/** Promotion RÉELLE, puis dérivation des ancres. */
-function ancres(sources: SourceEvidence[], cle: string, adjugeA = '2026-09-05T14:00:00.000Z', ws = WS) {
+/**
+ * Promotion RÉELLE, puis dérivation des ancres.
+ *
+ * ⚠️ `durables` MODÉLISE L'ÉTAT RÉEL DU REGISTRE. Par défaut TOUTES les
+ * assertions construites sont réputées écrites — c'est le cas nominal. Les
+ * tests d'intégrité d'écriture, eux, en restreignent l'ensemble pour vérifier
+ * qu'une ancre ne naît jamais sans appui persistant.
+ */
+function ancres(
+  sources: SourceEvidence[], cle: string, adjugeA = '2026-09-05T14:00:00.000Z', ws = WS,
+  durables?: (ids: string[]) => string[],
+) {
   const r = promoteToEvidence({
     accountId: COMPTE, observedAt: adjugeA, sources,
     confirmations: [confirme(sources.map((s) => s.url), cle)],
   })
   if (r.ok === false) throw new Error(`promotion refusée : ${r.reason}`)
+  const entree = {
+    workspaceId: ws, accountId: COMPTE, canonicalClaimKey: r.canonicalKey,
+    evidence: r.evidence, qualifyingSources: r.qualifyingSources,
+  }
+  const construites = buildSourceAssertions(entree).map((a) => a.id)
   return {
     evidence: r.evidence,
+    assertionIds: construites,
     ...buildCanonicalAnchors({
-      workspaceId: ws, accountId: COMPTE, canonicalClaimKey: r.canonicalKey,
-      evidence: r.evidence, qualifyingSources: r.qualifyingSources,
+      ...entree,
+      durableAssertionIds: new Set(durables ? durables(construites) : construites),
     }),
   }
 }
@@ -211,7 +228,7 @@ describe('F — ancre d’événement : le compte et le jour, rien d’autre', (
     const r = buildCanonicalAnchors({
       workspaceId: WS, accountId: COMPTE, canonicalClaimKey: CLE_LEVEE,
       evidence: { ...ancres([levee()], CLE_LEVEE).evidence, occurredAt: '2026-02-30' } as any,
-      qualifyingSources: [levee()],
+      qualifyingSources: [levee()], durableAssertionIds: new Set(['peu-importe']),
     })
     expect(r.event).toBeNull()
     expect(r.snapshots).toEqual([])
@@ -223,6 +240,7 @@ describe('F — ancre d’événement : le compte et le jour, rien d’autre', (
       expect(buildCanonicalAnchors({
         workspaceId: WS, accountId: mauvais, canonicalClaimKey: CLE_LEVEE,
         evidence: base.evidence, qualifyingSources: [levee()],
+        durableAssertionIds: new Set(['peu-importe']),
       }).event).toBeNull()
     }
   })
@@ -233,7 +251,7 @@ describe('F — ancre d’événement : le compte et le jour, rien d’autre', (
     const base = ancres([levee()], CLE_LEVEE)
     expect(buildCanonicalAnchors({
       workspaceId: WS, accountId: COMPTE, canonicalClaimKey: CLE_LEVEE,
-      evidence: base.evidence, qualifyingSources: [],
+      evidence: base.evidence, qualifyingSources: [], durableAssertionIds: new Set(),
     }).event).toBeNull()
   })
 
@@ -416,17 +434,17 @@ describe('I — drapeau et isolation', () => {
     const bilan = await recordCanonicalAnchors([{
       workspaceId: WS, accountId: 'acc_name_acme', canonicalClaimKey: CLE_LEVEE,
       evidence: base.evidence, qualifyingSources: [levee()],
-    }], WS)
+    }], WS, new Set(base.assertionIds))
     expect(bilan).toEqual({ created: 0, existing: 0, failed: 0 })
     expect(await lignes(CANONICAL_EVENT_KIND)).toHaveLength(0)
   })
 
   it('I3 — un lot vide est sans effet et sans erreur', async () => {
-    expect(await recordCanonicalAnchors([], WS)).toEqual({ created: 0, existing: 0, failed: 0 })
+    expect(await recordCanonicalAnchors([], WS, new Set())).toEqual({ created: 0, existing: 0, failed: 0 })
   })
 
   it('le bilan ne contient aucun détail interne exploitable', async () => {
-    const bilan = await recordCanonicalAnchors([], WS)
+    const bilan = await recordCanonicalAnchors([], WS, new Set())
     expect(Object.keys(bilan).sort()).toEqual(['created', 'existing', 'failed'])
   })
 
@@ -436,8 +454,9 @@ describe('I — drapeau et isolation', () => {
       workspaceId: WS, accountId: COMPTE, canonicalClaimKey: CLE_LEVEE,
       evidence: base.evidence, qualifyingSources: [levee()],
     }]
-    expect(await recordCanonicalAnchors(lot, WS)).toEqual({ created: 1, existing: 0, failed: 0 })
-    expect(await recordCanonicalAnchors(lot, WS)).toEqual({ created: 0, existing: 1, failed: 0 })
+    const durables = new Set(base.assertionIds)
+    expect(await recordCanonicalAnchors(lot, WS, durables)).toEqual({ created: 1, existing: 0, failed: 0 })
+    expect(await recordCanonicalAnchors(lot, WS, durables)).toEqual({ created: 0, existing: 1, failed: 0 })
     expect(await lignes(CANONICAL_EVENT_KIND)).toHaveLength(1)
   })
 })

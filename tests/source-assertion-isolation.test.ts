@@ -20,6 +20,10 @@ const etat = vi.hoisted(() => ({
   echecsEnTete: 0,
   appels: 0,
   ecrites: [] as string[],
+  /** `insertItemIfAbsent` rend `false` sans jeter — « existe » OU base muette. */
+  faux: false,
+  /** La relecture d'arbitrage échoue : l'issue est donc INDÉTERMINÉE. */
+  relectureMuette: false,
 }))
 
 vi.mock('../lib/supabase/store', () => ({
@@ -27,11 +31,16 @@ vi.mock('../lib/supabase/store', () => ({
   // absent se traduit alors par un rejet, donc par une adjudication perdue.
   insertItemIfAbsent: async (_k: string, _id: string, data: any) => {
     etat.appels++
+    // `false` SANS exception : la forme exacte d'un « existe déjà » — ou d'une
+    // base muette. C'est `getItemStrict` qui doit trancher.
+    if (etat.faux) return false
     if (etat.appels <= etat.echecsEnTete) throw new Error('base injoignable')
     etat.ecrites.push(data.sourceUrl)
     return true
   },
-  getItemStrict: async () => { throw new Error('base injoignable') },
+  getItemStrict: async () => (etat.relectureMuette
+    ? { ok: false as const }
+    : Promise.reject(new Error('base injoignable'))),
 }))
 
 import { recordSourceAssertions } from '../lib/prospector/proactive/sourceAssertion'
@@ -61,7 +70,10 @@ function promotion(urls: string[]) {
   }]
 }
 
-beforeEach(() => { etat.echecsEnTete = 99; etat.appels = 0; etat.ecrites = [] })
+beforeEach(() => {
+  etat.echecsEnTete = 99; etat.appels = 0; etat.ecrites = []
+  etat.faux = false; etat.relectureMuette = false
+})
 
 describe('F2/F3 — isolation des pannes du registre', () => {
   it('une panne d’écriture ne JETTE JAMAIS — l’adjudication survit', async () => {
@@ -105,9 +117,36 @@ describe('F2/F3 — isolation des pannes du registre', () => {
     expect(bilan.failed).toBeGreaterThan(0)
   })
 
-  it('le bilan ne contient aucun détail interne exploitable', async () => {
+  it('le bilan ne porte que des compteurs et des identifiants durables', async () => {
+    // ⚠️ NI MESSAGE, NI URL, NI CAUSE. `durableIds` a rejoint le contrat parce
+    // que la couche d'ancrage doit savoir QUELLES assertions ont réellement
+    // survécu — sans quoi elle produirait des ancres orphelines. Ce sont des
+    // condensats opaques, et le bilan reste STRICTEMENT interne : `promote.ts`
+    // ne journalise qu'une erreur générique et n'en met rien dans la réponse.
     const bilan = await recordSourceAssertions([], 'ws_alpha')
-    // Trois compteurs, et rien d'autre : ni message, ni URL, ni cause.
-    expect(Object.keys(bilan).sort()).toEqual(['created', 'existing', 'failed'])
+    expect(Object.keys(bilan).sort()).toEqual(['created', 'durableIds', 'existing', 'failed'])
+    expect(bilan.durableIds).toEqual([])
+  })
+
+  it('un `false` AMBIGU non arbitré n’est PAS un succès durable', async () => {
+    // ⚠️ LE CAS LE PLUS SOURNOIS. `insertItemIfAbsent` rend `false` aussi bien
+    // pour « la ligne existe » que pour « la base n'a pas répondu ». La
+    // relecture d'arbitrage échoue ici : l'issue est INDÉTERMINÉE, donc
+    // `write_failed` — et un indéterminé ne soutient aucune ancre.
+    etat.faux = true
+    etat.relectureMuette = true
+    const bilan = await recordSourceAssertions(promotion(['https://acme.fr/p']), 'ws_alpha')
+    expect(bilan.failed).toBe(1)
+    expect(bilan.created).toBe(0)
+    expect(bilan.durableIds).toEqual([])
+  })
+
+  it('une écriture EN ÉCHEC n’entre JAMAIS dans les identifiants durables', async () => {
+    // ⚠️ LE CŒUR DE L'INTÉGRITÉ D'ÉCRITURE. `insertItemIfAbsent` rend `false`
+    // pour « existe déjà » ET pour « base muette » ; un faux ambigu traité
+    // comme un succès ferait naître une ancre sans appui persistant.
+    const bilan = await recordSourceAssertions(promotion(['https://acme.fr/p']), 'ws_alpha')
+    expect(bilan.failed).toBe(1)
+    expect(bilan.durableIds).toEqual([])
   })
 })

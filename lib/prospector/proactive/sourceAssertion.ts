@@ -423,6 +423,22 @@ export interface LedgerReport {
   created: number
   existing: number
   failed: number
+
+  /**
+   * Identifiants des assertions DURABLEMENT présentes en base.
+   *
+   * ⚠️ « DURABLE » NE VEUT PAS DIRE « CONSTRUIT ». Une assertion rendue par
+   * `buildSourceAssertions` n'est qu'un objet en mémoire ; seule une écriture
+   * confirmée — créée, ou relue avec succès — atteste qu'elle survivra à la
+   * requête. Une projection dérivée qui se fierait à l'objet en mémoire
+   * pourrait exister sans le moindre appui persistant.
+   *
+   * ⚠️ UN `write_failed` N'Y ENTRE JAMAIS. `insertItemIfAbsent` rend `false`
+   * pour « existe déjà » ET pour « base muette » ; `saveSourceAssertion`
+   * tranche par une relecture, et une relecture qui échoue reste un ÉCHEC.
+   * Un faux ambigu n'est pas un succès durable.
+   */
+  durableIds: string[]
 }
 
 /**
@@ -444,15 +460,19 @@ export interface LedgerReport {
 export async function recordSourceAssertions(
   promotions: readonly AssertionBuildInput[], ws: string,
 ): Promise<LedgerReport> {
-  const bilan: LedgerReport = { created: 0, existing: 0, failed: 0 }
+  const bilan: LedgerReport = { created: 0, existing: 0, failed: 0, durableIds: [] }
   try {
     for (const p of promotions) {
       for (const a of buildSourceAssertions({ ...p, workspaceId: ws })) {
         try {
           const r = await saveSourceAssertion(a, ws)
           if (r.ok === false) bilan.failed++
-          else if (r.created) bilan.created++
-          else bilan.existing++
+          else {
+            // Créée OU relue : dans les deux cas la ligne EST en base.
+            if (r.created) bilan.created++
+            else bilan.existing++
+            bilan.durableIds.push(a.id)
+          }
         } catch {
           // Une assertion en échec n'interrompt pas les suivantes : perdre le
           // reste du lot parce qu'une ligne a échoué aggraverait la perte que

@@ -32,7 +32,10 @@ vi.mock('../lib/supabase/store', () => ({
 }))
 
 import { recordCanonicalAnchors } from '../lib/prospector/proactive/canonicalFact'
-import type { AssertionBuildInput } from '../lib/prospector/proactive/sourceAssertion'
+import {
+  buildSourceAssertions,
+  type AssertionBuildInput,
+} from '../lib/prospector/proactive/sourceAssertion'
 import type { KnownEvidenceEvent } from '../lib/prospector/proactive/catalog'
 
 const WS = 'ws_alpha'
@@ -63,6 +66,18 @@ function lotDeuxInstantanes(): AssertionBuildInput[] {
   }]
 }
 
+/** Toutes les assertions du lot réputées durables — cas nominal. */
+function toutesDurables(lots: AssertionBuildInput[]): Set<string> {
+  const ids = new Set<string>()
+  for (const l of lots) {
+    try { for (const a of buildSourceAssertions(l)) ids.add(a.id) } catch { /* lot malformé */ }
+  }
+  return ids
+}
+
+const ancrer = (lots: AssertionBuildInput[]) =>
+  recordCanonicalAnchors(lots, WS, toutesDurables(lots))
+
 beforeEach(() => { etat.echecsEnTete = 99; etat.appels = 0; etat.ecrits = [] })
 
 describe('I3 — isolation des pannes d’ancrage', () => {
@@ -70,7 +85,7 @@ describe('I3 — isolation des pannes d’ancrage', () => {
     // ⚠️ LA PROPRIÉTÉ QUI COMPTE. Une personne a confirmé un fait ; une couche
     // d'ancrage indisponible ne rend pas ce fait faux. Sans cette promesse,
     // une panne d'infrastructure annulerait des adjudications humaines.
-    const bilan = await recordCanonicalAnchors(lotDeuxInstantanes(), WS)
+    const bilan = await ancrer(lotDeuxInstantanes())
     expect(bilan.failed).toBe(2)
     expect(bilan.created).toBe(0)
   })
@@ -79,7 +94,7 @@ describe('I3 — isolation des pannes d’ancrage', () => {
     // ⚠️ CE CAS SEUL DISTINGUE une protection GLOBALE d'une protection PAR
     // ANCRE. Avec une seule écriture, les deux sont indiscernables.
     etat.echecsEnTete = 1
-    const bilan = await recordCanonicalAnchors(lotDeuxInstantanes(), WS)
+    const bilan = await ancrer(lotDeuxInstantanes())
     expect(bilan.failed).toBe(1)
     expect(bilan.created).toBe(1)
     expect(etat.ecrits).toHaveLength(1)
@@ -90,7 +105,7 @@ describe('I3 — isolation des pannes d’ancrage', () => {
     // garde englobante, la route rejetterait et l'adjudication serait perdue
     // pour une raison sans rapport avec elle.
     etat.echecsEnTete = 0
-    const bilan = await recordCanonicalAnchors([{
+    const bilan = await ancrer([{
       workspaceId: WS, accountId: COMPTE, canonicalClaimKey: CLE_ETAT,
       evidence: { id: 'e', accountId: COMPTE, type: 'sales_hiring',
         temporality: 'undated_state', observedAt: 'x' } as any,
@@ -100,13 +115,13 @@ describe('I3 — isolation des pannes d’ancrage', () => {
       qualifyingSources: [
         { url: 'https://careers.acme.fr/a', retrievedAt: '2026-09-01T06:00:00.000Z' } as any,
       ],
-    }], WS)
+    }])
     expect(bilan.created).toBe(0)
     expect(bilan.failed).toBeGreaterThan(0)
   })
 
   it('le bilan ne contient aucun détail interne exploitable', async () => {
-    const bilan = await recordCanonicalAnchors([], WS)
+    const bilan = await recordCanonicalAnchors([], WS, new Set())
     expect(Object.keys(bilan).sort()).toEqual(['created', 'existing', 'failed'])
   })
 })

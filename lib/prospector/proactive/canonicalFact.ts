@@ -36,7 +36,6 @@ import { jourReel } from './signalBridge'
 import {
   buildSourceAssertions,
   type AssertionBuildInput,
-  type SourceAssertion,
 } from './sourceAssertion'
 
 /**
@@ -176,6 +175,27 @@ export interface CanonicalAnchors {
 }
 
 /**
+ * Entrée de dérivation — l'appui DURABLE est un paramètre OBLIGATOIRE.
+ *
+ * ── L'INVARIANT QUE CE TYPE FAIT TENIR ─────────────────────────────────────
+ *
+ *   AUCUNE ANCRE SANS AU MOINS UNE ASSERTION DE SOURCE DURABLE.
+ *
+ * ⚠️ « DURABLE » N'EST PAS « CONSTRUITE ». `buildSourceAssertions` rend des
+ * objets en mémoire ; une ancre dérivée de ceux-là pourrait exister alors que
+ * l'écriture du registre a échoué — un fait canonique sans le moindre appui
+ * reconstructible. C'est exactement l'orphelin que ce champ interdit.
+ *
+ * ⚠️ OBLIGATOIRE, PAS OPTIONNEL, ET C'EST LE POINT. Un champ facultatif se
+ * serait oublié en silence chez un futur appelant ; ici, l'omettre ne compile
+ * pas. Et un ensemble VIDE ne produit aucune ancre — fail closed.
+ */
+export interface AnchorDerivationInput extends AssertionBuildInput {
+  /** Identifiants d'assertions CONFIRMÉES en base — `LedgerReport.durableIds`. */
+  durableAssertionIds: ReadonlySet<string>
+}
+
+/**
  * Dérive les ancres d'UNE promotion. Pure : aucune horloge, aucune I/O.
  *
  * ⚠️ LES ASSERTIONS SONT RECALCULÉES, PAS RELUES. `buildSourceAssertions` est
@@ -187,7 +207,7 @@ export interface CanonicalAnchors {
  * inattendue, jour inexistant au calendrier : on s'abstient. L'evidence, elle,
  * reste parfaitement valide — une ancre est une vue, jamais le fait.
  */
-export function buildCanonicalAnchors(input: AssertionBuildInput): CanonicalAnchors {
+export function buildCanonicalAnchors(input: AnchorDerivationInput): CanonicalAnchors {
   const vide: CanonicalAnchors = { event: null, snapshots: [] }
 
   const ws = typeof input?.workspaceId === 'string' ? input.workspaceId.trim() : ''
@@ -202,7 +222,15 @@ export function buildCanonicalAnchors(input: AssertionBuildInput): CanonicalAnch
   const type = canonicalTypeFor(input.evidence.type)
   if (!type) return vide
 
-  const assertions = buildSourceAssertions(input)
+  const durables = input?.durableAssertionIds
+  // ⚠️ ABSENT OU VIDE ⇒ AUCUNE ANCRE. Un appelant qui ne sait pas quelles
+  // assertions ont survécu ne sait pas non plus si le fait a un appui.
+  if (!durables || typeof durables.has !== 'function') return vide
+
+  // ⚠️ FILTRÉES SUR LA DURABILITÉ, PAS SUR LA CONSTRUCTION. Une assertion dont
+  // l'écriture a échoué ne soutient rien : elle est écartée ici, sans que les
+  // autres du même lot en pâtissent.
+  const assertions = buildSourceAssertions(input).filter((a) => durables.has(a.id))
 
   if (type === 'FUNDING_ROUND') {
     // ⚠️ REVALIDÉ ICI, à la frontière. `mapClaim` a déjà exigé le jour exact,
@@ -211,9 +239,12 @@ export function buildCanonicalAnchors(input: AssertionBuildInput): CanonicalAnch
     const occurredAt = (input.evidence as any).occurredAt
     if (!JOUR.test(String(occurredAt)) || !jourReel(occurredAt)) return vide
 
-    // ⚠️ AUCUNE ANCRE SANS ASSERTION. Les ancres sont DÉRIVÉES du registre :
-    // en produire une alors qu'aucune source n'a été enregistrée créerait un
-    // fait dont l'appui n'est reconstructible nulle part.
+    // ⚠️ AUCUNE ANCRE SANS APPUI DURABLE. Les ancres sont DÉRIVÉES du registre :
+    // en produire une alors qu'aucune source n'y a survécu créerait un fait
+    // dont l'appui n'est reconstructible nulle part.
+    //
+    // UNE SEULE SUFFIT. Trois sources dont une seule s'écrit soutiennent tout
+    // de même le fait : l'ancre n'agrège rien, elle identifie.
     if (assertions.length === 0) return vide
 
     return {
@@ -352,6 +383,7 @@ export interface AnchorReport {
  */
 export async function recordCanonicalAnchors(
   promotions: readonly AssertionBuildInput[], ws: string,
+  durableAssertionIds: ReadonlySet<string>,
 ): Promise<AnchorReport> {
   const bilan: AnchorReport = { created: 0, existing: 0, failed: 0 }
   const compter = (r: AnchorWrite) => {
@@ -362,7 +394,7 @@ export async function recordCanonicalAnchors(
 
   try {
     for (const p of promotions) {
-      const ancres = buildCanonicalAnchors({ ...p, workspaceId: ws })
+      const ancres = buildCanonicalAnchors({ ...p, workspaceId: ws, durableAssertionIds })
       if (ancres.event) {
         try { compter(await saveCanonicalEvent(ancres.event, ws)) } catch { bilan.failed++ }
       }

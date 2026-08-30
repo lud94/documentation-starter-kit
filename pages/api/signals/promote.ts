@@ -524,33 +524,35 @@ async function journaliserAssertions(
     qualifyingSources: p.qualifyingSources,
   }))
 
-  if (sourceAssertionsEnabled()) {
-    const bilan = await recordSourceAssertions(lots, ws)
-    // ⚠️ OBSERVABLE EN INTERNE, MUET VERS L'EXTÉRIEUR. Un état d'écriture du
-    // registre renseignerait un appelant sur la configuration interne, et il
-    // n'a rien à en faire.
-    if (bilan.failed > 0) {
-      logSafeError('signals.source_assertion_write', new Error('ledger_write_failed'), {
-        operation: 'signals_promote',
-      })
-    }
+  // ── LE REGISTRE COMMANDE. LES ANCRES EN DÉPENDENT. ──────────────────────
+  // ⚠️ LES DEUX DRAPEAUX NE SONT PLUS INDÉPENDANTS, ET C'ÉTAIT UN DÉFAUT.
+  // `CANONICAL_FACTS` allumé pendant que `SOURCE_ASSERTIONS` était éteint
+  // écrivait des faits canoniques SANS AUCUNE assertion persistée : des ancres
+  // orphelines, affirmant un fait dont l'appui n'était reconstructible nulle
+  // part. Le registre est l'histoire ; l'ancre n'en est qu'une projection.
+  if (!sourceAssertionsEnabled()) return
+
+  const bilan = await recordSourceAssertions(lots, ws)
+  // ⚠️ OBSERVABLE EN INTERNE, MUET VERS L'EXTÉRIEUR. Un état d'écriture
+  // renseignerait un appelant sur la configuration interne, et il n'a rien à
+  // en faire.
+  if (bilan.failed > 0) {
+    logSafeError('signals.source_assertion_write', new Error('ledger_write_failed'), {
+      operation: 'signals_promote',
+    })
   }
 
-  // ── ANCRES CANONIQUES — DÉRIVÉES, ET SOUS LEUR PROPRE DRAPEAU ───────────
-  // ⚠️ DRAPEAU INDÉPENDANT DE CELUI DU REGISTRE. Les deux couches n'ont ni le
-  // même risque ni le même moment d'activation ; les fondre obligerait à
-  // allumer l'une pour observer l'autre.
-  //
-  // ⚠️ AUCUNE ÉCRITURE CROISÉE. Les ancres sont DÉRIVÉES des mêmes entrées que
-  // les assertions ; aucune assertion n'est mutée pour y inscrire un
-  // identifiant d'ancre, donc aucune cohérence bidirectionnelle à tenir.
-  if (canonicalFactsEnabled()) {
-    const ancres = await recordCanonicalAnchors(lots, ws)
-    if (ancres.failed > 0) {
-      logSafeError('signals.canonical_anchor_write', new Error('anchor_write_failed'), {
-        operation: 'signals_promote',
-      })
-    }
+  if (!canonicalFactsEnabled()) return
+
+  // ⚠️ SEULES LES ASSERTIONS CONFIRMÉES EN BASE SOUTIENNENT UNE ANCRE. Un objet
+  // construit en mémoire ne prouve rien : si son écriture a échoué, le fait
+  // qu'il soutiendrait n'aurait aucune trace durable. Un ensemble vide ne
+  // produit donc aucune ancre — fail closed.
+  const ancres = await recordCanonicalAnchors(lots, ws, new Set(bilan.durableIds))
+  if (ancres.failed > 0) {
+    logSafeError('signals.canonical_anchor_write', new Error('anchor_write_failed'), {
+      operation: 'signals_promote',
+    })
   }
 }
 
