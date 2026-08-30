@@ -40,6 +40,35 @@ param(
 $ErrorActionPreference = 'Stop'
 $racine = Split-Path -Parent $PSScriptRoot
 
+# ── EXÉCUTION NATIVE DÉTERMINISTE (HARNESS_POWERSHELL51_BOOTSTRAP_001) ───────
+# Windows PowerShell 5.1 + `$ErrorActionPreference = 'Stop'` convertit tout
+# stderr d'une commande native en NativeCommandError TERMINANT — or le CLI
+# Supabase écrit des lignes d'INFORMATION (« Stopped services: … ») sur stderr
+# même quand il réussit. On capture donc stdout et stderr SÉPARÉMENT via
+# System.Diagnostics.Process : LE CODE DE SORTIE fait foi, jamais la présence
+# de stderr ; les valeurs (API_URL, clé) ne sont lues QUE depuis stdout ; ni
+# stderr ni la sortie env complète ne sont jamais affichés.
+function Invoke-NativeCapture([string[]]$Commande) {
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  if ($env:ComSpec) {
+    $psi.FileName = $env:ComSpec
+    $psi.Arguments = '/d /s /c "' + ($Commande -join ' ') + '"'
+  } else {
+    $psi.FileName = '/bin/sh'
+    $psi.Arguments = '-c "' + ($Commande -join ' ') + '"'
+  }
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.WorkingDirectory = $racine
+  $p = [System.Diagnostics.Process]::Start($psi)
+  $sortie = $p.StandardOutput.ReadToEnd()
+  $null = $p.StandardError.ReadToEnd() # lue pour ne pas bloquer le tampon ; JAMAIS affichée
+  $p.WaitForExit()
+  @{ ExitCode = $p.ExitCode; StdOut = $sortie }
+}
+
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {
   Write-Error 'BLOCKED : node introuvable (Node >= 22.15 requis)'
@@ -72,13 +101,17 @@ try {
   $envDejaFourni = $env:SUPABASE_URL -or $env:NEXT_PUBLIC_SUPABASE_URL -or $env:SUPABASE_PROJECT_URL
   if (-not $Memory -and -not $envDejaFourni) {
     # ⚠️ CLI LOCAL uniquement — jamais `supabase link`, jamais un projet distant.
-    $statut = & npx supabase status -o env 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $statut) {
+    # Le CODE DE SORTIE fait foi : du stderr informationnel n'est PAS un échec,
+    # et un vrai échec du CLI n'est PAS avalé.
+    $statut = Invoke-NativeCapture @('npx', 'supabase', 'status', '-o', 'env')
+    if ($statut.ExitCode -ne 0 -or -not $statut.StdOut) {
       Write-Error 'BLOCKED : `supabase status` a échoué — la pile locale est-elle démarrée ? (npm run db:test:up)'
       exit 2
     }
-    $apiUrl = ($statut | Select-String -Pattern '^API_URL="(.*)"$' | Select-Object -First 1).Matches.Groups[1].Value
-    $serviceKey = ($statut | Select-String -Pattern '^SERVICE_ROLE_KEY="(.*)"$' | Select-Object -First 1).Matches.Groups[1].Value
+    # ⚠️ Valeurs extraites de STDOUT UNIQUEMENT, ligne à ligne, jamais affichées.
+    $lignes = $statut.StdOut -split "`r?`n"
+    $apiUrl = ($lignes | Select-String -Pattern '^API_URL="(.*)"$' | Select-Object -First 1).Matches.Groups[1].Value
+    $serviceKey = ($lignes | Select-String -Pattern '^SERVICE_ROLE_KEY="(.*)"$' | Select-Object -First 1).Matches.Groups[1].Value
     if (-not $apiUrl -or -not $serviceKey) {
       Write-Error 'BLOCKED : API_URL/SERVICE_ROLE_KEY absents de `supabase status` (auth locale activée ?)'
       exit 2

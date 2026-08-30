@@ -262,6 +262,42 @@ describe('cycle de vie du CLI (R9/R10)', () => {
   })
 })
 
+describe('rapport PERSISTED — objets durables UNIQUES (POLISH_001)', () => {
+  const parKind = (r: Awaited<ReturnType<typeof runFactualCase>>) => {
+    const m: Record<string, number> = {}
+    for (const p of r.persisted) m[p.kind] = (m[p.kind] ?? 0) + 1
+    return m
+  }
+
+  it('funding-disagreement : 2 candidats, 2 assertions, 1 SEUL événement canonique rapporté', async () => {
+    const r = await run('funding-disagreement')
+    expect(r.verdict).toBe('PASS')
+    expect(parKind(r)).toEqual({
+      proactive_signal_candidate: 2,
+      proactive_source_assertion: 2,
+      proactive_canonical_event: 1,
+    })
+  })
+
+  it('hiring-same-day-correction : 2 assertions distinctes restent 2, l’instantané répété devient 1', async () => {
+    const r = await run('hiring-same-day-correction')
+    expect(r.verdict).toBe('PASS')
+    expect(parKind(r)).toEqual({
+      proactive_signal_candidate: 2,
+      proactive_source_assertion: 2,
+      proactive_canonical_state_snapshot: 1,
+    })
+  })
+
+  it('la déduplication porte sur kind+id — aucune ligne rapportée en double', async () => {
+    for (const cas of ['funding', 'executive', 'hiring', 'funding-correction']) {
+      const r = await run(cas)
+      const cles = r.persisted.map((p) => `${p.kind}|${p.id}`)
+      expect(new Set(cles).size, cas).toBe(cles.length)
+    }
+  })
+})
+
 describe('amorçage PowerShell (R6/R7 — verrous structurels)', () => {
   const ps1 = readFileSync(join(process.cwd(), 'scripts/factual-test.ps1'), 'utf8')
 
@@ -271,6 +307,25 @@ describe('amorçage PowerShell (R6/R7 — verrous structurels)', () => {
     expect(ps1).toMatch(/REFUSED/)
     expect(ps1).not.toMatch(/Write-\w+[^\n]*\$serviceKey/)
     expect(ps1).not.toMatch(/Write-\w+[^\n]*\$apiUrl/)
+  })
+
+  it('POLISH_001 — amorçage sûr en PowerShell 5.1 : capture native, code de sortie souverain, stdout seul lu', () => {
+    // Capture séparée stdout/stderr par System.Diagnostics.Process — jamais un
+    // appel natif direct dont le stderr informationnel deviendrait terminant.
+    expect(ps1).toMatch(/System\.Diagnostics\.ProcessStartInfo/)
+    expect(ps1).toMatch(/RedirectStandardOutput = \$true/)
+    expect(ps1).toMatch(/RedirectStandardError = \$true/)
+    // Le CODE DE SORTIE fait foi ; stderr n'entre pas dans la décision.
+    expect(ps1).toMatch(/\$statut\.ExitCode -ne 0/)
+    // Les valeurs viennent de STDOUT uniquement.
+    expect(ps1).toMatch(/\$statut\.StdOut -split/)
+    const directives = ps1.split('\n').filter((l) => !l.trim().startsWith('#'))
+    for (const l of directives) {
+      // Plus aucune invocation native directe du CLI (la source du NativeCommandError 5.1).
+      expect(l, l).not.toMatch(/& npx supabase/)
+      // stderr n'est jamais affiché ni interpolé.
+      expect(l, l).not.toMatch(/Write-\w+[^\n]*StdErr|\$err\b/)
+    }
   })
 
   it('R6/R8 — portée processus : restauration en finally, et un env déjà fourni court-circuite l’amorçage', () => {

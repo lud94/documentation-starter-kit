@@ -539,8 +539,21 @@ export async function runFactualCase(
   })
   if (!comptesOk) ok = false
 
+  // ── RAPPORT « PERSISTED » : OBJETS DURABLES UNIQUES (kind + id) ──────────
+  // ⚠️ REPORTING SEULEMENT (HARNESS_PERSISTED_REPORT_DUPLICATE_001). Dans un
+  // cas multi-rondes, la MÊME ancre canonique est relue et vérifiée à chaque
+  // ronde — c'est l'idempotence voulue de la persistance, pas un doublon en
+  // base. La liste rapportée dédouble par identité durable ; les compteurs
+  // attendu/relu, eux, étaient déjà calculés sur des ensembles d'identités.
+  const uniques = new Map<string, HarnessPersistedRow>()
+  for (const p of persisted) {
+    const cle = `${p.kind}|${p.id}`
+    if (!uniques.has(cle)) uniques.set(cle, p)
+  }
+
   return {
-    caseName, verdict: ok ? 'PASS' : 'FAIL', environment: env, input, steps, persisted,
+    caseName, verdict: ok ? 'PASS' : 'FAIL', environment: env, input, steps,
+    persisted: [...uniques.values()],
     expected, actual, ...(table.length > 0 ? { table } : {}),
   }
 }
