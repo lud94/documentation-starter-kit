@@ -33,7 +33,7 @@
 // l'identique au moment de l'adjudication. Rien d'autre ne doit s'y greffer.
 import { createHash } from 'crypto'
 
-import { getItemStrict, upsertItem } from '../../supabase/store'
+import { getItemStrict, insertItemIfAbsent, upsertItem } from '../../supabase/store'
 import type { AcquisitionFactV2, SignalHit } from '../../../types/prospector'
 import { canonicalJson, isAcquisitionFactV2 } from './acquisitionV2'
 
@@ -89,6 +89,46 @@ export interface CandidateClaim {
    * héritées sans ce champ restent lisibles (voir `readCandidate`).
    */
   v2: AcquisitionFactV2 | null
+
+  /**
+   * Origine RECHERCHE (RESEARCH_ARTIFACT_COMPILER_V0_001) — ADDITIVE.
+   *
+   * ⚠️ `null` pour tout candidat issu de la voie vivante ; les lignes héritées
+   * sans ce champ restent lisibles (comme `v2`). PORTEUR DE VÉRITÉ quand
+   * présent : il décide de l'horloge de récupération à la promotion
+   * (`sourceRetrievedAt: null` ⇒ AUCUN `retrievedAt`, jamais un repli sur
+   * `issuedAt`). Il entre donc dans l'identité par un SEGMENT SÉPARÉ, absent
+   * quand il vaut `null` — aucun identifiant historique ne change.
+   *
+   * OPTIONNEL AU NIVEAU DU TYPE (les revendications héritées n'en portent pas) ;
+   * `readCandidate` normalise l'absence en `null`, et `claimFromHit` le pose
+   * toujours explicitement.
+   */
+  origin?: ResearchCandidateOriginV0 | null
+}
+
+/**
+ * Lignée d'un candidat NÉ D'UNE COMPILATION DE RECHERCHE.
+ *
+ * `sourceRetrievedAt` est `null` EN V0 ET C'EST LE POINT : personne n'a la
+ * preuve de l'instant où la page source a été récupérée — ni l'import de
+ * l'artefact, ni la compilation, ni l'émission du candidat ne le prouvent.
+ */
+export interface ResearchCandidateOriginV0 {
+  kind: 'RESEARCH_COMPILATION_V0'
+  artifactId: string
+  compilationId: string
+  sourceRetrievedAt: null
+}
+
+export function isResearchCandidateOrigin(v: unknown): v is ResearchCandidateOriginV0 {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false
+  const o = v as Record<string, unknown>
+  if (Object.keys(o).length !== 4) return false
+  return o.kind === 'RESEARCH_COMPILATION_V0'
+    && typeof o.artifactId === 'string' && /^ra_[0-9a-f]{32}$/.test(o.artifactId)
+    && typeof o.compilationId === 'string' && /^rc_[0-9a-f]{32}$/.test(o.compilationId)
+    && o.sourceRetrievedAt === null
 }
 
 export interface SignalCandidate {
@@ -136,9 +176,12 @@ export function candidateId(claim: CandidateClaim, ws: string): string {
   // identifiant existant. Sérialisation canonique — l'ordre des clés d'un
   // `jsonb` relu n'est pas garanti, et `String(objet)` ne condense rien.
   const v2 = claim.v2 ? `\nv2=${canonicalJson(claim.v2)}` : ''
+  // ⚠️ SEGMENT ORIGINE SÉPARÉ, même doctrine que `v2` : absent quand `null`,
+  // donc tout candidat historique garde une identité octet pour octet inchangée.
+  const origin = claim.origin ? `\norigin=${canonicalJson(claim.origin)}` : ''
   // Séparation de domaine : ce condensat ne doit jamais entrer en collision
   // avec un autre usage du même magasin.
-  const h = createHash('sha256').update(`signal-candidate:v1:${ws} ${charge}${v2}`).digest('hex')
+  const h = createHash('sha256').update(`signal-candidate:v1:${ws} ${charge}${v2}${origin}`).digest('hex')
   return `cand_${h.slice(0, 32)}`
 }
 
@@ -159,6 +202,8 @@ export function claimFromHit(hit: SignalHit): CandidateClaim | null {
   const siren = String(hit?.siren || '').trim()
   return {
     v2: hit?.v2 ?? null,
+    // La voie vivante n'a JAMAIS d'origine recherche — voir `researchClaimFromHit`.
+    origin: null,
     company,
     signalType: hit.signalType,
     sourceUrl,
@@ -279,8 +324,60 @@ export async function readCandidate(id: unknown, ws: string): Promise<CandidateR
   // structuré sous un identifiant existant ne peut pas passer pour lui.
   const v2 = (claim as any).v2 ?? null
   if (v2 !== null && !isAcquisitionFactV2(v2)) return { ok: false, state: 'CANDIDATE_UNKNOWN' }
-  const normalise: CandidateClaim = { ...claim, v2 }
+  // ⚠️ ORIGINE : même doctrine que `v2` — absente (ligne héritée) ⇒ `null` ;
+  // présente ⇒ bloc ENTIER valide, revalidé, et recalculé dans l'identité.
+  const origin = (claim as any).origin ?? null
+  if (origin !== null && !isResearchCandidateOrigin(origin)) return { ok: false, state: 'CANDIDATE_UNKNOWN' }
+  // ⚠️ COHÉRENCE ORIGINE ↔ LIGNÉE V2 : un candidat recherche porte forcément un
+  // fait V2 dont l'extraction est `research-compiler` avec les MÊMES
+  // identifiants — et réciproquement. Un désaccord est une falsification.
+  const ext: any = v2?.extraction ?? null
+  if (origin !== null) {
+    if (!ext || ext.mode !== 'research-compiler'
+      || ext.researchArtifactId !== origin.artifactId
+      || ext.researchCompilationId !== origin.compilationId) {
+      return { ok: false, state: 'CANDIDATE_UNKNOWN' }
+    }
+  } else if (ext && ext.mode === 'research-compiler') {
+    return { ok: false, state: 'CANDIDATE_UNKNOWN' }
+  }
+  const normalise: CandidateClaim = { ...claim, v2, origin }
   if (candidateId(normalise, ws) !== cle) return { ok: false, state: 'CANDIDATE_UNKNOWN' }
 
   return { ok: true, candidate: { id: cle, claim: normalise, issuedAt: String(brut.issuedAt || '') } }
+}
+
+export type ResearchCandidateRegister =
+  | { ok: true; id: string; created: boolean }
+  | { ok: false; reason: 'INVALID_CLAIM' | 'WRITE_FAILED' }
+
+/**
+ * Enregistre UN candidat issu d'une compilation de recherche — voie IMMUABLE.
+ *
+ * ⚠️ PAS D'UPSERT : un rejeu ne doit jamais réécrire l'`issuedAt` ni l'origine
+ * du premier enregistrement. Insertion-si-absent, puis relecture STRICTE :
+ * même candidat valide ⇒ rejeu idempotent ; sinon échec d'écriture/intégrité —
+ * jamais un faux succès. La voie vivante (`registerCandidates`) est inchangée.
+ */
+export async function registerResearchCandidate(
+  hit: SignalHit, origin: ResearchCandidateOriginV0, ws: string,
+  now: () => Date = () => new Date(),
+): Promise<ResearchCandidateRegister> {
+  if (typeof ws !== 'string' || ws.trim() === '') return { ok: false, reason: 'INVALID_CLAIM' }
+  if (!isResearchCandidateOrigin(origin)) return { ok: false, reason: 'INVALID_CLAIM' }
+  const base = claimFromHit(hit)
+  if (!base) return { ok: false, reason: 'INVALID_CLAIM' }
+  const claim: CandidateClaim = { ...base, origin: { ...origin } }
+
+  const id = candidateId(claim, ws)
+  const candidate: SignalCandidate = { id, claim, issuedAt: now().toISOString() }
+  if (await insertItemIfAbsent(SIGNAL_CANDIDATE_KIND, id, candidate, ws)) {
+    return { ok: true, id, created: true }
+  }
+  // `false` est AMBIGU (déjà présent OU panne) : la relecture stricte tranche.
+  const relu = await readCandidate(id, ws)
+  if (relu.ok === true && canonicalJson(relu.candidate.claim) === canonicalJson(claim)) {
+    return { ok: true, id, created: false } // l'`issuedAt` d'ORIGINE reste en place
+  }
+  return { ok: false, reason: 'WRITE_FAILED' }
 }

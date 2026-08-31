@@ -233,7 +233,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // régulière que le site passé ici est bien `officialWebsite` — le registre
     // officiel — et jamais `lead.website`, que le navigateur peut influencer.
     // Couper l'appel sur plusieurs lignes désarmait ce verrou en silence.
-    const s = sourceEvidenceFromHit(hitFromCandidate(candidate), lead.officialWebsite, undefined, undefined, candidate.issuedAt)
+    // ⚠️ EXCEPTION RECHERCHE (RESEARCH_ARTIFACT_COMPILER_V0_001 §12/§17) : un
+    // candidat porteur d'une origine recherche N'A PAS de date de récupération
+    // connue — `origin.sourceRetrievedAt` vaut `null` en V0, et l'`issuedAt`
+    // (instant d'émission serveur) ne prouve RIEN de la récupération de la page.
+    // On ne passe alors AUCUN `retrievedAt` — jamais un repli sur `issuedAt`.
+    const dateRecuperation = candidate.claim.origin
+      ? (candidate.claim.origin.sourceRetrievedAt ?? undefined)
+      : candidate.issuedAt
+    const s = sourceEvidenceFromHit(hitFromCandidate(candidate), lead.officialWebsite, undefined, undefined, dateRecuperation)
     if (s) sources.push(s)
 
     const pont = bridgeSignals({

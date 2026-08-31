@@ -241,9 +241,23 @@ export interface SignalExtraction {
    * qualité de preuve : elle n'augmente aucune confiance et ne contourne
    * aucun validateur, adjudication ni canonicalisation.
    */
-  mode: 'exa+claude' | 'claude-web' | 'manual-curated'
+  /**
+   * `research-compiler` (RESEARCH_ARTIFACT_COMPILER_V0_001) : fait assemblé par
+   * le serveur depuis la sortie JSON stricte d'un compilateur externe appliqué
+   * à un ResearchArtifact importé. Ce n'est PAS `manual-curated` (personne n'a
+   * assemblé le fait à la main) ni `claude-web` (aucune navigation) : mentir
+   * sur la provenance rendrait l'audit impossible.
+   */
+  mode: 'exa+claude' | 'claude-web' | 'manual-curated' | 'research-compiler'
   promptVersion: string
   model?: string
+  /**
+   * Lignée durable vers l'origine recherche — RÉSERVÉE au mode
+   * `research-compiler`, où les DEUX champs sont OBLIGATOIRES. Pour tout autre
+   * mode ils doivent être ABSENTS : ce ne sont pas des champs génériques.
+   */
+  researchArtifactId?: string
+  researchCompilationId?: string
 }
 
 // Recherche par SIGNAL : entreprise détectée via une annonce/actu, avec icebreaker.

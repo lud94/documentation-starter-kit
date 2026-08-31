@@ -18,6 +18,7 @@ import type {
   PersonRef,
   PersonVerification,
   SignalClaimNature,
+  SignalExtraction,
   SignalDatePrecision,
   SignalEventStatus,
   SignalRoleFunction,
@@ -266,11 +267,24 @@ function rawDetailValide(v: unknown): v is AcquisitionRawDetail {
 
 function extractionValide(v: unknown): boolean {
   if (!objetSimple(v)) return false
-  if (!clesCloses(v, ['mode', 'promptVersion'], ['model'])) return false
+  if (!clesCloses(v, ['mode', 'promptVersion'], ['model', 'researchArtifactId', 'researchCompilationId'])) return false
   // Vocabulaire CLOS — tout mode inconnu est un rejet, jamais une coercition.
-  if (v.mode !== 'exa+claude' && v.mode !== 'claude-web' && v.mode !== 'manual-curated') return false
+  if (
+    v.mode !== 'exa+claude' && v.mode !== 'claude-web'
+    && v.mode !== 'manual-curated' && v.mode !== 'research-compiler'
+  ) return false
   if (typeof v.promptVersion !== 'string' || v.promptVersion.length === 0) return false
-  return v.model === undefined || typeof v.model === 'string'
+  if (v.model !== undefined && typeof v.model !== 'string') return false
+  // ⚠️ LIGNÉE RECHERCHE — COHÉRENCE STRICTE, PAS DES CHAMPS GÉNÉRIQUES :
+  // `research-compiler` EXIGE les deux identifiants ; tout autre mode les
+  // INTERDIT. Les lignes V1/V2 existantes (sans ces champs) restent valides.
+  if (v.mode === 'research-compiler') {
+    if (typeof v.researchArtifactId !== 'string' || !/^ra_[0-9a-f]{32}$/.test(v.researchArtifactId)) return false
+    if (typeof v.researchCompilationId !== 'string' || !/^rc_[0-9a-f]{32}$/.test(v.researchCompilationId)) return false
+  } else if (v.researchArtifactId !== undefined || v.researchCompilationId !== undefined) {
+    return false
+  }
+  return true
 }
 
 function payloadFunding(p: Record<string, unknown>): boolean {
@@ -515,7 +529,10 @@ export interface LiveV2Extraction {
   sourcePublishedAt: string | null
   detail: string
   icebreaker: string
-  extraction: { mode: 'exa+claude' | 'claude-web' | 'manual-curated'; promptVersion: string; model?: string }
+  // ⚠️ Le contrat CANONIQUE `SignalExtraction`, jamais une union dupliquée ici :
+  // `extractionValide` (via `isAcquisitionFactV2`) reste l'unique juge des modes
+  // admis et de la cohérence de la lignée recherche.
+  extraction: SignalExtraction
   // FUNDING — chaîne de montant TELLE QUE PUBLIÉE (jamais un nombre inventé).
   roundStage?: unknown
   amountText?: unknown
