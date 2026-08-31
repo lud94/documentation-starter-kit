@@ -108,7 +108,7 @@ describe('fail closed (H7–H10)', () => {
       extraction: { mode: 'claude-web', promptVersion: 'manual' },
       payload: { family: 'FUNDING', roundStage: 'SEED' },
     }
-    const r = await run('manual', { manualCase: { account: { company: 'X', siren: '999000001', officialWebsite: 'https://example.test' }, sourceUrl: 'https://example.test/manuel', retrievedAt: '2026-07-02T07:30:00.000Z', fact } })
+    const r = await run('manual', { manualCase: { account: { company: 'X', siren: '999000001', officialWebsite: 'https://example.test' }, sourceUrl: 'https://example.test/manuel', retrievedAt: '2026-07-02T07:30:00.000Z', observedAt: '2026-07-02T09:00:00.000Z', confirmedAt: '2026-07-02T09:05:00.000Z', fact } })
     expect(r.verdict).toBe('PASS')
     expect(r.actual).toEqual({ assertions: 1, events: 1, snapshots: 0 })
   })
@@ -277,6 +277,8 @@ describe('mode manuel — identité de compte RÉELLE (FACTUAL_REAL_WORLD_MANUAL
     account: { company, siren, officialWebsite: 'https://presse.example.test' },
     sourceUrl: 'https://presse.example.test/annonce',
     retrievedAt: '2026-07-02T07:30:00.000Z',
+    observedAt: '2026-07-02T09:00:00.000Z',
+    confirmedAt: '2026-07-02T09:05:00.000Z',
     fact: faitManuel(),
   })
 
@@ -383,6 +385,8 @@ describe('parité de rejeu du candidat (FACTUAL_MANUAL_REPLAY_PARITY_001)', () =
     account: { company: 'Lupin Dental', siren: '850067877', officialWebsite: 'https://presse.example.test' },
     sourceUrl: 'https://presse.example.test/annonce',
     retrievedAt: '2026-08-28T07:30:00.000Z',
+    observedAt: '2026-08-28T09:00:00.000Z',
+    confirmedAt: '2026-08-28T09:05:00.000Z',
     fact,
   })
   const candidatEnBase = () => {
@@ -467,6 +471,83 @@ describe('parité de rejeu du candidat (FACTUAL_MANUAL_REPLAY_PARITY_001)', () =
       expect(r.verdict, cas).toBe('PASS')
       expect(r.persisted.filter((p) => p.kind === 'proactive_signal_candidate').map((p) => p.id), cas).toEqual(ids)
     }
+  })
+})
+
+describe('parité des horloges manuelles (FACTUAL_MANUAL_CLOCK_PARITY_001)', () => {
+  const RETR = '2026-08-20T07:30:00.000Z'
+  const OBS = '2026-08-21T10:00:00.000Z'
+  const CONF = '2026-08-22T11:15:00.000Z'
+  const enveloppe = (fact: any, extra: Record<string, unknown> = {}): any => ({
+    account: { company: 'Lupin Dental', siren: '850067877', officialWebsite: 'https://presse.example.test' },
+    sourceUrl: 'https://presse.example.test/horloges',
+    retrievedAt: RETR, observedAt: OBS, confirmedAt: CONF,
+    fact, ...extra,
+  })
+  const evenement = (): any => ({
+    contractVersion: 'v2', family: 'FUNDING', claimNature: 'EVENT', eventStatus: 'COMPLETED',
+    occurredAt: '2026-08-19', occurredAtPrecision: 'DAY', sourcePublishedAt: '2026-08-19',
+    rawDetail: { detail: 'levée réelle', icebreaker: 'ok' },
+    extraction: { mode: 'manual-curated', promptVersion: 'clock-parity' },
+    payload: { family: 'FUNDING', roundStage: 'SEED' },
+  })
+  const etat = (): any => ({
+    contractVersion: 'v2', family: 'HIRING_SNAPSHOT', claimNature: 'STATE', eventStatus: 'UNKNOWN',
+    occurredAt: null, occurredAtPrecision: 'UNKNOWN', sourcePublishedAt: '2026-08-19',
+    rawDetail: { detail: '3 postes', icebreaker: 'ok' },
+    extraction: { mode: 'manual-curated', promptVersion: 'clock-parity' },
+    payload: { family: 'HIRING_SNAPSHOT', roleFunction: 'SALES', roleStatus: 'OPEN',
+      openingsObserved: { value: 3, method: 'ENUMERATED_POSTINGS' } },
+  })
+  const assertionPersistee = () => [...g.__prospectorStore.entries()]
+    .find(([k]: any) => k.startsWith(`${SOURCE_ASSERTION_KIND}|`))![1]
+
+  it('A — ÉVÉNEMENT manuel : trois instants distincts, chacun relu à SA place, aucun jour d’état', async () => {
+    const r = await run('manual', { manualCase: enveloppe(evenement()) })
+    expect(r.verdict).toBe('PASS')
+    const a = assertionPersistee()
+    expect(a.provenance.retrievedAt).toBe(RETR)
+    expect(a.observedAt).toBe(OBS)
+    expect(a.acceptance.confirmedAt).toBe(CONF)
+    expect(new Set([RETR, OBS, CONF]).size).toBe(3) // trois horloges, trois valeurs
+    expect(a.sourceObservedDay).toBeUndefined()
+  })
+
+  it('B — ÉTAT manuel : sourceObservedDay dérive de retrievedAt SEUL, jamais des horloges d’adjudication', async () => {
+    const r = await run('manual', { manualCase: enveloppe(etat()) })
+    expect(r.verdict).toBe('PASS')
+    const a = assertionPersistee()
+    expect(a.sourceObservedDay).toBe('2026-08-20') // le jour de RÉCUPÉRATION…
+    expect(a.sourceObservedDay).not.toBe(OBS.slice(0, 10)) // …jamais celui de l'adjudication
+    expect(a.sourceObservedDay).not.toBe(CONF.slice(0, 10)) // …ni celui de la confirmation
+    expect(a.observedAt).toBe(OBS)
+    expect(a.acceptance.confirmedAt).toBe(CONF)
+  })
+
+  it('C/D/E — horloge manquante ou invalide ⇒ INVALID_INPUT, RIEN n’est persisté', async () => {
+    for (const casse of [
+      { observedAt: undefined },                       // C — observedAt absent
+      { confirmedAt: undefined },                      // D — confirmedAt absent
+      { retrievedAt: undefined },                      //     retrievedAt absent
+      { observedAt: '2026-08-21' },                    // E — jour sans heure : pas un instant strict
+      { confirmedAt: '2026-08-21T24:00:00Z' },         // E — instant normalisable, refusé strictement
+      { retrievedAt: 'hier' },                         // E — prose
+    ]) {
+      if (g.__prospectorStore) g.__prospectorStore.clear()
+      const env = enveloppe(evenement(), casse)
+      for (const [k, v] of Object.entries(casse)) if (v === undefined) delete env[k]
+      const r = await run('manual', { manualCase: env })
+      expect(r.verdict, JSON.stringify(casse)).toBe('INVALID_INPUT')
+      expect(g.__prospectorStore.size, JSON.stringify(casse)).toBe(0)
+    }
+  })
+
+  it('F — les cas dorés gardent la constante synthétique, inchangée', async () => {
+    const r = await run('funding')
+    expect(r.verdict).toBe('PASS')
+    const a = assertionPersistee()
+    expect(a.observedAt).toBe('2026-09-30T12:00:00.000Z')
+    expect(a.acceptance.confirmedAt).toBe('2026-09-30T12:00:00.000Z')
   })
 })
 

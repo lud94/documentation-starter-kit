@@ -37,6 +37,7 @@ import {
   CANONICAL_EVENT_KIND, CANONICAL_STATE_SNAPSHOT_KIND,
 } from '../canonicalFact'
 import { canonicalJson, isAcquisitionFactV2 } from '../acquisitionV2'
+import { isStrictInstant } from '../types'
 import type { CandidateRead } from '../signalCandidates'
 import { isEvidenceEvent } from '../validators'
 import { mapClaim, canonicalKey } from '../signalBridge'
@@ -297,7 +298,14 @@ export function diagnoseCandidateReadBack(
   return { ok: true, reason: 'OK' }
 }
 
-interface Ronde { url: string; fact: AcquisitionFactV2; retrievedAt: string }
+interface Ronde {
+  url: string
+  fact: AcquisitionFactV2
+  retrievedAt: string
+  /** HORLOGES D'ADJUDICATION EXPLICITES — cas MANUELS uniquement (CLOCK_PARITY_001). */
+  evidenceObservedAt?: string
+  humanConfirmedAt?: string
+}
 
 /**
  * Identité de COMPTE d'un cas — synthétique par défaut, RÉELLE en mode manuel.
@@ -384,17 +392,33 @@ export const HARNESS_CASES: Readonly<Record<string, CasHarnais>> = Object.freeze
   },
 })
 
-// ── CAS MANUEL (PART 4) ─────────────────────────────────────────────────────
+// ── CAS MANUEL (PART 4 + FACTUAL_MANUAL_CLOCK_PARITY_001) ───────────────────
 //
-// Contrat JSON — une ENVELOPPE MINCE autour du contrat de production
-// `AcquisitionFactV2`, validé par LE MÊME validateur :
+// Contrat d'ENTRÉE DU HARNAIS DE TEST (pas une API de production) — une
+// enveloppe mince autour du contrat `AcquisitionFactV2`, validé par LE MÊME
+// validateur :
 //
 //   {
-//     "account":     { "company": "ACME TEST", "siren": "999000001" },
+//     "account":     { "company": "…", "siren": "999000001", "officialWebsite": "…" },
 //     "sourceUrl":   "https://example.test/mon-cas",
 //     "retrievedAt": "2026-09-01T07:30:00.000Z",
+//     "observedAt":  "2026-09-01T09:00:00.000Z",
+//     "confirmedAt": "2026-09-01T09:05:00.000Z",
 //     "fact":        { ...AcquisitionFactV2... }
 //   }
+//
+// ── LES QUATRE HORLOGES — JAMAIS DÉDUITES L'UNE DE L'AUTRE ──────────────────
+//   fact.sourcePublishedAt  quand la SOURCE dit avoir publié
+//   retrievedAt             quand Prospector a RÉCUPÉRÉ le document
+//                           (seule origine de `sourceObservedDay` pour un ÉTAT)
+//   observedAt              quand l'Evidence a été ADJUGÉE par Prospector
+//   confirmedAt             quand la CONFIRMATION HUMAINE a eu lieu
+//
+// Les trois instants de l'enveloppe sont validés STRICTEMENT
+// (`isStrictInstant`, le validateur de production — aucun second validateur).
+// Manquant ou invalide ⇒ INVALID_INPUT, rien n'est persisté. Avant ce lot, les
+// cas manuels héritaient de la constante synthétique du harnais pour
+// observedAt/confirmedAt — un run réel affichait une adjudication fictive.
 
 function casManuel(brut: unknown): { ok: true; cas: CasHarnais } | { ok: false; reason: string } {
   if (!brut || typeof brut !== 'object' || Array.isArray(brut)) {
@@ -405,8 +429,14 @@ function casManuel(brut: unknown): { ok: true; cas: CasHarnais } | { ok: false; 
   if (!/^\d{9}$/.test(siren)) {
     return { ok: false, reason: 'MANUAL_INVALID: account.siren doit compter 9 chiffres (synthétique accepté)' }
   }
-  if (typeof m.sourceUrl !== 'string' || typeof m.retrievedAt !== 'string') {
-    return { ok: false, reason: 'MANUAL_INVALID: sourceUrl et retrievedAt sont requis' }
+  if (typeof m.sourceUrl !== 'string') {
+    return { ok: false, reason: 'MANUAL_INVALID: sourceUrl est requis' }
+  }
+  // ⚠️ TROIS INSTANTS STRICTS, TOUS REQUIS, JAMAIS DÉDUITS L'UN DE L'AUTRE.
+  for (const horloge of ['retrievedAt', 'observedAt', 'confirmedAt'] as const) {
+    if (!isStrictInstant(m[horloge])) {
+      return { ok: false, reason: `MANUAL_INVALID: ${horloge} doit être un instant RFC 3339 strict (fail closed, rien n'est persisté)` }
+    }
   }
   // ⚠️ LE MÊME VALIDATEUR QUE LA PRODUCTION. Aucun second schéma.
   if (!isAcquisitionFactV2(m.fact)) {
@@ -422,7 +452,10 @@ function casManuel(brut: unknown): { ok: true; cas: CasHarnais } | { ok: false; 
     ok: true,
     cas: {
       description: `Cas manuel ${fact.family}`,
-      rondes: [{ url: m.sourceUrl, fact, retrievedAt: m.retrievedAt }],
+      rondes: [{
+        url: m.sourceUrl, fact, retrievedAt: m.retrievedAt,
+        evidenceObservedAt: m.observedAt, humanConfirmedAt: m.confirmedAt,
+      }],
       attendu: { assertions: 1, events: etat ? 0 : 1, snapshots: etat ? 1 : 0 },
       manuel: true,
       // ⚠️ L'identité FOURNIE fait foi : `acc_siren_<siren réel>`, dans le
@@ -439,10 +472,12 @@ function casManuel(brut: unknown): { ok: true; cas: CasHarnais } | { ok: false; 
 
 // ── EXÉCUTION D'UNE RONDE — PIPELINE DE PRODUCTION, RIEN D'AUTRE ────────────
 
-function confirmation(cle: string, urls: string[]): HumanFactConfirmation {
+function confirmation(cle: string, urls: string[], confirmedAt: string = OBSERVED): HumanFactConfirmation {
   return {
     kind: 'HUMAN_CONFIRMED', canonicalKey: cle, confirmedBy: 'harness_operator',
-    confirmedAt: OBSERVED, sourceUrls: urls,
+    // ⚠️ Cas manuel : l'instant de confirmation FOURNI ; cas dorés : la
+    // constante synthétique, inchangée octet pour octet.
+    confirmedAt, sourceUrls: urls,
   }
 }
 
@@ -530,8 +565,13 @@ export async function runFactualCase(
     if (typeof claim === 'string') { etape(`Evidence${tag}`, false, `mapClaim: ${claim}`); continue }
     const cle = canonicalKey(identite.accountId, claim)
     const promotion = promoteToEvidence({
-      accountId: identite.accountId, observedAt: OBSERVED, sources: [source as SourceEvidence],
-      confirmations: [confirmation(cle, [ronde.url])],
+      // ⚠️ HORLOGES D'ADJUDICATION : celles de l'ENVELOPPE pour un cas manuel,
+      // la constante synthétique pour les cas dorés. `retrievedAt` reste la
+      // seule origine de `sourceObservedDay` — jamais résémantisé.
+      accountId: identite.accountId,
+      observedAt: ronde.evidenceObservedAt ?? OBSERVED,
+      sources: [source as SourceEvidence],
+      confirmations: [confirmation(cle, [ronde.url], ronde.humanConfirmedAt ?? OBSERVED)],
     })
     if (promotion.ok === false) { etape(`Evidence${tag}`, false, `refus: ${promotion.reason}`); continue }
     const evidenceOk = isEvidenceEvent(promotion.evidence)

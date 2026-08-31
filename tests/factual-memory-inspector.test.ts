@@ -35,6 +35,8 @@ async function semer(company: string, siren: string, montant = '€10M', minor =
       account: { company, siren, officialWebsite: 'https://presse.example.test' },
       sourceUrl: `https://presse.example.test/${siren}`,
       retrievedAt: '2026-07-03T07:30:00.000Z',
+      observedAt: '2026-07-03T09:00:00.000Z',
+      confirmedAt: '2026-07-03T09:05:00.000Z',
       fact: fait('FUNDING', {
         payload: {
           family: 'FUNDING', roundStage: 'SERIES_A',
@@ -128,6 +130,8 @@ describe('lecture seule et traçabilité (R3/R4/R8/R9)', () => {
         account: { company: 'Scaleway', siren: '433115904', officialWebsite: 'https://presse.example.test' },
         sourceUrl: 'https://presse.example.test/careers',
         retrievedAt: ra,
+        observedAt: '2026-09-05T09:00:00.000Z',
+        confirmedAt: '2026-09-05T09:05:00.000Z',
         fact: fait('HIRING_SNAPSHOT', {
           claimNature: 'STATE', eventStatus: 'UNKNOWN', occurredAt: null, occurredAtPrecision: 'UNKNOWN',
           payload: { family: 'HIRING_SNAPSHOT', roleFunction: 'SALES', roleStatus: 'OPEN',
@@ -163,6 +167,8 @@ describe('traçabilité exécutive et horloges (TRACEABILITY_FIX_001)', () => {
         account: { company: 'Valeo', siren: '552030967', officialWebsite: 'https://presse.example.test' },
         sourceUrl: `https://presse.example.test/${chemin}`,
         retrievedAt: '2026-08-27T07:30:00.000Z',
+        observedAt: '2026-08-27T09:00:00.000Z',
+        confirmedAt: '2026-08-27T09:05:00.000Z',
         fact: faitExec(nom, normalise, direction),
       },
     })
@@ -196,6 +202,8 @@ describe('traçabilité exécutive et horloges (TRACEABILITY_FIX_001)', () => {
         account: { company: 'Lupin Dental', siren: '850067877', officialWebsite: 'https://presse.example.test' },
         sourceUrl: 'https://presse.example.test/careers',
         retrievedAt: '2026-07-03T07:30:00.000Z',
+      observedAt: '2026-07-03T09:00:00.000Z',
+      confirmedAt: '2026-07-03T09:05:00.000Z',
         fact: fait('HIRING_SNAPSHOT', {
           claimNature: 'STATE', eventStatus: 'UNKNOWN', occurredAt: null, occurredAtPrecision: 'UNKNOWN',
           payload: { family: 'HIRING_SNAPSHOT', roleFunction: 'SALES', roleStatus: 'OPEN',
@@ -221,6 +229,8 @@ describe('traçabilité exécutive et horloges (TRACEABILITY_FIX_001)', () => {
         account: { company: 'Valeo', siren: '552030967', officialWebsite: 'https://presse.example.test' },
         sourceUrl: 'https://presse.example.test/exec-other',
         retrievedAt: '2026-08-27T07:30:00.000Z',
+        observedAt: '2026-08-27T09:00:00.000Z',
+        confirmedAt: '2026-08-27T09:05:00.000Z',
         fact: fait('EXECUTIVE_CHANGE', {
           occurredAt: '2026-08-26',
           payload: {
