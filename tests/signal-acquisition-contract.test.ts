@@ -30,6 +30,12 @@ function reponse(...hits: Record<string, unknown>[]): string {
     hits: hits.map((h) => ({
       company: 'Acme',
       sourceUrl: 'https://exemple.fr/a',
+      // Contrat v3 : le discriminateur est OBLIGATOIRE (absent = extraction
+      // malformée, hit écarté). Ces cas testent la normalisation des champs
+      // clos hérités ; par défaut ils se déclarent hors familles V2, et les
+      // fixtures portant une FORME couverte par V2 (levée, recrutement,
+      // état ouvert Sales) déclarent leur vraie famille.
+      factFamily: 'UNSUPPORTED',
       ...h,
     })),
   })
@@ -47,6 +53,7 @@ describe('SIGNAL-ACQUISITION-CONTRACT-001 — nature de l’observation', () => 
   it('Série A bouclée → EVENT / COMPLETED', () => {
     const h = unSeul({
       signalType: 'levée',
+      factFamily: 'FUNDING',
       claimNature: 'EVENT',
       eventStatus: 'COMPLETED',
       eventDate: '2026-08-12',
@@ -74,6 +81,7 @@ describe('SIGNAL-ACQUISITION-CONTRACT-001 — nature de l’observation', () => 
   it('poste actuellement ouvert → STATE, sans date de survenue', () => {
     const h = unSeul({
       signalType: 'recrutement',
+      factFamily: 'HIRING_SNAPSHOT',
       claimNature: 'STATE',
       roleStatus: 'OPEN',
       roleFunction: 'SALES',
@@ -102,7 +110,7 @@ describe('SIGNAL-ACQUISITION-CONTRACT-001 — nature de l’observation', () => 
 
 describe('SIGNAL-ACQUISITION-CONTRACT-001 — sémantique de poste', () => {
   it('Account Executive ouvert → OPEN / SALES', () => {
-    const h = unSeul({ claimNature: 'STATE', roleStatus: 'OPEN', roleFunction: 'SALES' })
+    const h = unSeul({ factFamily: 'HIRING_SNAPSHOT', claimNature: 'STATE', roleStatus: 'OPEN', roleFunction: 'SALES' })
     expect(h).toMatchObject({ roleStatus: 'OPEN', roleFunction: 'SALES' })
   })
 
@@ -235,6 +243,8 @@ describe('SIGNAL-ACQUISITION-CONTRACT-001 — la prose ne produit AUCUNE sémant
     const h = unSeul({
       detail: 'Acme a bouclé sa Série A de 12 M€ le 12 août 2026.',
       signalType: 'levée',
+      factFamily: 'FUNDING',
+      claimNature: 'EVENT',
       amount: '12 M€',
       eventStatus: 'UNKNOWN',
     })
@@ -319,7 +329,7 @@ describe('SIGNAL-ACQUISITION-CONTRACT-001 — non-régression du parseur', () =>
 
   it('signalType hors domaine → « autre »', () => {
     expect(unSeul({ signalType: 'inconnu' }).signalType).toBe('autre')
-    expect(unSeul({ signalType: 'levée' }).signalType).toBe('levée')
+    expect(unSeul({ signalType: 'levée', factFamily: 'FUNDING', claimNature: 'EVENT' }).signalType).toBe('levée')
   })
 
   it('texte non JSON ou JSON illisible → aucun hit, aucune exception', () => {

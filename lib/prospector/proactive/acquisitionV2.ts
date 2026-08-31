@@ -4,6 +4,8 @@ import type {
   AcquisitionRawDetail,
   ExecutiveChangeDirection,
   ExecutiveRoleSeniority,
+  AcquisitionPayloadV2,
+  FundingInvestor,
   FundingInvestorRole,
   FundingPayloadV2,
   FundingRoundStage,
@@ -485,4 +487,138 @@ export function assertedFactHash(fact: AcquisitionFactV2, accountId: string): st
   const projection = semanticFactProjection(fact, accountId)
   if (projection === null) return null
   return createHash('sha256').update(canonicalJson(projection), 'utf8').digest('hex').slice(0, 32)
+}
+
+// ── ASSEMBLEUR D'ACQUISITION EN DIRECT (LIVE_ACQUISITION_V2_EMISSION_001) ───
+//
+// Frontière LLM → V2 :
+//
+//   le MODÈLE extrait des champs CLOS et des chaînes EXPLICITEMENT publiées ;
+//   CE CODE valide, normalise (noms, argent) et construit le fait typé ;
+//   `isAcquisitionFactV2` tranche en dernier.
+//
+// ⚠️ AUCUNE RÉCUPÉRATION DE SÉMANTIQUE DEPUIS LA PROSE. Ce module ne lit
+// `detail`/`icebreaker` QUE pour remplir `rawDetail` (audit) — jamais pour
+// en déduire un champ. Un champ manquant reste manquant (ou `UNKNOWN` quand le
+// contrat le permet) ; il n'est jamais reconstruit en lisant une phrase.
+//
+// ⚠️ FAIL CLOSED : famille V2 déclarée + fait inconstructible ⇒ `null`.
+// L'appelant DOIT alors ÉCARTER le hit — jamais le rétrograder en V1.
+
+/** Champs CLOS extraits par l'acquisition — l'ENTRÉE de l'assembleur. */
+export interface LiveV2Extraction {
+  factFamily: AcquisitionFamilyV2
+  claimNature: SignalClaimNature
+  eventStatus: SignalEventStatus
+  eventDate: string | null
+  eventDatePrecision: SignalDatePrecision
+  sourcePublishedAt: string | null
+  detail: string
+  icebreaker: string
+  extraction: { mode: 'exa+claude' | 'claude-web' | 'manual-curated'; promptVersion: string; model?: string }
+  // FUNDING — chaîne de montant TELLE QUE PUBLIÉE (jamais un nombre inventé).
+  roundStage?: unknown
+  amountText?: unknown
+  investors?: unknown
+  // EXECUTIVE_CHANGE
+  direction?: unknown
+  personFullName?: unknown
+  roleSeniority?: unknown
+  roleTitleRaw?: unknown
+  // HIRING_SNAPSHOT
+  roleFunction: SignalRoleFunction
+  roleStatus: SignalRoleStatus
+  openingsCount?: unknown
+  openingsCountMethod?: unknown
+}
+
+const cloOuUnknown = <T extends string>(v: unknown, admises: readonly T[]): T | 'UNKNOWN' =>
+  typeof v === 'string' && (admises as readonly string[]).includes(v) ? (v as T) : 'UNKNOWN'
+
+/**
+ * Construit un `AcquisitionFactV2` COMPLET depuis les champs clos extraits,
+ * ou `null` si le fait ne peut pas être affirmé honnêtement.
+ *
+ * `null` N'EST PAS « repli V1 » : c'est un REJET du hit (contrat §7).
+ */
+export function assembleLiveFactV2(e: LiveV2Extraction): AcquisitionFactV2 | null {
+  const etat = e.factFamily === 'HIRING_SNAPSHOT'
+
+  // ── COHÉRENCE TEMPORELLE PAR FAMILLE — contradiction = rejet, pas réparation.
+  if (etat && e.claimNature !== 'STATE') return null
+  if (!etat && e.claimNature !== 'EVENT') return null
+
+  let payload: AcquisitionPayloadV2
+  if (e.factFamily === 'FUNDING') {
+    const investisseurs: FundingInvestor[] = []
+    if (Array.isArray(e.investors)) {
+      for (const inv of e.investors) {
+        const nameRaw = typeof inv?.nameRaw === 'string' ? inv.nameRaw.trim() : ''
+        if (nameRaw === '') continue // un investisseur sans nom n'affirme rien
+        investisseurs.push({ nameRaw, role: cloOuUnknown(inv?.role, ROLES_INVESTISSEUR) })
+      }
+    }
+    // ⚠️ L'ARGENT NE VIENT QUE DE `parseMoney` sur la CHAÎNE PUBLIÉE.
+    // Inanalysable ⇒ AUCUN montant — jamais un nombre ou un intervalle inventé.
+    const argent = typeof e.amountText === 'string' && e.amountText.trim() !== ''
+      ? parseMoney(e.amountText)
+      : null
+    payload = {
+      family: 'FUNDING',
+      ...(argent ?? {}),
+      roundStage: cloOuUnknown(e.roundStage, STADES),
+      ...(investisseurs.length > 0 ? { investors: investisseurs } : {}),
+    }
+  } else if (e.factFamily === 'EXECUTIVE_CHANGE') {
+    const fullNameRaw = typeof e.personFullName === 'string' ? e.personFullName.trim() : ''
+    // ⚠️ SANS PERSONNE, PAS DE FAIT EXÉCUTIF — et surtout pas un nom déduit
+    // de la prose. Rejet.
+    if (fullNameRaw === '') return null
+    const normalizedName = normalizePersonName(fullNameRaw)
+    if (normalizedName === '') return null
+    payload = {
+      family: 'EXECUTIVE_CHANGE',
+      direction: cloOuUnknown(e.direction, DIRECTIONS),
+      roleFunction: e.roleFunction,
+      roleSeniority: cloOuUnknown(e.roleSeniority, SENIORITES),
+      // ⚠️ Voie web en direct : identité NAME_ONLY, JAMAIS une référence
+      // externe devinée depuis une URL ou la prose.
+      person: { fullNameRaw, normalizedName, verification: 'NAME_ONLY' },
+      ...(typeof e.roleTitleRaw === 'string' && e.roleTitleRaw.trim() !== ''
+        ? { roleTitleRaw: e.roleTitleRaw.trim() }
+        : {}),
+    }
+  } else {
+    // HIRING_SNAPSHOT — le décompte n'existe QUE si la source l'expose.
+    const methode = cloOuUnknown(e.openingsCountMethod, METHODES_DECOMPTE)
+    const decompte = typeof e.openingsCount === 'number'
+      && Number.isSafeInteger(e.openingsCount) && e.openingsCount >= 0
+      && methode !== 'UNKNOWN'
+      ? { openingsObserved: { value: e.openingsCount, method: methode as HiringCountMethod } }
+      : {}
+    payload = {
+      family: 'HIRING_SNAPSHOT',
+      roleFunction: e.roleFunction,
+      roleStatus: e.roleStatus,
+      ...decompte,
+    }
+  }
+
+  const fait: AcquisitionFactV2 = {
+    contractVersion: 'v2',
+    family: e.factFamily,
+    claimNature: e.claimNature,
+    eventStatus: e.eventStatus,
+    // ⚠️ JAMAIS `sourcePublishedAt` ni le champ hérité `date` : seule la date
+    // MÉTIER déjà structurée entre ici. Un MOIS reste un MOIS.
+    occurredAt: etat ? null : e.eventDate,
+    occurredAtPrecision: etat ? 'UNKNOWN' : e.eventDatePrecision,
+    sourcePublishedAt: e.sourcePublishedAt,
+    rawDetail: { detail: e.detail, icebreaker: e.icebreaker },
+    extraction: { ...e.extraction },
+    payload,
+  }
+
+  // ── LE VALIDATEUR DE PRODUCTION TRANCHE EN DERNIER — fail closed. ──────────
+  return isAcquisitionFactV2(fait) ? fait : null
 }

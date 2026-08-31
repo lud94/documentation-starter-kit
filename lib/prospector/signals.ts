@@ -18,6 +18,7 @@ import { searchExa, exaConfigured, type ExaDoc } from './exa'
 import { getKey } from './keystore'
 import { withBuild } from '../version'
 import { callClaude as llmCall, cacheKey, pickModel } from './llm'
+import { assembleLiveFactV2 } from './proactive/acquisitionV2'
 import {
   startAcquisitionBudget,
   QUICK_SEARCH_BUDGET_MS,
@@ -130,10 +131,15 @@ Réponds UNIQUEMENT en JSON valide.`
  * relèvent PAS de cette constante : elles entrent dans la clé par leur valeur,
  * via `semantiqueRequete()`.
  */
-export const PROMPT_VERSION = 'signal-acquisition-v2'
+// v3 (LIVE_ACQUISITION_V2_EMISSION_001) : le contrat demande désormais les
+// champs clos du fait V2 (factFamily, roundStage, direction, personne,
+// séniorité, décompte, investisseurs). La version entre déjà dans l'identité
+// de cache via `semantiqueRequete` — aucune sortie v2 en cache ne peut être
+// resservie étiquetée v3.
+export const PROMPT_VERSION = 'signal-acquisition-v3'
 
 function jsonInstruction(max: number) {
-  return `Renvoie un objet JSON: {"hits":[{"company","signalType","detail","icebreaker","sector","city","sourceUrl","sourceName","date","amount","role","claimNature","eventStatus","eventDate","eventDatePrecision","sourcePublishedAt","roleStatus","roleFunction"}]} avec au plus ${max} entrées.
+  return `Renvoie un objet JSON: {"hits":[{"company","signalType","detail","icebreaker","sector","city","sourceUrl","sourceName","date","amount","role","claimNature","eventStatus","eventDate","eventDatePrecision","sourcePublishedAt","roleStatus","roleFunction","factFamily","roundStage","investors","direction","personFullName","roleSeniority","openingsCount","openingsCountMethod"}]} avec au plus ${max} entrées.
 signalType ∈ ["recrutement","levée","actu","autre"].
 "detail" = le fait précis et daté (une phrase). "sourceName" = nom du média/site. "date" = date du signal (AAAA-MM ou AAAA-MM-JJ).
 "amount" = montant de la levée si applicable (sinon ""). "role" = poste ouvert si recrutement (sinon "").
@@ -147,7 +153,13 @@ Quand la source ne permet pas de trancher, réponds "UNKNOWN" (ou null pour une 
 "eventDatePrecision" ∈ ["DAY","MONTH","UNKNOWN"] — doit correspondre exactement au format de eventDate.
 "sourcePublishedAt" = date de PUBLICATION de la source, "AAAA-MM-JJ", sinon null.
 "roleStatus" ∈ ["OPEN","FILLED","UNKNOWN"] — OPEN = poste ouvert au recrutement ; FILLED = poste pourvu (nomination).
-"roleFunction" ∈ ["SALES","TECH","OFFICE_PEOPLE","EXEC_OTHER","UNKNOWN"] — SALES = commercial ; TECH = technique ; OFFICE_PEOPLE = office/workplace/people/facilities ; EXEC_OTHER = direction NON commerciale (CEO, CFO, CTO).`
+"roleFunction" ∈ ["SALES","TECH","OFFICE_PEOPLE","EXEC_OTHER","UNKNOWN"] — SALES = commercial ; TECH = technique ; OFFICE_PEOPLE = office/workplace/people/facilities ; EXEC_OTHER = direction NON commerciale (CEO, CFO, CTO).
+
+FAMILLE FACTUELLE V2 — mêmes règles : valeurs EXACTES, jamais de devinette, champs non applicables à null.
+"factFamily" ∈ ["FUNDING","EXECUTIVE_CHANGE","HIRING_SNAPSHOT","UNSUPPORTED"] — FUNDING = levée de fonds BOUCLÉE ou annoncée ; EXECUTIVE_CHANGE = nomination ou départ d'un dirigeant NOMMÉ ; HIRING_SNAPSHOT = poste(s) actuellement ouvert(s) constatés ; UNSUPPORTED = tout le reste (rachat/M&A, ouverture de bureau, expansion, lancement produit, actu générale). Ne force JAMAIS un signal dans une famille qui ne le décrit pas exactement.
+Si factFamily = "FUNDING" : "amount" = la chaîne de montant TELLE QUE PUBLIÉE par la source (ex "€8.2M", "environ 12 M€"), sinon "". "roundStage" ∈ ["SEED","SERIES_A","SERIES_B","SERIES_C_PLUS","DEBT","UNKNOWN"]. "investors" = [{"nameRaw","role"}] avec role ∈ ["LEAD","PARTICIPANT","UNKNOWN"], nameRaw tel que publié ; [] si la source ne nomme personne.
+Si factFamily = "EXECUTIVE_CHANGE" : "direction" ∈ ["APPOINTMENT","DEPARTURE","UNKNOWN"]. "personFullName" = nom complet TEL QUE PUBLIÉ (jamais déduit) ; sans nom publié, factFamily = "UNSUPPORTED". "roleSeniority" ∈ ["C_LEVEL","VP_DIRECTOR","OTHER","UNKNOWN"]. "role" = l'intitulé du poste tel que publié.
+Si factFamily = "HIRING_SNAPSHOT" : "openingsCount" = nombre EXACT de postes si la source l'ÉNONCE (0 est valide), sinon null — jamais estimé depuis "recrute beaucoup" ou "plusieurs postes". "openingsCountMethod" ∈ ["SOURCE_DECLARED","ENUMERATED_POSTINGS"] si openingsCount est renseigné, sinon null.`
 }
 
 // Le SIGNAL DEMANDÉ doit être respecté : c'est la plainte n°1 (« je demande des
@@ -373,6 +385,10 @@ const FONCTIONS: readonly SignalRoleFunction[] = [
   'SALES', 'TECH', 'OFFICE_PEOPLE', 'EXEC_OTHER', 'UNKNOWN',
 ]
 
+const FAMILLES_V2: readonly ('FUNDING' | 'EXECUTIVE_CHANGE' | 'HIRING_SNAPSHOT' | 'UNSUPPORTED')[] = [
+  'FUNDING', 'EXECUTIVE_CHANGE', 'HIRING_SNAPSHOT', 'UNSUPPORTED',
+]
+
 const JOUR = /^(\d{4})-(\d{2})-(\d{2})$/
 const MOIS = /^(\d{4})-(\d{2})$/
 
@@ -443,7 +459,8 @@ export function parseHits(text: string, extraction: SignalExtraction): SignalHit
   if (!match) return []
   let parsed: any
   try { parsed = JSON.parse(match[0]) } catch { return [] }
-  return (parsed.hits || []).map((h: any): SignalHit => ({
+  return (parsed.hits || []).map((h: any): SignalHit | null => {
+    const hit: SignalHit = {
     company: String(h.company || '').trim(),
     signalType: ['recrutement', 'levée', 'actu'].includes(h.signalType) ? h.signalType : 'autre',
     detail: String(h.detail || ''),
@@ -466,9 +483,69 @@ export function parseHits(text: string, extraction: SignalExtraction): SignalHit
     roleFunction: valeurClose(h.roleFunction, FONCTIONS, 'UNKNOWN'),
     // Copie : deux hits ne doivent pas partager le même objet de provenance.
     extraction: { ...extraction },
-  }))
-  // Sans nom d'entreprise ni source vérifiable, un « signal » n'a aucune valeur.
-  .filter((h: SignalHit) => h.company && h.sourceUrl)
+    }
+
+    // ── ÉMISSION V2 (LIVE_ACQUISITION_V2_EMISSION_001 + R1) ────────────────
+    // ⚠️ FAIL CLOSED, ET LA DISTINCTION EST TOUT L'ENJEU (§7 + porte R1) :
+    //   discriminateur ABSENT ou INVALIDE → extraction malformée → hit ÉCARTÉ
+    //     (le contrat v3 EXIGE factFamily ; « manquant » n'est pas « non
+    //     supporté », et le coercer en UNSUPPORTED rouvrirait l'ancien chemin
+    //     de promotion V1) ;
+    //   UNSUPPORTED portant une FORME héritée couverte par V2 → hit ÉCARTÉ
+    //     (une levée ou un recrutement v3 ne contournent pas le contrat V2 en
+    //     se déclarant UNSUPPORTED — champs CLOS uniquement, aucune prose) ;
+    //   UNSUPPORTED réellement hors familles (M&A, bureau, produit, actu…)
+    //     → hit hérité légitime, SANS v2 ;
+    //   famille V2 déclarée mais fait inconstructible → hit ÉCARTÉ.
+    // Jamais de rétrogradation silencieuse vers V1. Les candidats V1 DÉJÀ
+    // persistés ne passent pas par ici : leur compatibilité est intacte.
+    if (!(FAMILLES_V2 as readonly unknown[]).includes(h.factFamily)) return null
+    const famille = h.factFamily as (typeof FAMILLES_V2)[number]
+    if (famille === 'UNSUPPORTED') {
+      // Formes structurellement couvertes par V2 (et, pour les deux mappings
+      // V1 encore vivants, promotables par l'ancien chemin) :
+      if (hit.signalType === 'levée' || hit.signalType === 'recrutement') return null
+      if (hit.claimNature === 'STATE' && hit.roleStatus === 'OPEN' && hit.roleFunction === 'SALES') return null
+      // ── R2 : UNSUPPORTED n'est pas une échappatoire à EXECUTIVE_CHANGE. ──
+      // Si les champs CLOS suffisent déjà à construire un fait exécutif —
+      // ÉVÉNEMENT + direction ÉTABLIE + personne NOMMÉE par la source — la
+      // famille devait être déclarée : rejet. Une direction UNKNOWN ou une
+      // personne absente laissent le hit hérité (rien n'est réparé depuis la
+      // prose ; UNKNOWN reste préférable à l'invention).
+      const directionEtablie = h.direction === 'APPOINTMENT' || h.direction === 'DEPARTURE'
+      const personneNommee = typeof h.personFullName === 'string' && h.personFullName.trim() !== ''
+      if (hit.claimNature === 'EVENT' && directionEtablie && personneNommee) return null
+      return hit
+    }
+
+    const fait = assembleLiveFactV2({
+      factFamily: famille,
+      claimNature: hit.claimNature,
+      eventStatus: hit.eventStatus,
+      eventDate: hit.eventDate,
+      eventDatePrecision: hit.eventDatePrecision,
+      sourcePublishedAt: hit.sourcePublishedAt,
+      detail: hit.detail,
+      icebreaker: hit.icebreaker,
+      extraction: { ...extraction },
+      roundStage: h.roundStage,
+      amountText: h.amount,
+      investors: h.investors,
+      direction: h.direction,
+      personFullName: h.personFullName,
+      roleSeniority: h.roleSeniority,
+      roleTitleRaw: h.role,
+      roleFunction: hit.roleFunction,
+      roleStatus: hit.roleStatus,
+      openingsCount: h.openingsCount,
+      openingsCountMethod: h.openingsCountMethod,
+    })
+    if (fait === null) return null // rejet — jamais un repli V1
+    return { ...hit, v2: fait }
+  })
+  // Rejets V2 d'abord, puis : sans nom d'entreprise ni source vérifiable, un
+  // « signal » n'a aucune valeur.
+  .filter((h: SignalHit | null): h is SignalHit => h !== null && !!h.company && !!h.sourceUrl)
 }
 
 // ⚠️ PLUS DE DONNÉES DE DÉMONSTRATION. Avant, un échec d'appel retombait sur des

@@ -1042,7 +1042,7 @@ describe('SIGNAL-PRODUCT-REACHABILITY-001 — R1d·A chemin d’acquisition rée
   const depuisAcquisition = (): SignalHit => {
     const brut = JSON.stringify({
       hits: [{
-        company: 'Acme', signalType: 'levée', detail: 'Série A', icebreaker: '',
+        company: 'Acme', signalType: 'levée', factFamily: 'FUNDING', detail: 'Série A', icebreaker: '',
         sourceUrl: LEVEE_URL, sourceName: 'Acme',
         claimNature: 'EVENT', eventStatus: 'COMPLETED',
         eventDate: '2026-08-12', eventDatePrecision: 'DAY',

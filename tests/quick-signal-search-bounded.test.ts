@@ -126,7 +126,7 @@ const TENANT: any = { id: 'ws_quick', kind: 'client' }
 /** Réponse Claude COMPLÈTE portant `n` entreprises exploitables. */
 function reponseComplete(n = 2) {
   const hits = Array.from({ length: n }, (_, i) => ({
-    company: `Acme ${i}`, signalType: 'levée', detail: 'Série A', icebreaker: '',
+    company: `Acme ${i}`, signalType: 'levée', factFamily: 'FUNDING', detail: 'Série A', icebreaker: '',
     sourceUrl: `https://acme${i}.fr/presse`, claimNature: 'EVENT',
     eventStatus: 'COMPLETED', eventDate: '2026-08-12', eventDatePrecision: 'DAY',
   }))
@@ -140,7 +140,7 @@ function reponseComplete(n = 2) {
 /** Réponse Claude INTERROMPUE portant du JSON plausible mais incomplet. */
 function reponsePause() {
   return {
-    content: [{ type: 'text', text: JSON.stringify({ hits: [{ company: 'Fantome', signalType: 'levée', sourceUrl: 'https://fantome.fr/x', detail: '', icebreaker: '', claimNature: 'EVENT', eventStatus: 'COMPLETED', eventDate: '2026-08-12', eventDatePrecision: 'DAY' }] }) }],
+    content: [{ type: 'text', text: JSON.stringify({ hits: [{ company: 'Fantome', signalType: 'levée', factFamily: 'FUNDING', sourceUrl: 'https://fantome.fr/x', detail: '', icebreaker: '', claimNature: 'EVENT', eventStatus: 'COMPLETED', eventDate: '2026-08-12', eventDatePrecision: 'DAY' }] }) }],
     stop_reason: 'pause_turn',
     usage: { input_tokens: 10, output_tokens: 10 },
   }
