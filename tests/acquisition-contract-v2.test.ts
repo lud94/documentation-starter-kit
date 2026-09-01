@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import {
+  assembleLiveFactV2,
   isAcquisitionFactV2,
   isHiringCount,
   normalizePersonName,
   parseMoney,
+  parseMoneyResearchCompilerV0Legacy,
   personKeyV2,
 } from '../lib/prospector/proactive/acquisitionV2'
 import type { AcquisitionFactV2, PersonRef, SignalHit } from '../types/prospector'
@@ -340,5 +342,55 @@ describe('verrous structurels', () => {
     expect(isAcquisitionFactV2(extra)).toBe(false)
     expect(isAcquisitionFactV2(undefined)).toBe(false)
     expect(isAcquisitionFactV2(null)).toBe(false)
+  })
+})
+
+// ── RESEARCH_FUNDING_SEMANTIC_GUARDS_001 — BORNES INFÉRIEURES ───────────────
+// Un plancher (« over €2M », « plus de 3 M€ ») n'affirme AUCUN montant : ni
+// exact, ni approximatif. La formulation publiée reste dans asPublished.
+describe('parseMoney — bornes inférieures (politique courante)', () => {
+  it('exact et approximatif restent inchangés', () => {
+    expect(parseMoney('€2M')).toEqual({ amount: { amountMinor: 200000000, currency: 'EUR', asPublished: '€2M' } })
+    expect(parseMoney('about €2M')).toEqual({ amountApprox: { magnitudeMinor: 200000000, currency: 'EUR', asPublished: 'about €2M' } })
+    expect(parseMoney('~€2M')).toEqual({ amountApprox: { magnitudeMinor: 200000000, currency: 'EUR', asPublished: '~€2M' } })
+    expect(parseMoney('around $30 million')).toEqual({ amountApprox: { magnitudeMinor: 3000000000, currency: 'USD', asPublished: 'around $30 million' } })
+    expect(parseMoney('environ 2 M€')).toEqual({ amountApprox: { magnitudeMinor: 200000000, currency: 'EUR', asPublished: 'environ 2 M€' } })
+  })
+
+  it('borne inférieure ⇒ null — JAMAIS MoneyExact, JAMAIS MoneyApprox', () => {
+    for (const brut of [
+      'over €2 million', 'over €807.6k', 'more than $10M', 'at least £5M',
+      'above €2M', 'upwards of $4M', 'exceeding €3 million',
+      'plus de 3 M€', 'au moins 3 M€', 'au-delà de 3 M€', 'supérieur à 3 M€', '€2M+',
+    ]) {
+      expect(parseMoney(brut), brut).toBeNull()
+    }
+  })
+
+  it('mots contenant les marqueurs par accident ne déclenchent PAS la borne', () => {
+    // « takeover » contient « over » sans frontière de mot : montant intact.
+    expect(parseMoney('takeover €2M')).not.toBeNull()
+  })
+
+  it('l’assembleur VIVANT produit un fait FUNDING SANS argent structuré pour une borne', () => {
+    const fait = assembleLiveFactV2({
+      factFamily: 'FUNDING', claimNature: 'EVENT', eventStatus: 'COMPLETED',
+      eventDate: '2026-08-12', eventDatePrecision: 'DAY', sourcePublishedAt: '2026-08-13',
+      detail: '', icebreaker: '',
+      extraction: { mode: 'claude-web', promptVersion: 'signal-acquisition-v3' },
+      amountText: 'over €2 million', roundStage: 'SEED',
+      roleFunction: 'UNKNOWN', roleStatus: 'UNKNOWN',
+    })
+    expect(fait).not.toBeNull()
+    expect((fait as any).payload.amount).toBeUndefined()
+    expect((fait as any).payload.amountApprox).toBeUndefined()
+  })
+
+  it('la politique HÉRITÉE V0 (rejeu historique SEUL) reproduit l’ancien comportement', () => {
+    expect(parseMoneyResearchCompilerV0Legacy('over €2 million'))
+      .toEqual({ amount: { amountMinor: 200000000, currency: 'EUR', asPublished: 'over €2 million' } })
+    // et reste identique à la politique courante hors bornes :
+    expect(parseMoneyResearchCompilerV0Legacy('about €2M')).toEqual(parseMoney('about €2M'))
+    expect(parseMoneyResearchCompilerV0Legacy('between €8m and €12m')).toBeNull()
   })
 })

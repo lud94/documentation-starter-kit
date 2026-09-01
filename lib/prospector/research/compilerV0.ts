@@ -28,7 +28,8 @@ import { createHash } from 'node:crypto'
 import { getItemStrict, insertItemIfAbsent } from '../../supabase/store'
 import { isStrictInstant } from '../proactive/types'
 import {
-  assembleLiveFactV2, canonicalJson, type LiveV2Extraction,
+  assembleLiveFactV2, assembleResearchCompilerV0LegacyFactV2,
+  canonicalJson, type LiveV2Extraction,
 } from '../proactive/acquisitionV2'
 import type { AcquisitionFactV2, SignalHit } from '../../../types/prospector'
 import type { ResearchCandidateOriginV0 } from '../proactive/signalCandidates'
@@ -40,7 +41,27 @@ import { readResearchMission, type ResearchMissionV0 } from './missionV0'
 /** `kind` du magasin — SERVEUR UNIQUEMENT, distinct de l'artefact. */
 export const RESEARCH_COMPILATION_KIND = 'prospector_research_compilation'
 export const RESEARCH_COMPILATION_CONTRACT = 'research-compilation-v0'
-export const RESEARCH_COMPILER_VERSION = 'research-artifact-compiler-v0'
+
+/**
+ * VERSIONS DE SÉMANTIQUE COMPILATEUR — vocabulaire CLOS
+ * (RESEARCH_FUNDING_SEMANTIC_GUARDS_001).
+ *
+ * La version nomme une SÉMANTIQUE D'INTERPRÉTATION STABLE : rejouer une
+ * compilation persistée sous sa version stockée reproduit EXACTEMENT le
+ * résultat d'époque — y compris, pour v0, son interprétation d'argent
+ * historiquement fautive (bornes inférieures), CONFINÉE AU REJEU.
+ *
+ *   v0 : sémantique historique (rejeu seul ; jamais de nouveaux imports)
+ *   v1 : sémantique corrigée (bornes inférieures refusées ; `amountAttribution`
+ *        obligatoire à `CURRENT_EVENT` pour qu'un montant structuré existe)
+ */
+export type ResearchCompilerVersion =
+  | 'research-artifact-compiler-v0'
+  | 'research-artifact-compiler-v1'
+export const RESEARCH_COMPILER_VERSIONS: readonly ResearchCompilerVersion[] =
+  Object.freeze(['research-artifact-compiler-v0', 'research-artifact-compiler-v1'])
+/** Version COURANTE — la seule que les NOUVEAUX imports estampillent. */
+export const RESEARCH_COMPILER_VERSION: ResearchCompilerVersion = 'research-artifact-compiler-v1'
 
 /**
  * Longueur MINIMALE d'un extrait d'ancrage. Un ancrage de quelques caractères
@@ -89,6 +110,19 @@ export function buildResearchCompilerBrief(mission: ResearchMissionV0, artifact:
     '- Des sources en DÉSACCORD deviennent des trouvailles SÉPARÉES — jamais',
     '  réconciliées silencieusement.',
     '',
+    '## ATTRIBUTION DU MONTANT (amountAttribution — obligatoire quand amount est fourni)',
+    '- CURRENT_EVENT : le montant appartient EXPLICITEMENT à l\'événement de',
+    '  financement COURANT (le tour/round lui-même).',
+    '- CUMULATIVE_TOTAL : total cumulé/de-vie/après-extension (« total funding',
+    '  reached », « extended its funding to », « bringing total funding to »,',
+    '  « seed extended to over ... »). Ce n\'est PAS le montant de l\'événement.',
+    '- COMPOSITE_AGGREGATE : un total publié AGRÈGE des composantes de',
+    '  financement hétérogènes (equity + non-dilutif/subvention/dette...).',
+    '- UNKNOWN : l\'artefact n\'établit pas l\'attribution de façon sûre.',
+    'Une attribution manquante ou incertaine AFFAIBLIT le résultat : seul',
+    'CURRENT_EVENT peut produire un montant structuré. Ne JAMAIS déduire un',
+    'montant frais par soustraction.',
+    '',
     '## FAMILLES DEMANDÉES PAR LA MISSION (les seules admises)',
     ...mission.spec.signalFamilies.map((f) => `- ${f}`),
     '',
@@ -109,6 +143,7 @@ export function buildResearchCompilerBrief(mission: ResearchMissionV0, artifact:
     '  "roleFunction": "SALES" | "TECH" | "OFFICE_PEOPLE" | "EXEC_OTHER" | "UNKNOWN",',
     '  "roleStatus": "OPEN" | "FILLED" | "UNKNOWN",',
     '  "amount": string telle que publiée | null,       // FUNDING',
+    '  "amountAttribution": "CURRENT_EVENT"|"CUMULATIVE_TOTAL"|"COMPOSITE_AGGREGATE"|"UNKNOWN",',
     '  "roundStage": "SEED"|"SERIES_A"|"SERIES_B"|"SERIES_C_PLUS"|"DEBT"|"UNKNOWN",',
     '  "investors": [{ "nameRaw": string, "role": "LEAD"|"PARTICIPANT"|"UNKNOWN" }],',
     '  "direction": "APPOINTMENT"|"DEPARTURE"|"UNKNOWN", // EXECUTIVE_CHANGE',
@@ -139,7 +174,7 @@ export interface ResearchCompilationV0 {
   artifactContentHash: string
   missionId: string
   missionSpecHash: string
-  compilerVersion: 'research-artifact-compiler-v0'
+  compilerVersion: ResearchCompilerVersion
   format: 'JSON'
   /** Sortie du compilateur EXACTE, caractère pour caractère. */
   rawOutput: string
@@ -164,8 +199,13 @@ export function researchOutputHash(rawOutput: string): string {
  *   même artefact + JSON modifié             → nouvelle identité
  *   même JSON + autre artefact               → autre identité
  */
-export function researchCompilationId(workspaceId: string, artifactId: string, outputHash: string): string {
-  return `rc_${sha256(`research-compilation:v0:${workspaceId}\n${artifactId}\n${RESEARCH_COMPILER_VERSION}\n${outputHash}`).slice(0, 32)}`
+export function researchCompilationId(
+  workspaceId: string, artifactId: string, compilerVersion: ResearchCompilerVersion, outputHash: string,
+): string {
+  // ⚠️ LA VERSION EST UNE ENTRÉE D'IDENTITÉ EXPLICITE : même sortie sous v0 et
+  // v1 ⇒ deux identités. La formule v0 reste octet pour octet celle d'origine
+  // (la constante d'époque occupait exactement cette position du condensat).
+  return `rc_${sha256(`research-compilation:v0:${workspaceId}\n${artifactId}\n${compilerVersion}\n${outputHash}`).slice(0, 32)}`
 }
 
 export function compilationRecordHash(c: Omit<ResearchCompilationV0, 'id' | 'recordHash'>): string {
@@ -245,7 +285,8 @@ export async function importResearchCompilation(
   const a = artefact.artifact
 
   const outputHash = researchOutputHash(input.rawOutput)
-  const id = researchCompilationId(ws, a.id, outputHash)
+  // Les NOUVEAUX imports estampillent TOUJOURS la version courante (v1).
+  const id = researchCompilationId(ws, a.id, RESEARCH_COMPILER_VERSION, outputHash)
   const importedAt = now().toISOString()
   if (!isStrictInstant(importedAt)) return { ok: false, reason: 'INVALID_INPUT' }
 
@@ -330,7 +371,10 @@ export async function readResearchCompilation(id: unknown, ws: string): Promise<
     || c.id !== id
     || c.workspaceId !== ws
     || c.contractVersion !== RESEARCH_COMPILATION_CONTRACT
-    || c.compilerVersion !== RESEARCH_COMPILER_VERSION
+    // ⚠️ VERSION STOCKÉE validée contre le vocabulaire CLOS — jamais l'égalité
+    // aveugle avec la constante courante : les lignes v0 restent lisibles,
+    // toute version inconnue échoue fermé.
+    || !(RESEARCH_COMPILER_VERSIONS as readonly unknown[]).includes(c.compilerVersion)
     || c.format !== 'JSON'
     || typeof c.rawOutput !== 'string'
     || typeof c.outputHash !== 'string'
@@ -346,7 +390,10 @@ export async function readResearchCompilation(id: unknown, ws: string): Promise<
   }
   // Condensats RECOMPUTÉS — la valeur stockée n'est jamais crue.
   if (c.outputHash !== researchOutputHash(String(c.rawOutput))) return { ok: false, reason: 'COMPILATION_TAMPERED' }
-  if (researchCompilationId(ws, String(c.artifactId), String(c.outputHash)) !== id) {
+  // Identité recomputée avec la version STOCKÉE (déjà validée close), jamais
+  // la constante la plus récente : un enregistrement v0 n'est pas re-jugé
+  // sous la formule v1.
+  if (researchCompilationId(ws, String(c.artifactId), c.compilerVersion as ResearchCompilerVersion, String(c.outputHash)) !== id) {
     return { ok: false, reason: 'COMPILATION_TAMPERED' }
   }
   const { id: _id, recordHash: _rh, ...sansIntegrite } = c
@@ -409,6 +456,16 @@ const PRECISIONS = ['DAY', 'MONTH', 'UNKNOWN'] as const
 const FONCTIONS = ['SALES', 'TECH', 'OFFICE_PEOPLE', 'EXEC_OTHER', 'UNKNOWN'] as const
 const STATUTS_ROLE = ['OPEN', 'FILLED', 'UNKNOWN'] as const
 const FAMILLES = ['FUNDING', 'EXECUTIVE_CHANGE', 'HIRING_SNAPSHOT'] as const
+/**
+ * ATTRIBUTION DE MONTANT (V1 UNIQUEMENT) — vocabulaire CLOS. Le montant
+ * structuré d'un fait FUNDING n'existe QUE pour `CURRENT_EVENT` : totaux
+ * cumulés, agrégats hétérogènes, attribution inconnue OU ABSENTE ⇒ aucun
+ * argent structuré (le libellé publié reste dans l'artefact/rawDetail). Une
+ * sortie de modèle malformée ne peut donc qu'AFFAIBLIR le fait. Ce
+ * discriminant reste HORS de `AcquisitionFactV2`. Le contrat de trouvailles
+ * V0 ne le connaît PAS : sa présence dans une sortie v0 est un INVALID_SHAPE.
+ */
+const ATTRIBUTIONS_MONTANT = ['CURRENT_EVENT', 'CUMULATIVE_TOTAL', 'COMPOSITE_AGGREGATE', 'UNKNOWN'] as const
 const dans = (admis: readonly string[], v: unknown): v is string =>
   typeof v === 'string' && admis.includes(v)
 const chaineOuNull = (v: unknown): boolean => v === null || typeof v === 'string'
@@ -442,11 +499,22 @@ export function compileResearchFindings(
   const famillesMission = new Set<string>(mission.spec.signalFamilies)
   const results: CompiledFindingResult[] = []
 
+  // ── DISPATCH DE SÉMANTIQUE PAR VERSION STOCKÉE ────────────────────────────
+  // v0 : REJEU HISTORIQUE — forme de trouvaille d'époque (sans
+  // `amountAttribution`) et politique d'argent d'époque (assembleur hérité),
+  // pour que la même compilation persistée produise le MÊME résultat qu'avant
+  // ce ticket. v1 : sémantique corrigée.
+  const v0 = compilation.compilerVersion === 'research-artifact-compiler-v0'
+  const clesOptionnelles = v0
+    ? CLES_TROUVAILLE_OPTIONNELLES
+    : [...CLES_TROUVAILLE_OPTIONNELLES, 'amountAttribution']
+  const assembler = v0 ? assembleResearchCompilerV0LegacyFactV2 : assembleLiveFactV2
+
   racine.findings.forEach((t: unknown, index: number) => {
     // ── FORME : clés CLOSES, vocabulaires CLOS — rien d'inconnu n'est ignoré.
     if (
       !objet(t)
-      || !clesCloses(t, CLES_TROUVAILLE_REQUISES, CLES_TROUVAILLE_OPTIONNELLES)
+      || !clesCloses(t, CLES_TROUVAILLE_REQUISES, clesOptionnelles)
       || typeof t.company !== 'string'
       || typeof t.sourceUrl !== 'string'
       || typeof t.artifactExcerpt !== 'string'
@@ -493,8 +561,24 @@ export function compileResearchFindings(
     }
     const siren: string | null = sirenBrut as string | null
 
+    // ── ATTRIBUTION DE MONTANT (V1) — vocabulaire clos, jamais inféré ni
+    // réparé depuis la prose côté serveur. Le montant n'atteint l'assembleur
+    // QUE pour `CURRENT_EVENT` explicite ; CUMULATIVE_TOTAL /
+    // COMPOSITE_AGGREGATE / UNKNOWN / ABSENT ⇒ aucun argent structuré (le
+    // fait FUNDING reste valide sans montant). Valeur hors vocabulaire ⇒
+    // forme rejetée.
+    let amountText: unknown = t.amount
+    if (!v0) {
+      if (t.amountAttribution !== undefined && !dans(ATTRIBUTIONS_MONTANT, t.amountAttribution)) {
+        results.push({ state: 'REJECTED', index, reason: 'INVALID_SHAPE' })
+        return
+      }
+      if (t.amountAttribution !== 'CURRENT_EVENT') amountText = undefined
+    }
+
     // ── ASSEMBLAGE V2 — logique de PRODUCTION réutilisée, jamais dupliquée
-    // (parseMoney, normalizePersonName, enums clos, isAcquisitionFactV2).
+    // (parseMoney, normalizePersonName, enums clos, isAcquisitionFactV2) ;
+    // en rejeu v0, l'assembleur HÉRITÉ reproduit la sémantique d'époque.
     const extraction: LiveV2Extraction = {
       factFamily: t.factFamily as any,
       claimNature: t.claimNature as any,
@@ -508,13 +592,14 @@ export function compileResearchFindings(
       icebreaker: '',
       extraction: {
         mode: 'research-compiler',
-        promptVersion: RESEARCH_COMPILER_VERSION,
+        // La version STOCKÉE — un rejeu v0 estampille v0, comme à l'époque.
+        promptVersion: compilation.compilerVersion,
         ...(compilation.provenance.model !== undefined ? { model: compilation.provenance.model } : {}),
         researchArtifactId: artifact.id,
         researchCompilationId: compilation.id,
       },
       roundStage: t.roundStage,
-      amountText: t.amount,
+      amountText,
       investors: t.investors,
       direction: t.direction,
       personFullName: t.personFullName,
@@ -525,7 +610,7 @@ export function compileResearchFindings(
       openingsCount: t.openingsCount,
       openingsCountMethod: t.openingsCountMethod,
     }
-    const fait = assembleLiveFactV2(extraction)
+    const fait = assembler(extraction)
     if (!fait) {
       results.push({ state: 'REJECTED', index, reason: 'INVALID_V2' })
       return

@@ -161,6 +161,14 @@ export type MoneyParse = { amount: MoneyExact } | { amountApprox: MoneyApprox }
 const MARQUE_APPROX =
   /(?:^|[\s(])(about|around|approximately|approx\.?|nearly|almost|roughly|some|environ|presque|quelque)(?=[\s€$£\d])|[~≈]|pr[eè]s de/i
 const MARQUE_INTERVALLE = /\b(between|entre|from)\b|\bto\b|\band\b|\bet\b|\bà\b|(?:\d\s*[-–—]\s*[\d€$£])/i
+/**
+ * BORNE INFÉRIEURE — « over €2M », « plus de 3 M€ »…
+ * (RESEARCH_FUNDING_SEMANTIC_GUARDS_001). Un plancher n'est NI un montant
+ * exact NI une approximation : il ne produit AUCUN argent structuré. La
+ * formulation publiée reste dans `asPublished`/rawDetail.
+ */
+const MARQUE_BORNE_INF =
+  /\b(over|more than|at least|above|upwards of|exceeding|at minimum)\b|\bplus de\b|\bau moins\b|\bau[- ]del[aà] de\b|\bsup[ée]rieur(?:e|es|s)?\s+[aà](?=[\s\d])|\+\s*$/i
 const NOMBRE = /(\d+(?:[.,]\d+)?)\s*(k|m|mn|b|bn|md|millions?|milliards?|billions?|thousand|mille)?\b/gi
 
 const MULTIPLICATEURS: Record<string, number> = {
@@ -187,9 +195,33 @@ function deviseUnique(brut: string): MoneyCurrency | null {
  * reste dans `asPublished`/rawDetail, aucun nombre n'est fabriqué.
  */
 export function parseMoney(brut: string): MoneyParse | null {
+  return parseMoneyAvecPolitique(brut, 'CURRENT')
+}
+
+/**
+ * ⚠️ REJEU HISTORIQUE UNIQUEMENT — NE JAMAIS UTILISER POUR UNE NOUVELLE
+ * ACQUISITION. Politique d'argent du compilateur `research-artifact-compiler-v0`
+ * TELLE QU'ELLE ÉTAIT AVANT RESEARCH_FUNDING_SEMANTIC_GUARDS_001 : elle
+ * accepte encore les bornes inférieures (« over €2M » → exact), ce qui est
+ * factuellement FAUX. Elle n'existe que pour que le rejeu d'une compilation V0
+ * persistée reproduise EXACTEMENT son résultat d'époque (sémantique versionnée
+ * stable), jamais pour produire des faits neufs — la voie vivante, le
+ * compilateur V1, l'enregistrement de candidats et tout l'aval factuel
+ * utilisent exclusivement `parseMoney` (politique CURRENT).
+ */
+export function parseMoneyResearchCompilerV0Legacy(brut: string): MoneyParse | null {
+  return parseMoneyAvecPolitique(brut, 'LEGACY_RESEARCH_COMPILER_V0')
+}
+
+function parseMoneyAvecPolitique(
+  brut: string, politique: 'CURRENT' | 'LEGACY_RESEARCH_COMPILER_V0',
+): MoneyParse | null {
   if (typeof brut !== 'string') return null
   const texte = brut.normalize('NFKC').trim()
   if (texte.length === 0 || MARQUE_INTERVALLE.test(texte)) return null
+  // Politique COURANTE : une borne inférieure n'affirme aucun montant.
+  // La politique héritée V0 (rejeu seul) reproduit l'ancien comportement.
+  if (politique === 'CURRENT' && MARQUE_BORNE_INF.test(texte)) return null
 
   const devise = deviseUnique(texte)
   if (devise === null) return null
@@ -559,6 +591,23 @@ const cloOuUnknown = <T extends string>(v: unknown, admises: readonly T[]): T | 
  * `null` N'EST PAS « repli V1 » : c'est un REJET du hit (contrat §7).
  */
 export function assembleLiveFactV2(e: LiveV2Extraction): AcquisitionFactV2 | null {
+  return assembleFactV2AvecArgent(e, parseMoney)
+}
+
+/**
+ * ⚠️ REJEU HISTORIQUE UNIQUEMENT — assembleur du compilateur
+ * `research-artifact-compiler-v0`, avec la politique d'argent d'ÉPOQUE
+ * (`parseMoneyResearchCompilerV0Legacy`). Seul `compileResearchFindings` sur
+ * une compilation V0 PERSISTÉE a le droit de l'appeler. NE JAMAIS l'exposer à
+ * la voie vivante, au compilateur V1, ni à aucune écriture factuelle nouvelle.
+ */
+export function assembleResearchCompilerV0LegacyFactV2(e: LiveV2Extraction): AcquisitionFactV2 | null {
+  return assembleFactV2AvecArgent(e, parseMoneyResearchCompilerV0Legacy)
+}
+
+function assembleFactV2AvecArgent(
+  e: LiveV2Extraction, parseArgent: (brut: string) => MoneyParse | null,
+): AcquisitionFactV2 | null {
   const etat = e.factFamily === 'HIRING_SNAPSHOT'
 
   // ── COHÉRENCE TEMPORELLE PAR FAMILLE — contradiction = rejet, pas réparation.
@@ -575,10 +624,11 @@ export function assembleLiveFactV2(e: LiveV2Extraction): AcquisitionFactV2 | nul
         investisseurs.push({ nameRaw, role: cloOuUnknown(inv?.role, ROLES_INVESTISSEUR) })
       }
     }
-    // ⚠️ L'ARGENT NE VIENT QUE DE `parseMoney` sur la CHAÎNE PUBLIÉE.
+    // ⚠️ L'ARGENT NE VIENT QUE DE L'ANALYSEUR INJECTÉ sur la CHAÎNE PUBLIÉE
+    // (`parseMoney` partout, sauf rejeu historique compilateur V0).
     // Inanalysable ⇒ AUCUN montant — jamais un nombre ou un intervalle inventé.
     const argent = typeof e.amountText === 'string' && e.amountText.trim() !== ''
-      ? parseMoney(e.amountText)
+      ? parseArgent(e.amountText)
       : null
     payload = {
       family: 'FUNDING',

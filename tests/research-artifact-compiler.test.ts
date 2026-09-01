@@ -10,7 +10,7 @@ import { createResearchMission, RESEARCH_MISSION_KIND } from '../lib/prospector/
 import { importResearchArtifact, RESEARCH_ARTIFACT_KIND } from '../lib/prospector/research/artifactV0'
 import {
   ARTIFACT_EXCERPT_MIN_LENGTH, buildResearchCompilerBrief, compileResearchFindings,
-  importResearchCompilation, readResearchCompilation, researchCompilationId,
+  compilationRecordHash, importResearchCompilation, readResearchCompilation, researchCompilationId,
   researchOriginFor, researchOutputHash, RESEARCH_COMPILATION_KIND, RESEARCH_COMPILER_VERSION,
 } from '../lib/prospector/research/compilerV0'
 import {
@@ -62,7 +62,7 @@ const trouvailleFunding = (extra: Record<string, unknown> = {}): any => ({
   factFamily: 'FUNDING', claimNature: 'EVENT', eventStatus: 'COMPLETED',
   eventDate: '2026-08-12', eventDatePrecision: 'DAY', sourcePublishedAt: '2026-08-13',
   roleFunction: 'UNKNOWN', roleStatus: 'UNKNOWN',
-  amount: '8 M€', roundStage: 'SERIES_A',
+  amount: '8 M€', amountAttribution: 'CURRENT_EVENT', roundStage: 'SERIES_A',
   investors: [{ nameRaw: 'Fonds Alpha', role: 'LEAD' }],
   ...extra,
 })
@@ -345,7 +345,7 @@ describe('enregistrement de compilation immuable (O–U)', () => {
     )
     if (autre.ok === false) throw new Error(autre.reason)
     expect(autre.compilation.id).not.toBe(c.id)
-    expect(researchCompilationId(WS, 'ra_' + 'a'.repeat(32), c.outputHash)).not.toBe(c.id)
+    expect(researchCompilationId(WS, 'ra_' + 'a'.repeat(32), c.compilerVersion, c.outputHash)).not.toBe(c.id)
   })
 })
 
@@ -527,6 +527,206 @@ describe('état mutable — ré-observation (AD–AE)', () => {
       .map(([, v]: any) => v)
     expect(candidats).toHaveLength(1) // le FUNDING seulement
     expect(candidats[0].claim.v2.family).toBe('FUNDING')
+  })
+})
+
+describe('gardes sémantiques de financement (SG — attribution V1)', () => {
+  async function compiler(findings: unknown[]) {
+    const { mission, artifact, compilation: c } = await compilation(findings)
+    const r = compileResearchFindings(mission, artifact, c)
+    if (r.ok === false) throw new Error(r.reason)
+    return r.results
+  }
+  const argentDe = (res: any) => ({
+    amount: res.hit?.v2?.payload?.amount, amountApprox: res.hit?.v2?.payload?.amountApprox,
+  })
+
+  it('SG-1/2 — CURRENT_EVENT : €10M → exact ; « around $30 million » → approximatif', async () => {
+    const [exact, approx]: any[] = await compiler([
+      trouvailleFunding({ amount: '€10M', amountAttribution: 'CURRENT_EVENT' }),
+      trouvailleFunding({ amount: 'around $30 million', amountAttribution: 'CURRENT_EVENT', sourceUrl: 'https://reprise.exemple.fr/acme-echo' }),
+    ])
+    expect(exact.state).toBe('EVENT_CANDIDATE_READY')
+    expect(argentDe(exact).amount).toEqual({ amountMinor: 1000000000, currency: 'EUR', asPublished: '€10M' })
+    expect(argentDe(approx).amountApprox).toEqual({ magnitudeMinor: 3000000000, currency: 'USD', asPublished: 'around $30 million' })
+  })
+
+  it('SG-3/4/5/6 — CUMULATIVE_TOTAL / COMPOSITE_AGGREGATE / UNKNOWN / attribution ABSENTE : AUCUN argent structuré, fait FUNDING toujours valide', async () => {
+    const cas = [
+      { amount: '$100 million', amountAttribution: 'CUMULATIVE_TOTAL' },
+      { amount: '€5 million', amountAttribution: 'COMPOSITE_AGGREGATE' },
+      { amount: '€10M', amountAttribution: 'UNKNOWN' },
+      { amount: '€10M', amountAttribution: undefined }, // le trou « prompt seul » fermé côté serveur
+    ]
+    for (const patch of cas) {
+      const [res]: any[] = await compiler([trouvailleFunding(patch)])
+      expect(res.state, JSON.stringify(patch)).toBe('EVENT_CANDIDATE_READY') // le fait survit…
+      expect(argentDe(res).amount, JSON.stringify(patch)).toBeUndefined()    // …sans montant
+      expect(argentDe(res).amountApprox, JSON.stringify(patch)).toBeUndefined()
+      if (g.__prospectorStore) g.__prospectorStore.clear()
+    }
+  })
+
+  it('SG-7 — attribution hors vocabulaire clos : INVALID_SHAPE', async () => {
+    const [res] = await compiler([trouvailleFunding({ amountAttribution: 'FRESH_MONEY' })])
+    expect(res).toEqual({ state: 'REJECTED', index: 0, reason: 'INVALID_SHAPE' })
+  })
+
+  it('SG-8 — cas Syntetica : montant du round courant CONSERVÉ malgré une mention de soutien séparée (aucune regex de proximité)', async () => {
+    const [res]: any[] = await compiler([
+      trouvailleFunding({ amount: '€26.1 million', amountAttribution: 'CURRENT_EVENT' }),
+    ])
+    expect(res.state).toBe('EVENT_CANDIDATE_READY')
+    expect(argentDe(res).amount).toEqual({ amountMinor: 2610000000, currency: 'EUR', asPublished: '€26.1 million' })
+  })
+
+  it('SG-9 — V1 + borne inférieure même en CURRENT_EVENT : politique COURANTE ⇒ pas d’argent (jamais l’analyseur hérité)', async () => {
+    const [res]: any[] = await compiler([
+      trouvailleFunding({ amount: 'over €2 million', amountAttribution: 'CURRENT_EVENT' }),
+    ])
+    expect(res.state).toBe('EVENT_CANDIDATE_READY')
+    expect(argentDe(res).amount).toBeUndefined()
+    expect(argentDe(res).amountApprox).toBeUndefined()
+  })
+
+  it('SG-10 — deux sources en désaccord sur le montant restent DEUX trouvailles indépendantes', async () => {
+    const res: any[] = await compiler([
+      trouvailleFunding({ amount: '€10M', amountAttribution: 'CURRENT_EVENT' }),
+      trouvailleFunding({ amount: '€12M', amountAttribution: 'CURRENT_EVENT', sourceUrl: 'https://reprise.exemple.fr/acme-echo' }),
+    ])
+    expect(res).toHaveLength(2)
+    expect(argentDe(res[0]).amount?.amountMinor).toBe(1000000000)
+    expect(argentDe(res[1]).amount?.amountMinor).toBe(1200000000)
+  })
+})
+
+describe('versionnage compilateur — rejeu v0 stable, v1 corrigé (VV)', () => {
+  const V0 = 'research-artifact-compiler-v0' as const
+  const V1 = 'research-artifact-compiler-v1' as const
+  const SORTIE_V0 = sortie([trouvailleV0BorneInf()])
+  function trouvailleV0BorneInf(): any {
+    // Forme d'ÉPOQUE : PAS de champ amountAttribution.
+    const { amountAttribution: _a, ...t } = trouvailleFunding({ amount: 'over €2 million' })
+    return t
+  }
+  /** Fabrique en base une ligne v0 EXACTEMENT comme l'aurait écrite le code d'époque. */
+  async function compilationV0Persistee() {
+    const { mission, artifact } = await socle()
+    const outputHash = researchOutputHash(SORTIE_V0)
+    const id = researchCompilationId(WS, artifact.id, V0, outputHash)
+    const sansIntegrite = {
+      workspaceId: WS, contractVersion: 'research-compilation-v0', artifactId: artifact.id,
+      artifactContentHash: artifact.contentHash, missionId: artifact.missionId,
+      missionSpecHash: artifact.missionSpecHash, compilerVersion: V0, format: 'JSON',
+      rawOutput: SORTIE_V0, outputHash,
+      provenance: { importMode: 'MANUAL', originLabel: 'GPT compilateur', importedAt: '2026-08-31T16:00:00.000Z' },
+    }
+    const row = { id, ...sansIntegrite, recordHash: compilationRecordHash(sansIntegrite as any) }
+    g.__prospectorStore.set(`${RESEARCH_COMPILATION_KIND}|${WS}|${id}`, row)
+    return { mission, artifact, id }
+  }
+
+  it('VV-1 — la formule d’identité v0 est octet pour octet celle d’origine', async () => {
+    const { artifact } = await socle()
+    const outputHash = researchOutputHash(SORTIE_V0)
+    // Reconstruction INDÉPENDANTE de la charge historique (constante d'époque en 3e position).
+    const historique = `rc_${createHash('sha256')
+      .update(`research-compilation:v0:${WS}\n${artifact.id}\n${V0}\n${outputHash}`, 'utf8')
+      .digest('hex').slice(0, 32)}`
+    expect(researchCompilationId(WS, artifact.id, V0, outputHash)).toBe(historique)
+    expect(researchCompilationId(WS, artifact.id, V1, outputHash)).not.toBe(historique)
+  })
+
+  it('VV-2 — une compilation v0 persistée reste STRICT-READABLE sous sa version stockée', async () => {
+    const { id } = await compilationV0Persistee()
+    const relu = await readResearchCompilation(id, WS)
+    if (relu.ok === false) throw new Error(relu.reason)
+    expect(relu.compilation.compilerVersion).toBe(V0)
+    expect(relu.compilation.rawOutput).toBe(SORTIE_V0)
+  })
+
+  it('VV-3 — le REJEU v0 reproduit la sémantique HISTORIQUE exacte (borne inférieure → MoneyExact), déterministe', async () => {
+    const { mission, artifact, id } = await compilationV0Persistee()
+    const relu = await readResearchCompilation(id, WS)
+    if (relu.ok === false) throw new Error(relu.reason)
+    const un = compileResearchFindings(mission, artifact, relu.compilation)
+    const deux = compileResearchFindings(mission, artifact, relu.compilation)
+    if (un.ok === false || deux.ok === false) throw new Error('compile échoué')
+    expect(canonicalJson(un.results as any)).toBe(canonicalJson(deux.results as any)) // déterminisme
+    const res: any = un.results[0]
+    expect(res.state).toBe('EVENT_CANDIDATE_READY')
+    // Le défaut d'époque, REPRODUIT tel quel — confiné au rejeu v0 :
+    expect(res.hit.v2.payload.amount).toEqual({ amountMinor: 200000000, currency: 'EUR', asPublished: 'over €2 million' })
+    expect(res.hit.v2.extraction.promptVersion).toBe(V0)
+  })
+
+  it('VV-4 — même artefact + même sortie : la v1 COEXISTE (autre identité, aucun conflit de provenance), et sa sémantique est corrigée', async () => {
+    const { mission, artifact, id: idV0 } = await compilationV0Persistee()
+    const v1 = await importResearchCompilation(
+      { artifactId: artifact.id, rawOutput: SORTIE_V0, originLabel: 'GPT compilateur' }, WS, T0,
+    )
+    if (v1.ok === false) throw new Error(v1.reason)
+    expect(v1.created).toBe(true)
+    expect(v1.compilation.compilerVersion).toBe(V1)
+    expect(v1.compilation.id).not.toBe(idV0)
+    expect((await readResearchCompilation(idV0, WS)).ok).toBe(true) // les deux vivent
+    const r = compileResearchFindings(mission, artifact, v1.compilation)
+    if (r.ok === false) throw new Error(r.reason)
+    const res: any = r.results[0]
+    // Sous v1 : la trouvaille d'époque (sans attribution) reste valide mais SANS argent.
+    expect(res.state).toBe('EVENT_CANDIDATE_READY')
+    expect(res.hit.v2.payload.amount).toBeUndefined()
+    expect(res.hit.v2.extraction.promptVersion).toBe(V1)
+  })
+
+  it('VV-5 — version de compilateur INCONNUE : échec fermé à la lecture stricte', async () => {
+    const { id } = await compilationV0Persistee()
+    const cle = `${RESEARCH_COMPILATION_KIND}|${WS}|${id}`
+    const row = g.__prospectorStore.get(cle)
+    row.compilerVersion = 'research-artifact-compiler-v2'
+    expect(await readResearchCompilation(id, WS)).toEqual({ ok: false, reason: 'COMPILATION_TAMPERED' })
+  })
+
+  it('VV-5-bis — version INCONNUE avec identité ET recordHash refaits en cohérence : le vocabulaire CLOS rejette quand même', async () => {
+    const { id } = await compilationV0Persistee()
+    const cle = `${RESEARCH_COMPILATION_KIND}|${WS}|${id}`
+    const row = JSON.parse(JSON.stringify(g.__prospectorStore.get(cle)))
+    // L'attaquant invente une version et recalcule identité + intégrité —
+    // seule la fermeture du vocabulaire de versions le trahit.
+    row.compilerVersion = 'research-artifact-compiler-v99'
+    const { id: _i, recordHash: _r, ...sans } = row
+    row.recordHash = compilationRecordHash(sans as any)
+    row.id = researchCompilationId(WS, row.artifactId, row.compilerVersion, row.outputHash)
+    g.__prospectorStore.set(`${RESEARCH_COMPILATION_KIND}|${WS}|${row.id}`, row)
+    expect(await readResearchCompilation(row.id, WS)).toEqual({ ok: false, reason: 'COMPILATION_TAMPERED' })
+  })
+
+  it('VV-6 — version substituée v0→v1 sous le même id : TAMPERED (identité ET recordHash sensibles à la version)', async () => {
+    const { id } = await compilationV0Persistee()
+    const cle = `${RESEARCH_COMPILATION_KIND}|${WS}|${id}`
+    g.__prospectorStore.get(cle).compilerVersion = V1
+    expect(await readResearchCompilation(id, WS)).toEqual({ ok: false, reason: 'COMPILATION_TAMPERED' })
+  })
+
+  it('VV-7 — la forme v0 REFUSE le champ v1 amountAttribution (pas d’expansion silencieuse du contrat d’époque)', async () => {
+    const { mission, artifact } = await socle()
+    const sortieAnachronique = sortie([trouvailleFunding({ amount: '€10M', amountAttribution: 'CURRENT_EVENT' })])
+    const outputHash = researchOutputHash(sortieAnachronique)
+    const id = researchCompilationId(WS, artifact.id, V0, outputHash)
+    const sansIntegrite = {
+      workspaceId: WS, contractVersion: 'research-compilation-v0', artifactId: artifact.id,
+      artifactContentHash: artifact.contentHash, missionId: artifact.missionId,
+      missionSpecHash: artifact.missionSpecHash, compilerVersion: V0, format: 'JSON',
+      rawOutput: sortieAnachronique, outputHash,
+      provenance: { importMode: 'MANUAL', originLabel: 'x', importedAt: '2026-08-31T16:00:00.000Z' },
+    }
+    g.__prospectorStore.set(`${RESEARCH_COMPILATION_KIND}|${WS}|${id}`,
+      { id, ...sansIntegrite, recordHash: compilationRecordHash(sansIntegrite as any) })
+    const relu = await readResearchCompilation(id, WS)
+    if (relu.ok === false) throw new Error(relu.reason)
+    const r = compileResearchFindings(mission, artifact, relu.compilation)
+    if (r.ok === false) throw new Error(r.reason)
+    expect(r.results).toEqual([{ state: 'REJECTED', index: 0, reason: 'INVALID_SHAPE' }])
   })
 })
 

@@ -269,7 +269,10 @@ describe('L — la prose ne porte AUCUNE sémantique', () => {
 
   it('l’assembleur ne lit la prose QUE pour rawDetail (verrou structurel)', () => {
     const src = readFileSync(join(process.cwd(), 'lib/prospector/proactive/acquisitionV2.ts'), 'utf8')
-    const corps = src.split('export function assembleLiveFactV2')[1].split('\nexport ')[0]
+    // L'assembleur public délègue à `assembleFactV2AvecArgent` (politique
+    // d'argent injectée — RESEARCH_FUNDING_SEMANTIC_GUARDS_001) : le verrou
+    // s'applique au CORPS réel, même intention qu'avant le refactor.
+    const corps = src.split('function assembleFactV2AvecArgent')[1].split('\nexport ')[0]
     // `detail`/`icebreaker` n'apparaissent que dans la construction de rawDetail.
     const usages = corps.match(/e\.detail|e\.icebreaker/g) ?? []
     expect(usages.length).toBe(2)
