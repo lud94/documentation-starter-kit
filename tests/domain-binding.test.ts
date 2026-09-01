@@ -38,10 +38,10 @@ const etatSession = vi.hoisted(() => ({
 }))
 
 import {
-  buildProofAnchor, DOMAIN_ADJUDICATION_KIND, DOMAIN_PROOF_OBSERVATION_KIND,
+  buildProofAnchor, DOMAIN_ADJUDICATION_KIND, DOMAIN_PROOF_OBSERVATION_KIND, extractProofText,
   domainAdjudicationId, domainProofObservationId, eligibleAdjudicatedDomain,
   extractSirens, isDomainProofObservation, readDomainProofObservation,
-  recordDomainAdjudication, recordDomainProofObservation,
+  observationRecordHash, recordDomainAdjudication, recordDomainProofObservation,
 } from '../lib/prospector/proactive/domainBinding'
 import { sourceEvidenceFromHit } from '../lib/prospector/proactive/signalBridge'
 import proofHandler from '../pages/api/internal/domain-proof'
@@ -117,6 +117,7 @@ describe('observation de preuve (append-only)', () => {
     expect(b.id).not.toBe(a.id)
     expect(b.targetSirenFound).toBe(false)
     expect(b.sirensFound).toEqual(['424761419'])
+    expect(b.proofAnchor).toBe('') // cible absente ⇒ AUCUN repli sur un autre motif
   })
 
   it('relecture stricte ; altération (recordHash, drapeau cible, ancre) ⇒ TAMPERED ; autre espace ⇒ inconnu ; clé inconnue rejetée', async () => {
@@ -145,6 +146,100 @@ describe('observation de preuve (append-only)', () => {
       .toEqual({ ok: false, reason: 'INVALID_INPUT' })
     expect((await recordDomainProofObservation(obsInput({ proofUrl: 'http://gradium.ai/x' }) as any, WS, T0)))
       .toEqual({ ok: false, reason: 'INVALID_INPUT' })
+  })
+})
+
+describe('texte de preuve — durcissement extraction (DOMAIN_PROOF_EXTRACTION_HARDENING_001)', () => {
+  it('DEFACTO-like : texte légal visible ⇒ SIREN trouvé, ancre = contexte légal', async () => {
+    const html = `<html><head><style>.x502174924__root{color:red}</style></head><body>
+      <h1>Mentions légales</h1><p>Defacto, SAS<br/>RCS&nbsp;: 899 270 979 R.C.S. Paris<br/>SIREN&nbsp;: 899 270 979</p>
+      </body></html>`
+    const o = await observation({ siren: '899270979', body: html, registryLegalName: 'DEFACTO' })
+    expect(o.sirensFound).toEqual(['899270979']) // le motif CSS 502174924 n'y est PAS
+    expect(o.targetSirenFound).toBe(true)
+    expect(o.proofAnchor).toContain('899 270 979')
+    expect(o.proofAnchor).toContain('R.C.S. Paris')
+    expect(o.legalNameObserved).toBe(true)
+  })
+
+  it('ENCARTA/Wix-like : identifiants CSS/JS générés ⇒ AUCUN pseudo-SIREN, ancre vide', async () => {
+    const html = `<html><head>
+      <style>.HamburgerMenuContainer502174924__root{--x:1}</style>
+      <script>const id = "892160442"; run(id)</script>
+      </head><body><article>Communiqué : première clôture de 5 M€.</article></body></html>`
+    const o = await observation({ siren: '912293784', body: html })
+    expect(o.sirensFound).toEqual([])
+    expect(o.targetSirenFound).toBe(false)
+    expect(o.proofAnchor).toBe('')
+  })
+
+  it('adversarial : script/style/commentaire ne portent JAMAIS la cible ; le texte visible la porte', () => {
+    const cible = '899270979'
+    expect(extractSirens(extractProofText('<script>const s="899270979"</script>corps'))).toEqual([])
+    expect(extractSirens(extractProofText('<style>.a{content:"899 270 979"}</style>corps'))).toEqual([])
+    expect(extractSirens(extractProofText('<!-- SIREN 899270979 -->corps'))).toEqual([])
+    expect(extractSirens(extractProofText('<noscript>899270979</noscript>x'))).toEqual([])
+    expect(extractSirens(extractProofText('<template>899270979</template>x'))).toEqual([])
+    expect(extractSirens(extractProofText('<p>SIREN 899270979</p>'))).toEqual([cible])
+    // Balise NON FERMÉE : conservateur — la charge ne devient jamais du texte.
+    expect(extractSirens(extractProofText('avant<script>const s="899270979"'))).toEqual([])
+    // Cible séparée par un balisage simple : les balises deviennent des espaces.
+    expect(extractSirens(extractProofText('SIREN 899 <span>270</span> 979 Paris'))).toEqual([cible])
+    // Le hachage, lui, reste celui du CORPS ORIGINAL (vérifié via l'enregistrement nominal).
+  })
+
+  it('cible absente MAIS autre SIREN visible : il reste dans sirensFound, l’ancre reste VIDE', async () => {
+    const o = await observation({ siren: '912293784', body: '<p>Hébergeur : OVH SAS, SIREN 424 761 419.</p>' })
+    expect(o.sirensFound).toEqual(['424761419'])
+    expect(o.targetSirenFound).toBe(false)
+    expect(o.proofAnchor).toBe('')
+  })
+
+  it('buildProofAnchor SEUL : cible absente ⇒ chaîne vide, même si un AUTRE SIREN est présent (le repli est mort)', () => {
+    expect(buildProofAnchor('Hébergeur OVH SAS, SIREN 424 761 419.', '912293784')).toBe('')
+    expect(buildProofAnchor('', '912293784')).toBe('')
+    // Et le verrou structurel : l'enregistrement garde sa PROPRE porte —
+    // deux couches indépendantes, aucune ne doit disparaître.
+    const { readFileSync } = require('node:fs')
+    const src = readFileSync('lib/prospector/proactive/domainBinding.ts', 'utf8')
+    expect(src).toMatch(/proofAnchor: targetSirenFound \? buildProofAnchor\(texteDePreuve, siren\) : ''/)
+  })
+
+  it('ancre FORGÉE avec recordHash recalculé en cohérence : la vérification sémantique du validateur rejette quand même', async () => {
+    const o = await observation({ siren: '912293784', body: '<p>OVH SAS, SIREN 424 761 419</p>' }, T1)
+    expect(o.targetSirenFound).toBe(false)
+    const cle = `${DOMAIN_PROOF_OBSERVATION_KIND}|${WS}|${o.id}`
+    const row = JSON.parse(JSON.stringify(g.__prospectorStore.get(cle)))
+    // L'attaquant forge une ancre plausible ET recompute le recordHash — l'id,
+    // qui n'inclut pas l'ancre, reste valide : seule la COHÉRENCE sémantique
+    // drapeau ↔ ancre du validateur le trahit.
+    row.proofAnchor = 'contexte forgé mentionnant 912 293 784'
+    row.targetSirenFound = false // il ne peut pas mentir sur la liste (cohérence liste↔drapeau)
+    const { id: _i, recordHash: _r, ...sans } = row
+    row.recordHash = observationRecordHash(sans as any)
+    g.__prospectorStore.set(cle, row)
+    expect(await readDomainProofObservation(o.id, WS)).toEqual({ ok: false, reason: 'OBSERVATION_TAMPERED' })
+  })
+
+  it('validateur : drapeau vrai avec ancre vide ou sans la cible ⇒ TAMPERED ; drapeau faux avec ancre non vide ⇒ TAMPERED', async () => {
+    const o = await observation()
+    const cle = `${DOMAIN_PROOF_OBSERVATION_KIND}|${WS}|${o.id}`
+    const original = JSON.parse(JSON.stringify(g.__prospectorStore.get(cle)))
+    for (const mutation of [
+      (r: any) => { r.proofAnchor = '' },                                   // vrai + vide
+      (r: any) => { r.proofAnchor = 'contexte plausible sans la cible' },   // vrai sans cible
+    ]) {
+      const row = JSON.parse(JSON.stringify(original)); mutation(row)
+      g.__prospectorStore.set(cle, row)
+      expect(await readDomainProofObservation(o.id, WS)).toEqual({ ok: false, reason: 'OBSERVATION_TAMPERED' })
+    }
+    g.__prospectorStore.set(cle, original)
+    const sans = await observation({ siren: '912293784', body: 'aucun siren' }, T1)
+    const cle2 = `${DOMAIN_PROOF_OBSERVATION_KIND}|${WS}|${sans.id}`
+    const row2 = JSON.parse(JSON.stringify(g.__prospectorStore.get(cle2)))
+    row2.proofAnchor = 'faux contexte'
+    g.__prospectorStore.set(cle2, row2)
+    expect(await readDomainProofObservation(sans.id, WS)).toEqual({ ok: false, reason: 'OBSERVATION_TAMPERED' })
   })
 })
 

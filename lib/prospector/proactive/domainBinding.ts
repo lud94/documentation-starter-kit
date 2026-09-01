@@ -106,6 +106,45 @@ export function adjudicationRecordHash(a: Omit<DomainAdjudicationV0, 'id' | 'rec
 // la variante espacée usuelle ; un simple nombre long n'en fabrique pas un).
 const SIREN_DANS_TEXTE = /(?<!\d)(\d{3})[ .]?(\d{3})[ .]?(\d{3})(?!\d)/g
 
+/**
+ * TEXTE DE PREUVE dérivé DÉTERMINISTIQUEMENT d'une capture HTML
+ * (DOMAIN_PROOF_EXTRACTION_HARDENING_001).
+ *
+ * Le défaut réel E2E (En Carta/Wix) : `extractSirens(html brut)` promouvait des
+ * identifiants CSS/JS générés (« HamburgerMenuContainer502174924__root ») en
+ * pseudo-SIRENs. Le matériel de preuve légale est du TEXTE DE DOCUMENT — jamais
+ * la charge de script/style.
+ *
+ * Algorithme clos, sans navigateur, sans dépendance, sans LLM :
+ *   1. commentaires HTML supprimés ;
+ *   2. blocs script/style/noscript/template supprimés APPARIÉS, puis tout bloc
+ *      de ces types resté NON FERMÉ supprimé jusqu'à la fin (malformé ⇒
+ *      conservateur : la charge ne devient jamais du texte légal) ;
+ *   3. balises restantes remplacées par UN espace (« 899 <span>270</span> 979 »
+ *      reste analysable comme 899 270 979) ;
+ *   4. entités closes décodées (nbsp/#160 ⇒ espace, amp, lt, gt, quot, #39) ;
+ *   5. blancs normalisés en espaces simples.
+ *
+ * LIMITES EXPLICITES : aucune notion de visibilité CSS (un texte masqué par
+ * style reste du texte), aucun rendu JS. L'adjudication humaine reste la
+ * frontière sémantique finale. ⚠️ `proofContentHash` continue de hacher le
+ * CORPS ORIGINAL — ce texte ne sert qu'à sirensFound / targetSirenFound /
+ * legalNameObserved / proofAnchor.
+ */
+const BLOCS_NON_TEXTE = /<(script|style|noscript|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi
+const BLOC_NON_TEXTE_OUVERT = /<(script|style|noscript|template)\b[\s\S]*$/i
+export function extractProofText(body: string): string {
+  let t = String(body)
+  t = t.replace(/<!--[\s\S]*?-->/g, ' ')
+  t = t.replace(BLOCS_NON_TEXTE, ' ')
+  t = t.replace(BLOC_NON_TEXTE_OUVERT, ' ')
+  t = t.replace(/<[^>]*>/g, ' ')
+  t = t.replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"').replace(/&#39;/g, "'")
+  return t.replace(/\s+/g, ' ').trim()
+}
+
 /** Tous les SIRENs distincts détectés, normalisés à 9 chiffres, triés. */
 export function extractSirens(texte: string): string[] {
   const vus = new Set<string>()
@@ -116,15 +155,18 @@ export function extractSirens(texte: string): string[] {
 }
 
 /**
- * Ancre LITTÉRALE bornée autour de la PREMIÈRE occurrence du SIREN cible —
- * extraction déterministe serveur, jamais un LLM, jamais le navigateur.
- * Cible absente ⇒ ancre autour du premier SIREN trouvé, sinon vide.
+ * Ancre LITTÉRALE bornée autour de la PREMIÈRE occurrence du SIREN CIBLE dans
+ * le TEXTE DE PREUVE — extraction déterministe serveur, jamais un LLM, jamais
+ * le navigateur.
+ *
+ * ⚠️ CIBLE ABSENTE ⇒ ANCRE VIDE, SANS AUCUN REPLI. L'ancre est le contexte de
+ * preuve AUTOUR DU SIREN CIBLE ; ancrer « le premier motif à 9 chiffres venu »
+ * a réellement produit du bruit CSS Wix en E2E — ce repli est supprimé.
  */
 export function buildProofAnchor(texte: string, targetSiren: string): string {
   const corps = String(texte)
   const motif = new RegExp(`(?<!\\d)${targetSiren.slice(0, 3)}[ .]?${targetSiren.slice(3, 6)}[ .]?${targetSiren.slice(6, 9)}(?!\\d)`)
-  let m = motif.exec(corps)
-  if (!m) { SIREN_DANS_TEXTE.lastIndex = 0; m = SIREN_DANS_TEXTE.exec(corps) }
+  const m = motif.exec(corps)
   if (!m) return ''
   const debut = Math.max(0, m.index - 160)
   const fin = Math.min(corps.length, m.index + m[0].length + 160)
@@ -174,8 +216,11 @@ export async function recordDomainProofObservation(
 
   const proofObservedAt = now().toISOString()
   if (!isStrictInstant(proofObservedAt)) return { ok: false, reason: 'INVALID_INPUT' }
+  // ⚠️ Le condensat couvre le CORPS ORIGINAL ; l'analyse sémantique porte sur
+  // le TEXTE DE PREUVE dérivé (jamais la charge script/style).
   const proofContentHash = sha256(input.body)
-  const sirensFound = extractSirens(input.body)
+  const texteDePreuve = extractProofText(input.body)
+  const sirensFound = extractSirens(texteDePreuve)
   const targetSirenFound = sirensFound.includes(siren)
 
   const sansIntegrite: Omit<DomainProofObservationV0, 'id' | 'recordHash'> = {
@@ -191,11 +236,12 @@ export async function recordDomainProofObservation(
     targetSirenFound,
     ...(typeof input.registryLegalName === 'string' && input.registryLegalName.trim() !== ''
       ? {
-          legalNameObserved: normalizeLegalName(input.body).includes(normalizeLegalName(input.registryLegalName))
+          legalNameObserved: normalizeLegalName(texteDePreuve).includes(normalizeLegalName(input.registryLegalName))
             && normalizeLegalName(input.registryLegalName) !== '',
         }
       : {}),
-    proofAnchor: buildProofAnchor(input.body, siren),
+    // Cible absente ⇒ ancre VIDE — jamais un contexte autour d'un autre motif.
+    proofAnchor: targetSirenFound ? buildProofAnchor(texteDePreuve, siren) : '',
   }
   const id = domainProofObservationId(ws, siren, domainHost, input.proofUrl, proofObservedAt, proofContentHash)
   const observation: DomainProofObservationV0 = {
@@ -238,6 +284,12 @@ export function isDomainProofObservation(v: unknown, ws: string): v is DomainPro
   if (v.targetSirenFound !== (v.sirensFound as string[]).includes(v.siren)) return false
   if (v.legalNameObserved !== undefined && typeof v.legalNameObserved !== 'boolean') return false
   if (typeof v.proofAnchor !== 'string' || v.proofAnchor.length > PROOF_ANCHOR_MAX) return false
+  // ⚠️ INVARIANTS SÉMANTIQUES DE L'ANCRE — jamais un simple drapeau cru :
+  //   cible absente ⇒ ancre STRICTEMENT vide (aucun contexte d'un autre motif) ;
+  //   cible présente ⇒ ancre non vide dont le texte normalisé CONTIENT la cible.
+  if (v.targetSirenFound === false && v.proofAnchor !== '') return false
+  if (v.targetSirenFound === true
+    && (v.proofAnchor === '' || !extractSirens(v.proofAnchor).includes(v.siren as string))) return false
   if (typeof v.recordHash !== 'string') return false
   const { id: _i, recordHash: _r, ...sans } = v as any
   if (v.recordHash !== observationRecordHash(sans)) return false
