@@ -192,6 +192,18 @@ export interface EvidenceProvenance {
    * confondre effacerait le délai de revue.
    */
   retrievedAt?: string
+
+  /**
+   * POURQUOI le grade A « site de l'entreprise » a été décerné
+   * (ENTITY_OFFICIAL_DOMAIN_GROUNDING_001) — ADDITIF, clos :
+   *   `REGISTRY_DECLARED`               — site déclaré au registre officiel ;
+   *   `HUMAN_ADJUDICATED_LEGAL_NOTICE` — domaine première-partie adjugé par un
+   *     humain sur matière légale capturée par Prospector (PAS une preuve de
+   *     propriété DNS/du domaine, PAS une déclaration de registre).
+   * Absent sur toute evidence antérieure (qui reste valide) et sur tout grade
+   * non issu du chemin site-officiel. Hors de toute identité.
+   */
+  domainAuthority?: 'REGISTRY_DECLARED' | 'HUMAN_ADJUDICATED_LEGAL_NOTICE'
 }
 
 /**

@@ -361,6 +361,18 @@ export interface SourceEvidence {
    * Inconnu ⇒ absent, jamais `observedAt` recopié.
    */
   retrievedAt?: string
+  /**
+   * POURQUOI le grade A « site de l'entreprise » a été décerné
+   * (ENTITY_OFFICIAL_DOMAIN_GROUNDING_001) :
+   *   REGISTRY_DECLARED                — site fourni par le registre officiel ;
+   *   HUMAN_ADJUDICATED_LEGAL_NOTICE  — domaine première-partie ADJUGÉ par un
+   *     humain sur matière légale capturée par le serveur (ce n'est PAS une
+   *     preuve de propriété du domaine).
+   * PRÉSENT UNIQUEMENT quand le grade A vient du chemin site-officiel — jamais
+   * sur les hôtes de registre A, ni sur B/C/UNKNOWN. Les deux autorités ne
+   * doivent JAMAIS devenir indistinguables dans la provenance persistée.
+   */
+  domainAuthority?: 'REGISTRY_DECLARED' | 'HUMAN_ADJUDICATED_LEGAL_NOTICE'
 }
 
 export function sourceEvidenceFromHit(
@@ -369,9 +381,16 @@ export function sourceEvidenceFromHit(
   lineage: SourceLineage = { kind: 'UNKNOWN' },
   grounding: Grounding = { kind: 'UNVERIFIABLE' },
   retrievedAt?: string,
+  domainAuthority?: 'REGISTRY_DECLARED' | 'HUMAN_ADJUDICATED_LEGAL_NOTICE',
 ): SourceEvidence | null {
   const host = hostOf(hit?.sourceUrl)
   if (!host) return null
+
+  // ⚠️ L'autorité de domaine ne s'attache QUE si le grade A provient réellement
+  // de la correspondance hôte-source ↔ site officiel fourni — jamais recopiée
+  // aveuglément sur un hôte de registre, une presse B, un agrégateur C.
+  const officiel = hostOf(companyWebsite)
+  const autoriteApplicable = domainAuthority !== undefined && officiel !== null && host === officiel
 
   return {
     url: hit.sourceUrl as string,
@@ -381,6 +400,7 @@ export function sourceEvidenceFromHit(
     hit,
     sourcePublishedAt: hit.sourcePublishedAt ?? null,
     grounding,
+    ...(autoriteApplicable ? { domainAuthority } : {}),
     // ⚠️ Non renseigné ⇒ ABSENT du champ. Aucune horloge n'est lue ici : ce
     // module est pur, et fabriquer un instant de récupération inventerait une
     // date de consultation que personne n'a observée.
@@ -812,6 +832,9 @@ export function promoteToEvidence(input: PromotionInput): PromotionResult {
     // confirmation. Même faux zéro que `occurredAt = now` sur un état non daté.
     ...(principale.sourcePublishedAt ? { sourcePublishedAt: principale.sourcePublishedAt } : {}),
     ...(principale.retrievedAt ? { retrievedAt: principale.retrievedAt } : {}),
+    // Pourquoi le grade A site-officiel — absent partout ailleurs. L'audit doit
+    // toujours distinguer registre déclaré et adjudication humaine.
+    ...(principale.domainAuthority ? { domainAuthority: principale.domainAuthority } : {}),
   }
 
   // ⚠️ COMPTÉE SUR LES QUALIFIANTES, comme `corroboration` du résultat. Une

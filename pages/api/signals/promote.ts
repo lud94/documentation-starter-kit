@@ -31,11 +31,13 @@ import { resolveActorFromRequest } from '../../../lib/prospector/tenant'
 import { loadBusinessContext } from '../../../lib/prospector/proactive/lens/contextStore'
 import {
   bridgeSignals,
+  hostOf,
   sourceEvidenceFromHit,
   type BridgePromotion,
   type HumanFactConfirmation,
   type SourceEvidence,
 } from '../../../lib/prospector/proactive/signalBridge'
+import { eligibleAdjudicatedDomain, type DomainAuthority } from '../../../lib/prospector/proactive/domainBinding'
 import {
   recordSourceAssertions,
   sourceAssertionsEnabled,
@@ -241,7 +243,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const dateRecuperation = candidate.claim.origin
       ? (candidate.claim.origin.sourceRetrievedAt ?? undefined)
       : candidate.issuedAt
-    const s = sourceEvidenceFromHit(hitFromCandidate(candidate), lead.officialWebsite, undefined, undefined, dateRecuperation)
+    // ── AUTORITÉ DE DOMAINE (ENTITY_OFFICIAL_DOMAIN_GROUNDING_001) ────────
+    // REGISTRE D'ABORD ; sinon, et SEULEMENT sinon, domaine première-partie
+    // ADJUGÉ pour ce SIREN autoritatif ET exactement l'hôte de la source du
+    // candidat — revalidé à l'usage (re-capture réseau, contenu identique
+    // exigé). Aucun autre repli : jamais `Lead.website`, jamais une URL du
+    // navigateur, jamais de rapprochement flou. Échec de revalidation ⇒ la
+    // source ne reçoit PAS le grade A site-officiel.
+    let officialWebsiteAutorite = lead.officialWebsite
+    let autoriteDomaine: DomainAuthority | undefined =
+      officialWebsiteAutorite ? 'REGISTRY_DECLARED' : undefined
+    if (!officialWebsiteAutorite) {
+      const hoteSource = hostOf(candidate.claim.sourceUrl)
+      const sirenAutoritatif = String(lead.lead?.siren || '').trim()
+      if (hoteSource && /^\d{9}$/.test(sirenAutoritatif)) {
+        const adjuge = await eligibleAdjudicatedDomain(sirenAutoritatif, hoteSource, acteur.tenant.id)
+        if (adjuge.eligible === true) {
+          officialWebsiteAutorite = `https://${adjuge.domainHost}`
+          autoriteDomaine = 'HUMAN_ADJUDICATED_LEGAL_NOTICE'
+        }
+      }
+    }
+    const s = sourceEvidenceFromHit(hitFromCandidate(candidate), officialWebsiteAutorite, undefined, undefined, dateRecuperation, autoriteDomaine)
     if (s) sources.push(s)
 
     const pont = bridgeSignals({
