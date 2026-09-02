@@ -18,7 +18,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 
 import { resolveActorFromRequest } from '../../../lib/prospector/tenant'
 import { readCandidate } from '../../../lib/prospector/proactive/signalCandidates'
-import { lookupByName } from '../../../lib/prospector/datagouv'
+import { resolveEntityForCandidate } from '../../../lib/prospector/proactive/entityResolution'
 import { hostOf } from '../../../lib/prospector/proactive/signalBridge'
 import { captureLegalProof, normalizeHost } from '../../../lib/prospector/proactive/legalProofFetch'
 import { recordDomainProofObservation } from '../../../lib/prospector/proactive/domainBinding'
@@ -30,6 +30,8 @@ export type DomainProofState =
   | 'CANDIDATE_UNKNOWN'
   | 'CANDIDATE_STORE_UNAVAILABLE'
   | 'ENTITY_NOT_RESOLVED'
+  | 'ENTITY_IDENTITY_CONFLICT'
+  | 'ENTITY_RESOLUTION_HISTORY_TAMPERED'
   | 'ENTITY_REGISTRY_UNAVAILABLE'
   | 'PROOF_HOST_MISMATCH'
   | 'CAPTURE_FAILED'
@@ -60,22 +62,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     const candidate = lecture.candidate
 
-    // ── ENTITÉ RÉSOLUE PAR L'AUTORITÉ ACTUELLE — jamais contournée ────────
-    let officiel: Awaited<ReturnType<typeof lookupByName>> | null = null
-    try {
-      officiel = await lookupByName(String(candidate.claim.company || '').trim())
-    } catch {
+    // ── ENTITÉ RÉSOLUE PAR LE RÉSOLVEUR COMPOSITE CADRÉ CANDIDAT ──────────
+    // (auto exact prioritaire, sinon adjudication humaine de CE candidat,
+    // revalidée). La preuve de domaine CONSOMME la résolution — elle ne la
+    // crée ni ne la modifie jamais : ENTITÉ ↓ DOMAINE ↓ SOURCE.
+    const entite = await resolveEntityForCandidate(candidate, ws)
+    if (entite.state === 'REGISTRY_UNAVAILABLE') {
       return res.status(503).json({ state: 'ENTITY_REGISTRY_UNAVAILABLE' })
     }
-    if (!officiel?.found || officiel.resolution !== 'resolved') {
+    if (entite.state === 'STORE_UNAVAILABLE') {
+      return res.status(503).json({ state: 'CANDIDATE_STORE_UNAVAILABLE' })
+    }
+    if (entite.state === 'IDENTITY_CONFLICT') {
+      return res.status(409).json({ state: 'ENTITY_IDENTITY_CONFLICT' })
+    }
+    if (entite.state === 'HISTORY_TAMPERED') {
+      return res.status(409).json({ state: 'ENTITY_RESOLUTION_HISTORY_TAMPERED' })
+    }
+    if (entite.state !== 'RESOLVED') {
       return res.status(409).json({ state: 'ENTITY_NOT_RESOLVED' })
     }
-    const siren = String(officiel.siren || '').trim()
-    if (!/^\d{9}$/.test(siren)) return res.status(409).json({ state: 'ENTITY_NOT_RESOLVED' })
-    // Cohérence du SIREN candidat, si présent — une contradiction refuse.
-    if (candidate.claim.candidateSiren && candidate.claim.candidateSiren !== siren) {
-      return res.status(409).json({ state: 'ENTITY_NOT_RESOLVED' })
-    }
+    const siren = entite.siren
 
     // ── L'HÔTE DE PREUVE EST CELUI DE LA SOURCE DU CANDIDAT — exactement ──
     const hoteSource = normalizeHost(hostOf(candidate.claim.sourceUrl))
@@ -99,7 +106,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         proofUrl: proofUrl.trim(),
         finalUrl: capture.finalUrl,
         body: capture.body,
-        registryLegalName: typeof officiel.name === 'string' ? officiel.name : undefined,
+        registryLegalName: typeof entite.name === 'string' ? entite.name : undefined,
       },
       ws,
     )

@@ -480,7 +480,7 @@ describe('horloges — recherche ≠ récupération (AA–AC)', () => {
     const code = readFileSync('pages/api/signals/promote.ts', 'utf8')
     // Voie vivante inchangée : sans origine, `issuedAt` reste la date de récupération.
     expect(code).toMatch(/candidate\.claim\.origin\s*\n?\s*\?\s*\(candidate\.claim\.origin\.sourceRetrievedAt \?\? undefined\)\s*\n?\s*:\s*candidate\.issuedAt/)
-    expect(code).toMatch(/sourceEvidenceFromHit\(.*officialWebsite.*dateRecuperation, autoriteDomaine\)/)
+    expect(code).toMatch(/sourceEvidenceFromHit\(.*officialWebsite.*dateRecuperation, autoriteDomaine, lead\.entite\)/)
     // Aucune ligne directive ne replie l'origine recherche sur `issuedAt`.
     expect(code).not.toMatch(/origin[^\n]*\|\|[^\n]*issuedAt/)
     expect(code).not.toMatch(/sourceRetrievedAt \?\? candidate\.issuedAt/)

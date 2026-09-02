@@ -373,6 +373,17 @@ export interface SourceEvidence {
    * doivent JAMAIS devenir indistinguables dans la provenance persistée.
    */
   domainAuthority?: 'REGISTRY_DECLARED' | 'HUMAN_ADJUDICATED_LEGAL_NOTICE'
+  /**
+   * COMMENT l'entité de ce fait a été résolue (ENTITY_RESOLUTION_ADJUDICATION_001) :
+   *   AUTO_EXACT_REGISTRY               — correspondance stricte unique au registre ;
+   *   HUMAN_SELECTED_REGISTRY_CANDIDATE — sélection humaine parmi des candidats
+   *     officiels OBSERVÉS (jamais une identité créée par l'humain).
+   * Chemin humain ⇒ `entityResolutionAdjudicationId` OBLIGATOIRE (trace exacte
+   * adjudication → observation → cliché vu) ; chemin auto ⇒ id ABSENT, jamais
+   * d'identifiant factice. Les deux autorités ne s'effondrent jamais en une.
+   */
+  entityAuthority?: 'AUTO_EXACT_REGISTRY' | 'HUMAN_SELECTED_REGISTRY_CANDIDATE'
+  entityResolutionAdjudicationId?: string
 }
 
 export function sourceEvidenceFromHit(
@@ -382,6 +393,7 @@ export function sourceEvidenceFromHit(
   grounding: Grounding = { kind: 'UNVERIFIABLE' },
   retrievedAt?: string,
   domainAuthority?: 'REGISTRY_DECLARED' | 'HUMAN_ADJUDICATED_LEGAL_NOTICE',
+  entity?: { authority: 'AUTO_EXACT_REGISTRY' | 'HUMAN_SELECTED_REGISTRY_CANDIDATE'; adjudicationId?: string },
 ): SourceEvidence | null {
   const host = hostOf(hit?.sourceUrl)
   if (!host) return null
@@ -392,6 +404,20 @@ export function sourceEvidenceFromHit(
   const officiel = hostOf(companyWebsite)
   const autoriteApplicable = domainAuthority !== undefined && officiel !== null && host === officiel
 
+  // ⚠️ APPARIEMENT STRICT autorité d'entité ↔ trace d'adjudication :
+  //   HUMAN ⇒ era_ valide OBLIGATOIRE ; AUTO ⇒ AUCUN id. Un appariement
+  //   incohérent ÉCHOUE FERMÉ (`null` — le contrat d'échec existant de cette
+  //   fonction) : on ne rétrograde JAMAIS silencieusement une autorité humaine
+  //   revendiquée en « aucune provenance », et aucune evidence, assertion ni
+  //   ancre n'est écrite en aval sur une provenance d'entité invalide.
+  if (entity !== undefined) {
+    const coherent = entity.authority === 'HUMAN_SELECTED_REGISTRY_CANDIDATE'
+      ? typeof entity.adjudicationId === 'string' && /^era_[0-9a-f]{32}$/.test(entity.adjudicationId)
+      : entity.authority === 'AUTO_EXACT_REGISTRY' && entity.adjudicationId === undefined
+    if (!coherent) return null
+  }
+  const entiteCoherente = entity !== undefined
+
   return {
     url: hit.sourceUrl as string,
     publisher: host,
@@ -401,6 +427,12 @@ export function sourceEvidenceFromHit(
     sourcePublishedAt: hit.sourcePublishedAt ?? null,
     grounding,
     ...(autoriteApplicable ? { domainAuthority } : {}),
+    ...(entiteCoherente
+      ? {
+          entityAuthority: entity!.authority,
+          ...(entity!.adjudicationId !== undefined ? { entityResolutionAdjudicationId: entity!.adjudicationId } : {}),
+        }
+      : {}),
     // ⚠️ Non renseigné ⇒ ABSENT du champ. Aucune horloge n'est lue ici : ce
     // module est pur, et fabriquer un instant de récupération inventerait une
     // date de consultation que personne n'a observée.
@@ -835,6 +867,12 @@ export function promoteToEvidence(input: PromotionInput): PromotionResult {
     // Pourquoi le grade A site-officiel — absent partout ailleurs. L'audit doit
     // toujours distinguer registre déclaré et adjudication humaine.
     ...(principale.domainAuthority ? { domainAuthority: principale.domainAuthority } : {}),
+    // Comment l'entité a été résolue — trace d'adjudication portée SEULEMENT
+    // sur le chemin humain, jamais d'id factice sur le chemin automatique.
+    ...(principale.entityAuthority ? { entityAuthority: principale.entityAuthority } : {}),
+    ...(principale.entityResolutionAdjudicationId
+      ? { entityResolutionAdjudicationId: principale.entityResolutionAdjudicationId }
+      : {}),
   }
 
   // ⚠️ COMPTÉE SUR LES QUALIFIANTES, comme `corroboration` du résultat. Une

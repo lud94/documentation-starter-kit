@@ -14,11 +14,13 @@ vi.mock('../lib/prospector/tenant', async (orig) => ({
   ...(await orig<typeof import('../lib/prospector/tenant')>()),
   resolveActorFromRequest: async () => etatSession.session,
 }))
-vi.mock('../lib/prospector/datagouv', () => ({
+vi.mock('../lib/prospector/datagouv', async (orig) => ({
+  ...(await orig<typeof import('../lib/prospector/datagouv')>()),
   lookupByName: async (name: string) => {
     if (etatSession.registreMuet) throw new Error('registry unavailable')
     return etatSession.registre[String(name).trim()] ?? { found: false, resolution: 'not_found' }
   },
+  lookupBySiren: async () => ({ found: false, resolution: 'not_found' }),
 }))
 vi.mock('../lib/prospector/proactive/legalProofFetch', async (orig) => {
   const reel = await orig<typeof import('../lib/prospector/proactive/legalProofFetch')>()
@@ -430,6 +432,6 @@ describe('grade et promotion — frontières', () => {
     expect(code).toMatch(/if \(!officialWebsiteAutorite\) \{[\s\S]{0,600}eligibleAdjudicatedDomain\(/)
     expect(code).not.toMatch(/officialWebsiteAutorite[^\n]*lead\.lead\.website/)
     expect(code).not.toMatch(/eligibleAdjudicatedDomain\([^)]*website/i)
-    expect(code).toMatch(/sourceEvidenceFromHit\(.*officialWebsiteAutorite.*dateRecuperation, autoriteDomaine\)/)
+    expect(code).toMatch(/sourceEvidenceFromHit\(.*officialWebsiteAutorite.*dateRecuperation, autoriteDomaine, lead\.entite\)/)
   })
 })

@@ -204,6 +204,19 @@ export interface EvidenceProvenance {
    * non issu du chemin site-officiel. Hors de toute identité.
    */
   domainAuthority?: 'REGISTRY_DECLARED' | 'HUMAN_ADJUDICATED_LEGAL_NOTICE'
+
+  /**
+   * COMMENT l'ENTITÉ du fait a été résolue (ENTITY_RESOLUTION_ADJUDICATION_001)
+   * — ADDITIF, clos, hors identité :
+   *   `AUTO_EXACT_REGISTRY`               — correspondance stricte unique ;
+   *   `HUMAN_SELECTED_REGISTRY_CANDIDATE` — sélection humaine parmi des
+   *     candidats officiels OBSERVÉS. Dans ce cas
+   *     `entityResolutionAdjudicationId` (era_…) est OBLIGATOIRE et permet de
+   *     remonter : Evidence → adjudication → observation → cliché exact vu.
+   *   Chemin auto ⇒ id ABSENT. Anciennes evidences sans les deux : valides.
+   */
+  entityAuthority?: 'AUTO_EXACT_REGISTRY' | 'HUMAN_SELECTED_REGISTRY_CANDIDATE'
+  entityResolutionAdjudicationId?: string
 }
 
 /**

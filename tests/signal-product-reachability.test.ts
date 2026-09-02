@@ -64,7 +64,9 @@ vi.mock('../lib/supabase/leads', () => ({
 // ⚠️ AUCUN RÉSEAU. `lookupByName` est la SEULE frontière sortante de la route ;
 // on la double pour prouver ses issues — résolu, ambigu, inexistant, muet —
 // sans jamais appeler data.gouv.
-vi.mock('../lib/prospector/datagouv', () => ({
+vi.mock('../lib/prospector/datagouv', async (orig) => ({
+  ...(await orig<typeof import('../lib/prospector/datagouv')>()),
+  lookupBySiren: async () => ({ found: false, resolution: 'not_found' }),
   // ⚠️ RÉSOLUTION PAR RAISON SOCIALE — c'est le contrat de production. La vraie
   // `lookupByName` n'accepte `resolved` que pour une correspondance stricte
   // unique ; on reproduit ses TROIS issues : résolu · ambigu · registre muet.
@@ -100,8 +102,11 @@ vi.mock('../lib/supabase/store', () => ({
       .filter(([k]) => k.startsWith(`${kind}|`) && k.endsWith(`|${ws}`))
       .map(([, v]) => v),
   // Contrat STRICT : « collection vide » et « magasin muet » sont distincts.
+  // ⚠️ `listFails` simule une panne de l'HISTORIQUE D'EVIDENCE — pas du
+  // registre d'adjudication d'entité (ENTITY_RESOLUTION_ADJUDICATION_001),
+  // qui échouerait AVANT et masquerait le comportement observé ici.
   listItemsStrict: async (kind: string, ws: string) =>
-    etat.listFails ? { ok: false } : {
+    (etat.listFails && !kind.startsWith('prospector_entity_resolution')) ? { ok: false } : {
       ok: true,
       values: [...etat.store.entries()]
         .filter(([k]) => k.startsWith(`${kind}|`) && k.endsWith(`|${ws}`))
@@ -1107,7 +1112,9 @@ describe('SIGNAL-PRODUCT-REACHABILITY-001 — R1d·A chemin d’acquisition rée
       })),
       canonicalKey: CLE_LEVEE, reviewedSourceUrls: [LEVEE_URL],
     })
-    expect(r.body.state).toBe('SIGNAL_NOT_RESOLVED')
+    // ENTITY_RESOLUTION_ADJUDICATION_001 : contradiction candidateSiren ↔
+    // officiel = CONFLIT D'IDENTITÉ EXPLICITE — même refus fermé.
+    expect(r.body.state).toBe('ENTITY_IDENTITY_CONFLICT')
     expect(adjuge()).toEqual([])
   })
 

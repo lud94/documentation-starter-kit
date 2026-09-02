@@ -56,7 +56,7 @@ import {
   readCandidate,
   type SignalCandidate,
 } from '../../../lib/prospector/proactive/signalCandidates'
-import { lookupByName, type CompanyLookup } from '../../../lib/prospector/datagouv'
+import { resolveEntityForCandidate, type EntityResolutionAuthority } from '../../../lib/prospector/proactive/entityResolution'
 import { EXTERNAL_SIGNAL_PROVIDER } from '../../../lib/prospector/proactive/types'
 import type { KnownEvidenceEvent } from '../../../lib/prospector/proactive/catalog'
 import { logSafeError, PUBLIC_ERROR } from '../../../lib/observability/safeError'
@@ -84,6 +84,8 @@ export type PromoteState =
   | 'CANDIDATE_UNKNOWN'
   | 'CANDIDATE_STORE_UNAVAILABLE'
   | 'ENTITY_REGISTRY_UNAVAILABLE'
+  | 'ENTITY_IDENTITY_CONFLICT'
+  | 'ENTITY_RESOLUTION_HISTORY_TAMPERED'
   | 'LEAD_STORE_UNAVAILABLE'
   | 'EVIDENCE_HISTORY_INVALID'
   | 'EVIDENCE_HISTORY_UNAVAILABLE'
@@ -264,7 +266,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
       }
     }
-    const s = sourceEvidenceFromHit(hitFromCandidate(candidate), officialWebsiteAutorite, undefined, undefined, dateRecuperation, autoriteDomaine)
+    const s = sourceEvidenceFromHit(hitFromCandidate(candidate), officialWebsiteAutorite, undefined, undefined, dateRecuperation, autoriteDomaine, lead.entite)
     if (s) sources.push(s)
 
     const pont = bridgeSignals({
@@ -359,7 +361,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 }
 
 type LiaisonCompte =
-  | { ok: true; lead: Lead; officialWebsite?: string }
+  | {
+      ok: true
+      lead: Lead
+      officialWebsite?: string
+      /** Comment l'entité a été résolue — porté jusqu'à la provenance d'Evidence. */
+      entite: { authority: EntityResolutionAuthority; adjudicationId?: string }
+    }
   | { ok: false; state: PromoteState; code: number }
 
 /**
@@ -410,28 +418,28 @@ async function compteDuCandidat(candidate: SignalCandidate, ws: string): Promise
   const raisonSociale = String(candidate.claim.company || '').trim()
   if (!raisonSociale) return { ok: false, state: 'SIGNAL_NOT_RESOLVED', code: 409 }
 
-  let officiel: CompanyLookup | null = null
-  try {
-    officiel = await lookupByName(raisonSociale)
-  } catch {
+  // ── RÉSOLVEUR COMPOSITE CADRÉ CANDIDAT (ENTITY_RESOLUTION_ADJUDICATION_001).
+  // Auto exact d'abord ; sinon adjudication humaine EFFECTIVE de CE candidat,
+  // revalidée par lookupBySiren (exact + actif). Un conflit d'identité
+  // (humain A vs auto B, candidateSiren contradictoire, entité vue-et-rejetée
+  // par un NONE) échoue FERMÉ et EXPLICITEMENT — jamais tranché en silence.
+  const entite = await resolveEntityForCandidate(candidate, ws)
+  if (entite.state === 'REGISTRY_UNAVAILABLE') {
     return { ok: false, state: 'ENTITY_REGISTRY_UNAVAILABLE', code: 503 }
   }
-
-  // `found` seul ne suffit pas : seul `resolved` signifie « sans équivoque ».
-  if (!officiel?.found || officiel.resolution !== 'resolved') {
+  if (entite.state === 'STORE_UNAVAILABLE') {
+    return { ok: false, state: 'LEAD_STORE_UNAVAILABLE', code: 503 }
+  }
+  if (entite.state === 'IDENTITY_CONFLICT') {
+    return { ok: false, state: 'ENTITY_IDENTITY_CONFLICT', code: 409 }
+  }
+  if (entite.state === 'HISTORY_TAMPERED') {
+    return { ok: false, state: 'ENTITY_RESOLUTION_HISTORY_TAMPERED', code: 409 }
+  }
+  if (entite.state !== 'RESOLVED') {
     return { ok: false, state: 'SIGNAL_NOT_RESOLVED', code: 409 }
   }
-
-  const sirenOfficiel = String(officiel.siren || '').trim()
-  if (!/^\d{9}$/.test(sirenOfficiel)) {
-    return { ok: false, state: 'SIGNAL_NOT_RESOLVED', code: 409 }
-  }
-
-  // Assertion de cohérence — jamais une autorité. Voir le point 2 ci-dessus.
-  const propose = candidate.claim.candidateSiren
-  if (propose && propose !== sirenOfficiel) {
-    return { ok: false, state: 'SIGNAL_NOT_RESOLVED', code: 409 }
-  }
+  const sirenOfficiel = entite.siren
 
   const lu = await listLeadsStrict(ws)
   if (lu.ok === false) return { ok: false, state: 'LEAD_STORE_UNAVAILABLE', code: 503 }
@@ -444,7 +452,17 @@ async function compteDuCandidat(candidate: SignalCandidate, ws: string): Promise
   // `Lead.website` est une donnée produit ordinaire, modifiable par un import
   // ou un enrichissement. S'en servir laisserait n'importe quel hôte inscrit
   // sur une fiche décerner un grade A à une source qui n'en est pas une.
-  return { ok: true, lead, officialWebsite: urlOfficielleAbsolue(officiel.website) }
+  return {
+    ok: true,
+    lead,
+    officialWebsite: urlOfficielleAbsolue(entite.website),
+    entite: {
+      authority: entite.entityAuthority,
+      ...(entite.entityResolutionAdjudicationId !== undefined
+        ? { adjudicationId: entite.entityResolutionAdjudicationId }
+        : {}),
+    },
+  }
 }
 
 /**

@@ -202,7 +202,9 @@ export interface CompanyLookup {
  * plus fréquente, donc les collisions silencieuses plus fréquentes — l'inverse
  * du but.
  */
-function normaliserRaisonSociale(v: string): string {
+// Exportée pour ENTITY_RESOLUTION_ADJUDICATION_001 : l'observation d'entité
+// réutilise EXACTEMENT cette normalisation — jamais une seconde implémentation.
+export function normaliserRaisonSociale(v: string): string {
   return (v || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -265,7 +267,12 @@ export async function lookupByName(name: string): Promise<CompanyLookup> {
   const exacts = candidates.filter((c) => normaliserRaisonSociale(c.name) === cible)
 
   // Exactement UNE correspondance stricte : le nom désigne sans équivoque.
-  if (exacts.length === 1) return { found: true, resolution: 'resolved', ...exacts[0] }
+  // ⚠️ ADDITIF (ENTITY_RESOLUTION_ADJUDICATION_001 durcissement) : la fenêtre
+  // COMPLÈTE de la MÊME recherche accompagne la résolution exacte — la voie de
+  // remédiation d'un conflit d'identité persiste cette fenêtre-là, jamais une
+  // seconde interrogation incohérente (TOCTOU). Sémantique inchangée pour
+  // tous les appelants existants.
+  if (exacts.length === 1) return { found: true, resolution: 'resolved', ...exacts[0], candidates }
 
   // Zéro correspondance stricte (que des approchants) OU plusieurs entités
   // portant le même nom : dans les deux cas, choisir serait deviner.
@@ -326,7 +333,7 @@ export async function reconcileByName(
 // Vérifie un SIREN et renvoie les infos entreprise (anti-faux positifs à la saisie).
 export async function lookupBySiren(
   siren: string,
-): Promise<{ found: boolean; resolution?: Resolution; name?: string; naf?: string; city?: string; dirigeant?: string; active?: boolean; effectif?: string; website?: string }> {
+): Promise<{ found: boolean; resolution?: Resolution; siren?: string; name?: string; naf?: string; city?: string; dirigeant?: string; active?: boolean; effectif?: string; website?: string }> {
   const clean = (siren || '').replace(/\s/g, '')
   if (!/^\d{9}$/.test(clean)) return { found: false, resolution: 'not_found' }
   const url = `https://recherche-entreprises.api.gouv.fr/search?q=${clean}&page=1&per_page=1`
@@ -341,6 +348,9 @@ export async function lookupBySiren(
     return {
       found: true,
       resolution: 'resolved',
+      // ADDITIF (ENTITY_RESOLUTION_ADJUDICATION_001) : le SIREN exact vérifié
+      // est rendu pour que la revalidation aval le compare strictement.
+      siren: clean,
       name: r.nom_complet || r.nom_raison_sociale || '',
       naf: r.activite_principale || '',
       city: r.siege?.libelle_commune || '',
