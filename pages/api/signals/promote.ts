@@ -360,7 +360,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 }
 
-type LiaisonCompte =
+export type LiaisonCompte =
   | {
       ok: true
       lead: Lead
@@ -414,7 +414,9 @@ type LiaisonCompte =
  * indisponibilité plutôt que de rendre une liste vide : une entreprise qui
  * existe ne doit pas être déclarée inexistante parce que data.gouv était muet.
  */
-async function compteDuCandidat(candidate: SignalCandidate, ws: string): Promise<LiaisonCompte> {
+// ⚠️ EXPORTÉ pour LEAD_GATE_E2E_001 UNIQUEMENT : le harnais E2E local appelle
+// le VRAI gate au lieu d'une réimplémentation. Aucune sémantique modifiée.
+export async function compteDuCandidat(candidate: SignalCandidate, ws: string): Promise<LiaisonCompte> {
   const raisonSociale = String(candidate.claim.company || '').trim()
   if (!raisonSociale) return { ok: false, state: 'SIGNAL_NOT_RESOLVED', code: 409 }
 
