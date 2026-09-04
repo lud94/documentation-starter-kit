@@ -8,7 +8,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 
 import { resolveActorFromRequest } from '../../../lib/prospector/tenant'
-import { projectDomainReviews } from '../../../lib/prospector/proactive/reviewQueue'
+import { projectDomainReviews, projectEntityReviews, type ReviewItemV0 } from '../../../lib/prospector/proactive/reviewQueue'
 import { logSafeError } from '../../../lib/observability/safeError'
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -18,18 +18,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const ws = acteur.tenant.id
 
   try {
-    const projection = await projectDomainReviews(ws)
-    if (projection.ok === false) {
-      // Les deux échecs restent DISTINCTS pour l'appelant : muet se réessaie,
-      // corrompu s'investigue.
-      return res.status(503).json({ state: projection.reason })
-    }
+    // ⚠️ L'UNION EXIGE LES DEUX FAMILLES. Si UNE projection échoue, la liste
+    // entière échoue : rendre une liste partielle masquerait la panne d'une
+    // autorité derrière le silence de l'autre.
+    const domaine = await projectDomainReviews(ws)
+    if (domaine.ok === false) return res.status(503).json({ state: domaine.reason })
+    const entite = await projectEntityReviews(ws)
+    if (entite.ok === false) return res.status(503).json({ state: entite.reason })
+    let items: ReviewItemV0[] = [...domaine.items, ...entite.items]
 
     // Filtres BORNÉS — vocabulaire clos, valeur inconnue refusée plutôt
     // qu'ignorée (une faute de frappe ne doit pas rendre « tout »).
     const kind = req.query?.kind
     if (kind !== undefined) {
-      if (kind !== 'DOMAIN_AUTHORITY_REVIEW') return res.status(400).json({ state: 'INVALID_REQUEST' })
+      if (kind !== 'DOMAIN_AUTHORITY_REVIEW' && kind !== 'ENTITY_IDENTITY_REVIEW' && kind !== 'ENTITY_HISTORY_BLOCKED') {
+        return res.status(400).json({ state: 'INVALID_REQUEST' })
+      }
+      items = items.filter((i) => i.kind === kind)
     }
     // ⚠️ NON SUPPORTÉ ≠ VIDE. La V0 ne projette QUE des items OPEN : accepter
     // `lifecycle=RESOLVED` et rendre `[]` affirmerait « aucune revue résolue »
@@ -42,7 +47,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(200).json({
       contractVersion: 'review-read-v0',
-      items: projection.items, // la projection ne dérive que des items OPEN
+      items, // les projections ne dérivent que des items OPEN
     })
   } catch (e) {
     logSafeError('review.list_failed', e, { operation: 'review_list' })
