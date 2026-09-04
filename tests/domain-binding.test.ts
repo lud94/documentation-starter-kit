@@ -341,6 +341,113 @@ describe('éligibilité courante (dérivée, revalidée à l’usage)', () => {
   })
 })
 
+// ── DOMAIN_REVALIDATION_STABILITY_001 — la stabilité d'autorité se juge sur la
+// MATIÈRE LÉGALE ADJUGÉE (SIREN + ancre stricte), plus sur le hash du HTML brut.
+describe('stabilité de revalidation — ancre stricte, jamais le hash brut seul', () => {
+  // Page LONGUE : ±160 caractères autour du SIREN restent DANS le corps légal,
+  // si bien qu'un changement lointain (script, queue de page) ne touche pas
+  // l'ancre, tandis qu'un changement du voisinage la change nécessairement.
+  const PREFIXE = 'Preambule editorial sans matiere legale. '.repeat(8)
+  const SUFFIXE = 'Clause annexe repetee pour eloigner la fin de page. '.repeat(8)
+  const CORPS_LEGAL = `Mentions légales — GRADIUM SAS, SIREN 989 284 955, R.C.S. Paris, 10 rue de Paris.`
+  const pageHtml = (script: string, queue: string) =>
+    `<html><head><script>${script}</script><style>.x{color:red}</style></head>` +
+    `<body>${PREFIXE}${CORPS_LEGAL} ${SUFFIXE}${queue}</body></html>`
+  const PAGE_V1 = pageHtml('var build="a1";', '')
+  // V2 : UNIQUEMENT du HTML hors matière de preuve change (script dynamique +
+  // markup de queue au-delà de la fenêtre d'ancre). Texte légal intact.
+  const PAGE_V2 = pageHtml('var build="b2";window.__nonce="xyz";', '<div>footer dynamique 2026</div>')
+  // V3 : la matière légale dans le VOISINAGE déterministe du SIREN change.
+  const PAGE_V3 = pageHtml('var build="a1";', '').replace('R.C.S. Paris', 'R.C.S. Lyon')
+
+  async function liaisonAdjugeeLongue() {
+    const r = await recordDomainProofObservation(obsInput({ body: PAGE_V1 }), WS, T0)
+    if (r.ok === false) throw new Error(r.reason)
+    const a = await recordDomainAdjudication({ observationId: r.observation.id, verdict: 'ACCEPTED_FIRST_PARTY' }, 'alice', WS, T0)
+    if (a.ok === false) throw new Error(a.reason)
+    return { obs: r.observation, adj: a.adjudication }
+  }
+  const capture = (body: string) => {
+    etatCapture.resultat = { ok: true, finalUrl: `https://${HOTE}/mentions-legales`, body }
+  }
+  const lignesDe = (kind: string) =>
+    [...g.__prospectorStore.entries()].filter(([k]: any) => k.startsWith(`${kind}|`)).map(([, v]: any) => v)
+
+  it('1 — même hash brut + même ancre + SIREN présent ⇒ éligible', async () => {
+    await liaisonAdjugeeLongue()
+    capture(PAGE_V1)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: true, domainHost: HOTE, authority: 'HUMAN_ADJUDICATED_LEGAL_NOTICE' })
+  })
+
+  it('2 + mutant clé — HTML hors matière de preuve changé : hash brut ≠, ancre =, ⇒ éligible ; nouvelle DPO persistée ; anciennes lignes immuables ; aucune adjudication auto', async () => {
+    const { obs, adj } = await liaisonAdjugeeLongue()
+    capture(PAGE_V2)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: true, domainHost: HOTE, authority: 'HUMAN_ADJUDICATED_LEGAL_NOTICE' })
+
+    // La recapture est un fait historique persistant, au hash BRUT différent
+    // mais à l'ancre IDENTIQUE — c'est exactement le cas E2E Defacto/Gradium.
+    const observations = lignesDe(DOMAIN_PROOF_OBSERVATION_KIND)
+    expect(observations.length).toBe(2)
+    const fraiche = observations.find((o: any) => o.id !== obs.id)
+    expect(fraiche.proofContentHash).not.toBe(obs.proofContentHash)
+    expect(fraiche.proofAnchor).toBe(obs.proofAnchor)
+    expect(fraiche.targetSirenFound).toBe(true)
+
+    // Ancienne observation ET ancienne adjudication : octet pour octet intactes.
+    const obsRelue = observations.find((o: any) => o.id === obs.id)
+    expect(obsRelue).toEqual(obs)
+    const adjudications = lignesDe(DOMAIN_ADJUDICATION_KIND)
+    expect(adjudications).toEqual([adj]) // aucune adjudication créée automatiquement
+  })
+
+  it('3 — matière légale changée dans le voisinage du SIREN : ancre ≠ (SIREN pourtant présent) ⇒ PROOF_CHANGED', async () => {
+    await liaisonAdjugeeLongue()
+    capture(PAGE_V3)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'PROOF_CHANGED' })
+    // Preuve que le cas est bien « SIREN présent mais voisinage altéré ».
+    const fraiche = lignesDe(DOMAIN_PROOF_OBSERVATION_KIND).find((o: any) => o.proofAnchor.includes('Lyon'))
+    expect(fraiche.targetSirenFound).toBe(true)
+  })
+
+  it('4 — SIREN cible disparu ⇒ PROOF_CHANGED, jamais un repli sur l’ancre seule', async () => {
+    await liaisonAdjugeeLongue()
+    capture(PAGE_V1.replace('989 284 955', '000 000 000'))
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'PROOF_CHANGED' })
+  })
+
+  it('5/6 — dernier verdict REJECTED reste fermé (sans recapture) ; capture impossible ⇒ REVALIDATION_FAILED', async () => {
+    const { obs } = await liaisonAdjugeeLongue()
+    await recordDomainAdjudication({ observationId: obs.id, verdict: 'REJECTED' }, 'alice', WS, T1)
+    capture(PAGE_V2)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'LATEST_REJECTED' })
+    expect(etatCapture.appels).toEqual([])
+    if (g.__prospectorStore) g.__prospectorStore.clear()
+    await liaisonAdjugeeLongue()
+    etatCapture.resultat = { ok: false, reason: 'FETCH_FAILED' }
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'REVALIDATION_FAILED' })
+  })
+
+  it('10 — isolation d’espace inchangée : l’adjudication d’un espace ne décerne rien dans un autre', async () => {
+    await liaisonAdjugeeLongue()
+    capture(PAGE_V1)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, AUTRE_WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'NO_ACCEPTED_ADJUDICATION' })
+  })
+
+  it('verrou structurel — la condition d’autorité est bien (SIREN ∧ ancre stricte), le hash brut n’y figure plus seul', () => {
+    const { readFileSync } = require('node:fs')
+    const src = readFileSync('lib/prospector/proactive/domainBinding.ts', 'utf8')
+    expect(src).toMatch(/targetSirenFound !== true\s*\|\|\s*persistee\.observation\.proofAnchor !== adjugee\.proofAnchor/)
+    expect(src).not.toMatch(/proofContentHash !== adjugee\.proofContentHash/)
+  })
+})
+
 describe('routes — frontières de confiance', () => {
   async function appeler(handler: any, body: any) {
     const req: any = { method: 'POST', body, cookies: {} }

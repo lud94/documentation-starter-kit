@@ -401,11 +401,27 @@ export type AdjudicatedEligibility =
  *  2. la DERNIÈRE adjudication applicable (adjudicatedAt, puis id) pour
  *     (SIREN, hôte exact) est ACCEPTED_FIRST_PARTY sur une observation
  *     strictement valide ;
- *  3. la preuve est RE-CAPTURÉE À L'USAGE et son contenu est OCTET POUR OCTET
- *     celui de l'observation adjugée. Contenu changé ⇒ la nouvelle observation
- *     est persistée (append) et attend une NOUVELLE adjudication humaine —
- *     l'ancienne ne décerne RIEN. Faux négatif > faux positif : aucun
- *     lissage/normalisation de contenu n'est tenté ici.
+ *  3. la preuve est RE-CAPTURÉE À L'USAGE et la MATIÈRE LÉGALE ADJUGÉE est
+ *     STRICTEMENT identique : même SIREN cible retrouvé, et `proofAnchor`
+ *     fraîchement dérivé octet pour octet égal à celui de l'observation
+ *     adjugée. Matière changée ⇒ la nouvelle observation est persistée
+ *     (append) et attend une NOUVELLE adjudication humaine — l'ancienne ne
+ *     décerne RIEN.
+ *
+ * ── DOMAIN_REVALIDATION_STABILITY_001 — pourquoi PAS le hash du HTML brut ──
+ * `proofContentHash` (SHA-256 du CORPS ORIGINAL) reste calculé, persisté et
+ * vérifié partout : intégrité, audit, provenance, identité `dpo_`. Mais comme
+ * CONDITION D'AUTORITÉ il produisait un faux négatif systématique : tout octet
+ * dynamique (script, nonce, markup) invalidait une autorité humaine alors que
+ * le texte légal autour du SIREN n'avait pas bougé (prouvé en E2E réel :
+ * Defacto et Gradium, RawHashSame=false, AnchorExactSame=true). Le critère V0
+ * retenu est volontairement CONSERVATEUR et déterministe — égalité STRICTE de
+ * l'ancre bornée (aucun fuzzy, aucun LLM, aucune similarité) : le HTML peut
+ * changer, la matière de preuve adjugée autour du SIREN ne peut pas changer
+ * silencieusement. `targetSirenFound` SEUL serait trop permissif — l'ancre
+ * fige aussi le VOISINAGE (raison sociale, RCS…), pas la seule présence du
+ * numéro. Faux négatif > faux positif reste la règle : toute divergence
+ * d'ancre ⇒ PROOF_CHANGED.
  */
 export async function eligibleAdjudicatedDomain(
   siren: string, sourceHost: string, ws: string,
@@ -448,9 +464,13 @@ export async function eligibleAdjudicatedDomain(
     ws, now,
   )
   if (persistee.ok === false) return { eligible: false, reason: 'REVALIDATION_FAILED' }
+  // ⚠️ Condition d'autorité V0 : SIREN cible toujours présent ET ancre de
+  // preuve STRICTEMENT identique à celle adjugée. Le hash du corps brut n'entre
+  // plus seul dans cette décision (voir doctrine ci-dessus) — il reste porté
+  // par l'observation persistée pour l'audit.
   if (
-    persistee.observation.proofContentHash !== adjugee.proofContentHash
-    || persistee.observation.targetSirenFound !== true
+    persistee.observation.targetSirenFound !== true
+    || persistee.observation.proofAnchor !== adjugee.proofAnchor
   ) {
     return { eligible: false, reason: 'PROOF_CHANGED' }
   }
