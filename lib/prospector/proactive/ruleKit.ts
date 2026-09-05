@@ -486,6 +486,13 @@ export function buildSituation(input: BuildSituationInput): Situation {
     personId: context.personId,
     type: input.type,
     evidenceIds: evidence.map((item) => item.id),
+    // ── DESCRIPTIF, PAS UNE AUTORITÉ (SITUATION_ENGINE_RELIABILITY_V0_001).
+    // Agrégat DÉTERMINISTE des `confidence` des evidences citées — conservé
+    // pour compatibilité de contrat. Ce n'est NI une probabilité que la
+    // Situation soit vraie, NI une autorité structurelle, NI une suffisance de
+    // preuves, NI une autorité de classement ou d'attention. L'EXISTENCE d'une
+    // Situation se décide dans le Rule Pack producteur (planchers par
+    // contributeur, autorité structurelle) — jamais par cette moyenne.
     confidence: averageConfidence(evidence),
     relevance: roundScore(context.relevance),
     // ⚠️ `max`, jamais un remplacement : une evidence récente ne doit pas

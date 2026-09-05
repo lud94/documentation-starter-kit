@@ -521,7 +521,17 @@ export interface Situation {
   // Les EvidenceEvent qui justifient cette interprétation.
   evidenceIds: string[]
 
-  // 0..1 — crédibilité de l'interprétation.
+  /**
+   * 0..1 — agrégat DESCRIPTIF et déterministe des `confidence` des evidences
+   * citées (SITUATION_ENGINE_RELIABILITY_V0_001).
+   *
+   * ⚠️ CE N'EST PAS : une probabilité que la Situation soit vraie, une
+   * autorité structurelle, une suffisance de preuves en soi, une autorité de
+   * classement, ni une priorité d'attention. L'EXISTENCE et la suffisance
+   * d'une Situation appartiennent au Rule Pack producteur (planchers par
+   * contributeur, autorité structurelle) — jamais à ce nombre. Conservé pour
+   * compatibilité de contrat, non renommé.
+   */
   confidence: number
 
   // 0..1 — pertinence pour ICP / offre / objectif commercial.

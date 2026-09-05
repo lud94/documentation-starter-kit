@@ -8,7 +8,6 @@
 import { defineRulePack, type SituationEvaluationContext } from '../../rulePack'
 import type { EvidenceEvent, Situation } from '../../types'
 import {
-  averageConfidence,
   bestEvidenceByType,
   buildSituation,
   hasFact,
@@ -19,8 +18,12 @@ export const SALES_CORE_ID = 'sales-core'
 // `sales-scale-up` et `strong-signal-low-context`.
 // v0.3 — SIGNAL_EVIDENCE_STRENGTH_V0_001 : « fort » devient une AUTORITÉ
 // STRUCTURELLE (force épistémique du gate canonique), plus une égalité de
-// flottant. La provenance de version doit dire la vérité.
-export const SALES_CORE_VERSION = 'v0.3'
+// flottant.
+// v0.4 — SITUATION_ENGINE_RELIABILITY_V0_001 : plancher PAR CONTRIBUTEUR sur
+// `sales-scale-up` et `commercial-momentum-stalled` ; la MOYENNE n'autorise
+// plus aucune création (elle masquait un contributeur faible derrière un
+// fort). La provenance de version doit dire la vérité.
+export const SALES_CORE_VERSION = 'v0.4'
 
 export const MIN_EVIDENCE_CONFIDENCE = 0.6
 /**
@@ -31,7 +34,25 @@ export const MIN_EVIDENCE_CONFIDENCE = 0.6
  * valeur externe héritée rendait ce seuil décoratif et fragile.
  */
 export const STRONG_EVIDENCE_CONFIDENCE = 0.75
+/**
+ * ⚠️ N'AUTORISE PLUS AUCUNE CRÉATION (SITUATION_ENGINE_RELIABILITY_V0_001).
+ * Exportée pour compatibilité de surface : la moyenne arithmétique pouvait
+ * BLANCHIR un contributeur au ras du plancher universel (0.95 + 0.60 ⇒ 0.775)
+ * derrière un contributeur fort. La suffisance se décide désormais par
+ * CONTRIBUTEUR (`MIN_CONTRIBUTOR_CONFIDENCE`) ou par autorité STRUCTURELLE —
+ * jamais par un agrégat qui dilue.
+ */
 export const MIN_SITUATION_CONFIDENCE = 0.7
+/**
+ * PLANCHER PAR CONTRIBUTEUR — CHAQUE evidence CITÉE par `sales-scale-up` et
+ * `commercial-momentum-stalled` doit l'atteindre INDIVIDUELLEMENT. Aucun
+ * contributeur fort ne peut compenser un faible : c'est la politique que le
+ * pack Fabel applique déjà (`MIN_FAMILY_EVIDENCE_CONFIDENCE`), déclarée ici
+ * pour CE pack. `strong-signal-low-context` n'y est PAS soumis : son autorité
+ * est STRUCTURELLE (EXTERNAL_CONFIRMED_CANONICAL) — la re-coupler au flottant
+ * hérité déferait SIGNAL_EVIDENCE_STRENGTH_V0_001.
+ */
+export const MIN_CONTRIBUTOR_CONFIDENCE = 0.7
 
 const SITUATION_TYPES = [
   'sales_scale_up',
@@ -129,9 +150,12 @@ function detectSalesScaleUp(
   if (matched.length < 2) return null
   if (!hasFact(matched)) return null
 
-  const confidence = averageConfidence(matched)
-
-  if (confidence < MIN_SITUATION_CONFIDENCE) {
+  // ── PLANCHER PAR CONTRIBUTEUR — LA MOYENNE N'AUTORISE PLUS RIEN ─────────
+  // CHAQUE evidence citée doit atteindre le plancher : 0.95 + 0.60 ne fait
+  // plus 0.775 « suffisant », il fait UN contributeur insuffisant — refus.
+  // `Situation.confidence` reste la moyenne DESCRIPTIVE (buildSituation),
+  // elle ne décide plus de l'existence.
+  if (matched.some((item) => item.confidence < MIN_CONTRIBUTOR_CONFIDENCE)) {
     return null
   }
 
@@ -166,9 +190,9 @@ function detectCommercialMomentumStalled(
 
   if (!hasFact(matched)) return null
 
-  const confidence = averageConfidence(matched)
-
-  if (confidence < MIN_SITUATION_CONFIDENCE) {
+  // Même politique que `sales-scale-up` : plancher PAR CONTRIBUTEUR, la
+  // moyenne ne décide plus de l'existence.
+  if (matched.some((item) => item.confidence < MIN_CONTRIBUTOR_CONFIDENCE)) {
     return null
   }
 
@@ -209,12 +233,11 @@ function detectStrongSignalLowContext(
 
   if (!hasFact(matched)) return null
 
-  const confidence = averageConfidence(matched)
-
-  if (confidence < MIN_SITUATION_CONFIDENCE) {
-    return null
-  }
-
+  // ── AUCUN PLANCHER NUMÉRIQUE ICI, ET C'EST VOULU. L'autorité de cette
+  // règle est STRUCTURELLE (EXTERNAL_CONFIRMED_CANONICAL) : exiger en plus
+  // `confidence >= 0.70` re-coupleraît la force structurelle au flottant de
+  // compatibilité que SIGNAL_EVIDENCE_STRENGTH_V0_001 a explicitement
+  // découplé. La moyenne n'autorise rien non plus — elle reste descriptive.
   return situationDe(
     'strong_signal_low_context',
     matched,

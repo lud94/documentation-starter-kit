@@ -38,7 +38,7 @@ export type { SituationEvaluationContext } from './rulePack'
  * c'est lui qui porte les règles. Cette constante reste exportée parce que du
  * code et des tests la référencent ; elle vaut la version de `sales-core`.
  */
-export const SITUATION_RULE_VERSION = 'v0.3'
+export const SITUATION_RULE_VERSION = 'v0.4'
 
 // Seuils réexportés depuis le pack qui les possède réellement.
 export {

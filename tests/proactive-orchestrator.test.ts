@@ -75,7 +75,7 @@ describe('A. Chaîne end-to-end déterministe', () => {
     expect(situation.personId).toBe('ld_1')
     // La traçabilité est conservée jusqu'au bout.
     expect(situation.ruleId).toBe('commercial-momentum-stalled')
-    expect(situation.ruleVersion).toBe('v0.3')
+    expect(situation.ruleVersion).toBe('v0.4')
     expect(situation.evidenceIds.sort()).toEqual(out.evidence.map((e) => e.id).sort())
 
     expect(out.recommendations).toHaveLength(1)

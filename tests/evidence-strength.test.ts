@@ -182,9 +182,9 @@ describe('force interne CRM — dérivée des CONDITIONS du producteur, jamais d
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('versions, frontière de confiance, non-persistance', () => {
-  it('16/17 — sales-core v0.3 ; Fabel INCHANGÉ v0.2', () => {
-    expect(SALES_CORE_VERSION).toBe('v0.3')
-    expect(SALES_CORE.packVersion).toBe('v0.3')
+  it('16/17 — sales-core versionné avec ses règles (v0.4 depuis SITUATION_ENGINE_RELIABILITY_V0_001) ; Fabel INCHANGÉ v0.2', () => {
+    expect(SALES_CORE_VERSION).toBe('v0.4')
+    expect(SALES_CORE.packVersion).toBe('v0.4')
     expect(FABEL_PACK_VERSION).toBe('v0.2')
   })
 
