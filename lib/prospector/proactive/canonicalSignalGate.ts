@@ -30,7 +30,7 @@ import { createHash } from 'node:crypto'
 import { listItemsStrict } from '../../supabase/store'
 import {
   canonicalClaimKey, EXTERNAL_SIGNAL_PROVIDER,
-  type EvidenceEvent, type SignalTemporalAuthority,
+  type EvidenceEvent, type EvidenceStrengthV0, type SignalTemporalAuthority,
 } from './types'
 import type { KnownEvidenceEvent } from './catalog'
 import { externalEvidenceId } from './signalBridge'
@@ -73,7 +73,7 @@ export interface SignalExclusion {
   reason: SignalExclusionReason
 }
 
-export type { SignalTemporalAuthority } from './types'
+export type { EvidenceStrengthV0, SignalTemporalAuthority } from './types'
 
 export type SignalGateResult =
   | {
@@ -95,6 +95,17 @@ export type SignalGateResult =
        * n'y figurent pas — leur horloge d'observation est légitime ailleurs.
        */
       temporalAuthorityByEvidenceId: Readonly<Record<string, SignalTemporalAuthority>>
+      /**
+       * SIGNAL_EVIDENCE_STRENGTH_V0_001 — side-car ÉPISTÉMIQUE de lecture.
+       *
+       * Une entrée par Signal externe FONDÉ portant une ADJUDICATION HUMAINE
+       * valide : l'autorité externe naît ICI, après vérification de l'histoire
+       * immuable — jamais dans le bridge, qui la précède. Un Signal fondé SANS
+       * acceptation humaine n'a AUCUNE entrée (échec fermé pour toute règle
+       * exigeant la force structurelle). JAMAIS persisté, jamais sur l'Evidence,
+       * jamais inféré d'un flottant `confidence`.
+       */
+      evidenceStrengthByEvidenceId: Readonly<Record<string, EvidenceStrengthV0>>
     }
   | { ok: false; reason: 'STORE_UNAVAILABLE' | 'CANONICAL_HISTORY_INVALID' }
 
@@ -359,15 +370,25 @@ export async function canonicalSignalGate(
   const signals: KnownEvidenceEvent[] = []
   const excluded: SignalExclusion[] = []
   const temporalAuthorityByEvidenceId: Record<string, SignalTemporalAuthority> = {}
+  const evidenceStrengthByEvidenceId: Record<string, EvidenceStrengthV0> = {}
   for (const e of evidence) {
     if (!estExterne(e)) { signals.push(e); continue } // CRM/interne : hors périmètre, inchangé
     const verdict = classifyExternalEvidence(e, ws, registres)
     if (verdict.state === 'CANONICALLY_GROUNDED') {
       signals.push(e)
       temporalAuthorityByEvidenceId[e.id] = verdict.temporal
+      // ── FORCE STRUCTURELLE V0 : fondé + adjugé par un humain. Le fondement
+      // vient d'être prouvé (assertions durables compatibles + ancres) ; il
+      // reste à exiger l'ADJUDICATION — structurelle, jamais un flottant.
+      if (e.acceptance?.kind === 'human_confirmed') {
+        evidenceStrengthByEvidenceId[e.id] = { kind: 'EXTERNAL_CONFIRMED_CANONICAL' }
+      }
     } else {
       excluded.push(verdict)
     }
   }
-  return { ok: true, signals, excluded, temporalAuthorityByEvidenceId }
+  return {
+    ok: true, signals, excluded,
+    temporalAuthorityByEvidenceId, evidenceStrengthByEvidenceId,
+  }
 }

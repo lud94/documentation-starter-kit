@@ -38,6 +38,11 @@ export function runEvalCase(evalCase: EvalCase): EvalOutput {
     ...(evalCase.temporalAuthorityByEvidenceId
       ? { temporalAuthorityByEvidenceId: evalCase.temporalAuthorityByEvidenceId }
       : {}),
+    // SIGNAL_EVIDENCE_STRENGTH_V0_001 : même chemin que la production — la
+    // force structurelle vient du CAS (comme du gate/producteur en prod).
+    ...(evalCase.evidenceStrengthByEvidenceId
+      ? { evidenceStrengthByEvidenceId: evalCase.evidenceStrengthByEvidenceId }
+      : {}),
   })
 
   return {

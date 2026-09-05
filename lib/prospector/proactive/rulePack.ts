@@ -15,6 +15,7 @@
 // d'exécution — c'est précisément ce qui la rend auditable.
 import type {
   EvidenceEvent,
+  EvidenceStrengthV0,
   PlayType,
   SignalTemporalAuthority,
   Situation,
@@ -49,6 +50,14 @@ export interface SituationEvaluationContext {
    * l'instantané d'observation, `dataBridge` le garantit.
    */
   temporalAuthorityByEvidenceId?: Readonly<Record<string, SignalTemporalAuthority>>
+
+  /**
+   * SIGNAL_EVIDENCE_STRENGTH_V0_001 — force épistémique STRUCTURELLE des
+   * evidences (externe : side-car du gate canonique ; interne : conditions du
+   * producteur CRM). Fail closed : une evidence ABSENTE de cette carte n'a
+   * AUCUNE force structurelle — jamais inférée depuis `confidence`.
+   */
+  evidenceStrengthByEvidenceId?: Readonly<Record<string, EvidenceStrengthV0>>
 }
 
 /** Ce qu'une situation recommande de faire, côté métier. */

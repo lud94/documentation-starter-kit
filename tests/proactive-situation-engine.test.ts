@@ -291,6 +291,9 @@ describe('JARVIS-PROACTIVE-01B — situation engine', () => {
   })
 
   it('détecte STRONG_SIGNAL_LOW_CONTEXT comme fallback', () => {
+    // SIGNAL_EVIDENCE_STRENGTH_V0_001 : « fort » est STRUCTUREL — la fixture
+    // modélise un Signal externe fondé/adjugé en déclarant sa classe (comme le
+    // gate canonique le ferait en production), pas en gonflant un flottant.
     const situations = evaluateSituations(
       [
         evidence('ev_1', 'recent_funding', {
@@ -301,7 +304,10 @@ describe('JARVIS-PROACTIVE-01B — situation engine', () => {
           assertionType: 'fact',
         }),
       ],
-      BASE_CONTEXT,
+      {
+        ...BASE_CONTEXT,
+        evidenceStrengthByEvidenceId: { ev_1: { kind: 'EXTERNAL_CONFIRMED_CANONICAL' } },
+      },
     )
 
     expect(situations).toHaveLength(1)

@@ -20,7 +20,7 @@ import {
 import type { Lead } from '../../../types/prospector'
 import {
   accountIdForLead,
-  evidenceFromLeads,
+  evidenceFromLeadsWithStrength,
   personIdForLead,
   type TaskSnapshot,
 } from './dataBridge'
@@ -28,6 +28,7 @@ import type { EligibilityContext } from './eligibility'
 import { isEvidenceEvent } from './validators'
 import type {
   EvidenceEvent,
+  EvidenceStrengthV0,
   Recommendation,
   SignalTemporalAuthority,
   Situation,
@@ -109,6 +110,15 @@ export interface ProactiveEvaluationInput {
    * datée sous fenêtre déclarée échoue fermé pour la règle concernée.
    */
   temporalAuthorityByEvidenceId?: Readonly<Record<string, SignalTemporalAuthority>>
+
+  /**
+   * SIGNAL_EVIDENCE_STRENGTH_V0_001 — force structurelle des Signaux EXTERNES,
+   * side-car du gate canonique (l'autorité externe naît APRÈS la vérification
+   * de l'histoire immuable — jamais dans le bridge). La force INTERNE, elle,
+   * est dérivée ICI par `evidenceFromLeadsWithStrength` : aucun appelant ne
+   * fournit de classe pour une evidence CRM.
+   */
+  evidenceStrengthByEvidenceId?: Readonly<Record<string, EvidenceStrengthV0>>
 }
 
 export interface ProactiveEvaluation {
@@ -247,8 +257,12 @@ export function evaluate(input: ProactiveEvaluationInput): ProactiveEvaluation {
   // `isEvidenceEvent` est le validateur de LECTURE existant, celui-là même qui
   // protège les lignes relues du magasin. Une evidence externe invalide est
   // IGNORÉE — jamais réparée, jamais complétée — et n'atteint aucun Rule Pack.
+  const interne = evidenceFromLeadsWithStrength(input.leads, {
+    now: input.now,
+    tasks: input.tasks,
+  })
   const evidence: EvidenceEvent[] = [
-    ...evidenceFromLeads(input.leads, { now: input.now, tasks: input.tasks }),
+    ...interne.evidence,
     ...(input.externalEvidence ?? []).filter(isEvidenceEvent),
   ]
 
@@ -286,6 +300,18 @@ export function evaluate(input: ProactiveEvaluationInput): ProactiveEvaluation {
     ...(input.temporalAuthorityByEvidenceId
       ? { temporalAuthorityByEvidenceId: input.temporalAuthorityByEvidenceId }
       : {}),
+    // ── FORCE STRUCTURELLE : interne (dérivée ici, du producteur CRM) +
+    // externe (side-car du gate, transmis par l'appelant). Les identifiants
+    // sont disjoints par construction (`ev_...` CRM vs `ev_ext_...` bridge) ;
+    // l'entrée appelant ne peut de toute façon jamais parler POUR une evidence
+    // interne qu'elle ne produit pas.
+    // L'INTERNE EN DERNIER : même en cas de collision d'identifiant, un
+    // appelant ne peut jamais substituer sa classe à celle que le producteur
+    // CRM vient de dériver.
+    evidenceStrengthByEvidenceId: {
+      ...(input.evidenceStrengthByEvidenceId ?? {}),
+      ...interne.evidenceStrengthByEvidenceId,
+    },
   })
 
   return { evidence, situations, recommendations }

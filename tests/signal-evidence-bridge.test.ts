@@ -1189,9 +1189,17 @@ describe('SIGNAL-EVIDENCE-BRIDGE-001 — bout-en-bout jusqu’au Decision Kernel
 
   it('l’évaluation est persistée par le chemin de production existant', async () => {
     const out = pontE2E()
+    // SIGNAL_EVIDENCE_STRENGTH_V0_001 : la fixture déclare l'autorité
+    // structurelle et temporelle de ses Signaux externes — exactement ce que
+    // le gate canonique fournit en production. Sans elle, « fort » échoue
+    // fermé, et c'est voulu.
     const evaluation = evaluate({
       leads: [compte], now: NOW, tasks: { complete: true, openTaskLeadIds: [] },
       businessContext: TEST_BUSINESS_CONTEXT, externalEvidence: out.evidence,
+      temporalAuthorityByEvidenceId: autoriteEtat(out.evidence),
+      evidenceStrengthByEvidenceId: Object.fromEntries(
+        out.evidence.map((e: any) => [e.id, { kind: 'EXTERNAL_CONFIRMED_CANONICAL' }]),
+      ),
       relevanceFor: () => 0.8,
     })
     const compte_ = await persistEvaluation(evaluation, 'ws_test')

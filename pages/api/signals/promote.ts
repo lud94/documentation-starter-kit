@@ -369,6 +369,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // SIGNAL_TEMPORAL_WINDOW_V0_001 : l'autorité temporelle des Signaux
       // vient du gate — l'histoire immuable — jamais des horloges de la route.
       temporalAuthorityByEvidenceId: porte.temporalAuthorityByEvidenceId,
+      // SIGNAL_EVIDENCE_STRENGTH_V0_001 : la force structurelle externe vient
+      // du MÊME gate — jamais du corps de la requête, jamais du bridge.
+      evidenceStrengthByEvidenceId: porte.evidenceStrengthByEvidenceId,
     })
 
     // ── DURABILITÉ AVANT ANNONCE ─────────────────────────────────────────

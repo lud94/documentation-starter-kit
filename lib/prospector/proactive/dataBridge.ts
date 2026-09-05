@@ -49,6 +49,7 @@
 import { isAccountLead } from '../leadKind'
 import type { Lead } from '../../../types/prospector'
 import type {
+  EvidenceStrengthV0,
   AssertionType,
   EvidenceEvent,
   EvidenceScope,
@@ -61,18 +62,22 @@ export const BRIDGE_VERSION = 'v0.1'
 export const BRIDGE_PROVIDER = 'prospector_crm'
 
 /**
- * ── LES DEUX SEULES CONFIANCES DE CE BRIDGE ─────────────────────────────────
- * Elles expriment une chose précise : à quel point l'état persisté reflète
- * encore la réalité. Ce n'est pas la certitude d'avoir bien lu la fiche — celle-
- * là vaudrait 1 — mais la certitude que la fiche a toujours raison.
+ * ── VALEURS DE COMPATIBILITÉ HÉRITÉES — PAS UNE AUTORITÉ ÉPISTÉMIQUE ───────
+ * (SIGNAL_EVIDENCE_STRENGTH_V0_001)
  *
- * Elles restent sous 1 pour une raison factuelle : AUCUNE de ces fiches n'est
- * horodatée. Un `temperature: 'hot'` saisi il y a dix-huit mois est indiscernable
- * d'un signal d'hier. Ne pas pouvoir vérifier la fraîcheur est une bonne raison
- * de ne jamais affirmer une certitude totale.
+ * Ces deux nombres sont des sorties HÉRITÉES du contrat `Evidence.confidence`,
+ * conservées pour ne pas créer de falaise comportementale. Ils ne signifient
+ * NI « 80 % de chances d'être vrai », NI « certitude que la fiche est encore
+ * à jour » : l'incertitude de FRAÎCHEUR (fiches non horodatées) est une
+ * limite TEMPORELLE — elle appartient à la politique de fenêtres, pas à la
+ * force d'une evidence.
  *
- * Deux valeurs, pas dix : un barème fin donnerait l'illusion d'une mesure là où
- * il n'y a qu'un jugement assumé.
+ * L'AUTORITÉ épistémique vit ailleurs : la CLASSE STRUCTURELLE
+ * (`EvidenceStrengthV0`), dérivée des CONDITIONS du producteur — un champ
+ * autoritaire ⇒ INTERNAL_RECORD ; deux champs réellement distincts concordants
+ * ⇒ INTERNAL_CORROBORATED_RECORD. AUCUNE logique nouvelle ne doit inférer la
+ * classe depuis ces flottants (0.8/0.9) : le scalaire suit la structure,
+ * jamais l'inverse.
  */
 export const RECORD_STATE_CONFIDENCE = 0.8
 /** Deux champs indépendants de la fiche concordent : la corroboration est réelle. */
@@ -250,7 +255,11 @@ function buildStateEvidence(params: {
  * persistée : `Interaction` existe comme type mais n'est produit nulle part
  * ailleurs que dans les mocks de `capabilities.ts`.
  */
-function evidenceForLead(lead: Lead, context: BridgeContext): EvidenceEvent[] {
+function evidenceForLead(
+  lead: Lead,
+  context: BridgeContext,
+  forces: Record<string, EvidenceStrengthV0>,
+): EvidenceEvent[] {
   const accountId = accountIdForLead(lead)
   if (!accountId) return []
   if (!nonEmpty(lead.id)) return []
@@ -266,22 +275,25 @@ function evidenceForLead(lead: Lead, context: BridgeContext): EvidenceEvent[] {
   const chaudParStatut = lead.status === 'chaud'
 
   if (chaudParTemperature || chaudParStatut) {
-    out.push(
-      buildStateEvidence({
-        type: 'hot_lead',
-        // Sans personne identifiée, l'intérêt reste une propriété du compte.
-        scope: personId ? 'relationship' : 'account',
-        accountId,
-        personId,
-        leadId: lead.id,
-        confidence:
-          chaudParTemperature && chaudParStatut
-            ? CORROBORATED_STATE_CONFIDENCE
-            : RECORD_STATE_CONFIDENCE,
-        value: chaudParTemperature ? lead.temperature : lead.status,
-        now: context.now,
-      }),
-    )
+    // ⚠️ LA CLASSE VIENT DE LA CONDITION STRUCTURELLE, PAS DU FLOTTANT : le
+    // producteur SAIT si un champ ou deux ont concordé — c'est ce fait-là qui
+    // fait la corroboration, et le scalaire hérité ne fait que le suivre.
+    const corrobore = chaudParTemperature && chaudParStatut
+    const e = buildStateEvidence({
+      type: 'hot_lead',
+      // Sans personne identifiée, l'intérêt reste une propriété du compte.
+      scope: personId ? 'relationship' : 'account',
+      accountId,
+      personId,
+      leadId: lead.id,
+      confidence: corrobore ? CORROBORATED_STATE_CONFIDENCE : RECORD_STATE_CONFIDENCE,
+      value: chaudParTemperature ? lead.temperature : lead.status,
+      now: context.now,
+    })
+    forces[e.id] = corrobore
+      ? { kind: 'INTERNAL_CORROBORATED_RECORD' }
+      : { kind: 'INTERNAL_RECORD' }
+    out.push(e)
   }
 
   // ── no_next_step ──────────────────────────────────────────────────────────
@@ -295,7 +307,7 @@ function evidenceForLead(lead: Lead, context: BridgeContext): EvidenceEvent[] {
 
     if (!aUneTacheOuverte) {
       out.push(
-        buildStateEvidence({
+        registrerForce(forces, buildStateEvidence({
           type: 'no_next_step',
           scope: 'relationship',
           accountId,
@@ -304,7 +316,7 @@ function evidenceForLead(lead: Lead, context: BridgeContext): EvidenceEvent[] {
           confidence: RECORD_STATE_CONFIDENCE,
           value: lead.stage,
           now: context.now,
-        }),
+        })),
       )
     }
   }
@@ -322,7 +334,7 @@ function evidenceForLead(lead: Lead, context: BridgeContext): EvidenceEvent[] {
 
   if (!aUnCanal && !aDuContexte) {
     out.push(
-      buildStateEvidence({
+      registrerForce(forces, buildStateEvidence({
         type: 'missing_context',
         scope: personId ? 'person' : 'account',
         accountId,
@@ -331,7 +343,7 @@ function evidenceForLead(lead: Lead, context: BridgeContext): EvidenceEvent[] {
         confidence: RECORD_STATE_CONFIDENCE,
         value: true,
         now: context.now,
-      }),
+      })),
     )
   }
 
@@ -348,13 +360,40 @@ export function evidenceFromLeads(
   leads: readonly Lead[],
   context: BridgeContext,
 ): EvidenceEvent[] {
-  if (!Array.isArray(leads)) return []
-  if (!context?.now || !Number.isFinite(context.now.getTime())) return []
+  return evidenceFromLeadsWithStrength(leads, context).evidence
+}
+
+/** Une evidence à force INTERNAL_RECORD par défaut — les producteurs à un seul champ. */
+function registrerForce(
+  forces: Record<string, EvidenceStrengthV0>,
+  e: EvidenceEvent,
+): EvidenceEvent {
+  forces[e.id] = { kind: 'INTERNAL_RECORD' }
+  return e
+}
+
+/**
+ * SIGNAL_EVIDENCE_STRENGTH_V0_001 — la MÊME production, plus le side-car
+ * structurel interne. La classe naît des CONDITIONS de chaque producteur
+ * (un champ / deux champs concordants), à l'instant même où l'evidence est
+ * construite — jamais relue depuis `confidence`, jamais persistée.
+ */
+export function evidenceFromLeadsWithStrength(
+  leads: readonly Lead[],
+  context: BridgeContext,
+): {
+  evidence: EvidenceEvent[]
+  evidenceStrengthByEvidenceId: Readonly<Record<string, EvidenceStrengthV0>>
+} {
+  const vide = { evidence: [], evidenceStrengthByEvidenceId: {} }
+  if (!Array.isArray(leads)) return vide
+  if (!context?.now || !Number.isFinite(context.now.getTime())) return vide
 
   const out: EvidenceEvent[] = []
+  const forces: Record<string, EvidenceStrengthV0> = {}
   for (const lead of leads) {
     if (!lead || typeof lead !== 'object') continue
-    out.push(...evidenceForLead(lead, context))
+    out.push(...evidenceForLead(lead, context, forces))
   }
-  return out
+  return { evidence: out, evidenceStrengthByEvidenceId: forces }
 }

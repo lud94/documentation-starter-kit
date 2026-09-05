@@ -37,6 +37,7 @@ import { recommendationDecision } from './recommendationEngine'
 import type { EligibilityContext } from './eligibility'
 import type {
   EvidenceEvent,
+  EvidenceStrengthV0,
   Recommendation,
   SignalTemporalAuthority,
   Situation,
@@ -73,6 +74,14 @@ export interface KernelInput {
    * règle — jamais un repli silencieux sur `observedAt`.
    */
   temporalAuthorityByEvidenceId?: Readonly<Record<string, SignalTemporalAuthority>>
+
+  /**
+   * SIGNAL_EVIDENCE_STRENGTH_V0_001 — force structurelle par evidence (gate
+   * canonique pour l'externe, producteur CRM pour l'interne ; côté runner, le
+   * cas la déclare comme vérité de fixture). MÊME chemin des deux côtés :
+   * absente ⇒ échec fermé partout où une règle exige la force structurelle.
+   */
+  evidenceStrengthByEvidenceId?: Readonly<Record<string, EvidenceStrengthV0>>
 }
 
 export interface KernelOutput {
@@ -190,6 +199,9 @@ export function evaluateEvidence(input: KernelInput): KernelOutput {
         lensVersion: lens.lensVersion,
         ...(input.temporalAuthorityByEvidenceId
           ? { temporalAuthorityByEvidenceId: input.temporalAuthorityByEvidenceId }
+          : {}),
+        ...(input.evidenceStrengthByEvidenceId
+          ? { evidenceStrengthByEvidenceId: input.evidenceStrengthByEvidenceId }
           : {}),
       },
       lens.rulePacks,

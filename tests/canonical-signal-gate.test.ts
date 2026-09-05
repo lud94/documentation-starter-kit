@@ -100,8 +100,35 @@ describe('classement — levée (FUNDING_ROUND)', () => {
     expect(a.temporalAuthorityByEvidenceId).toEqual({
       [evidence.id]: { basis: 'DATED_EVENT_DAY', referenceDay: JOUR_EVT },
     })
+    // SIGNAL_EVIDENCE_STRENGTH_V0_001 : fondé + adjugé ⇒ force structurelle —
+    // née ICI, après vérification de l'histoire immuable, jamais dans le bridge.
+    expect(a.evidenceStrengthByEvidenceId).toEqual({
+      [evidence.id]: { kind: 'EXTERNAL_CONFIRMED_CANONICAL' },
+    })
     const b = await canonicalSignalGate([evidence], WS) // rejeu strictement identique
-    expect(b).toEqual(a) // 10 + 18 + side-car déterministe
+    expect(b).toEqual(a) // 10 + 18 + side-cars déterministes
+  })
+
+  it('SIGNAL_EVIDENCE_STRENGTH_V0_001 — l’adjudication SEULE ne fait pas la force, et un Signal fondé SANS adjudication n’en a pas', () => {
+    return (async () => {
+      // (a) Humainement confirmé mais SANS histoire canonique : exclu, et
+      // surtout AUCUNE entrée de force — la confirmation ne blanchit rien.
+      const { evidence } = promotionLevee() // rien d'écrit au registre
+      const r1 = await canonicalSignalGate([evidence], WS)
+      if (r1.ok === false) throw new Error(r1.reason)
+      expect(r1.evidenceStrengthByEvidenceId).toEqual({})
+      // (b) Fondé mais SANS acceptation humaine : SignalV0 valide, autorité
+      // temporelle présente, mais PAS de force structurelle — échec fermé pour
+      // toute règle qui l'exige.
+      g.__prospectorStore.clear()
+      const { evidence: fondee } = await historiqueComplet()
+      const { acceptance: _a, ...sansAcceptation } = fondee as any
+      const r2 = await canonicalSignalGate([sansAcceptation as KnownEvidenceEvent], WS)
+      if (r2.ok === false) throw new Error(r2.reason)
+      expect(r2.signals.length).toBe(1)
+      expect(r2.temporalAuthorityByEvidenceId[fondee.id]).toBeDefined()
+      expect(r2.evidenceStrengthByEvidenceId).toEqual({})
+    })()
   })
 
   it('2/15 — AUCUNE assertion (héritage non couvert) ⇒ MISSING/NO_SOURCE_ASSERTION, jamais « vieille evidence valide »', async () => {

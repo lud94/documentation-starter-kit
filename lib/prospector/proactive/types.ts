@@ -34,6 +34,32 @@ export type SignalTemporalAuthority =
   | { basis: 'DATED_EVENT_DAY'; referenceDay: string }
   | { basis: 'EXTERNAL_STATE_OBSERVED_DAY'; referenceDay: string }
 
+/**
+ * SIGNAL_EVIDENCE_STRENGTH_V0_001 — FORCE ÉPISTÉMIQUE STRUCTURELLE, NON
+ * PROBABILISTE. Side-car d'exécution, JAMAIS persisté, JAMAIS sur l'Evidence.
+ *
+ * Classes FERMÉES, dérivées de FAITS STRUCTURELS uniquement :
+ *
+ *   EXTERNAL_CONFIRMED_CANONICAL  gate canonique PASSÉ + adjudication humaine
+ *                                 valide + histoire d'assertions durable —
+ *                                 dérivée par `canonicalSignalGate`, jamais
+ *                                 par le bridge (qui précède la vérification
+ *                                 de l'histoire immuable).
+ *   INTERNAL_RECORD               UNE condition de fiche CRM autoritaire.
+ *   INTERNAL_CORROBORATED_RECORD  DEUX champs CRM réellement distincts
+ *                                 affirment la MÊME proposition.
+ *
+ * ⚠️ AUCUN ORDRE NUMÉRIQUE FABRIQUÉ (pas de A=0.9/B=0.7), aucune inférence
+ * depuis `confidence` (0.75/0.8/0.9 sont des valeurs HÉRITÉES de
+ * compatibilité, pas une autorité) : la classe vient des conditions du
+ * producteur, le grade/la lignée/la corroboration restent reconstructibles
+ * depuis les SourceAssertions.
+ */
+export type EvidenceStrengthV0 =
+  | { kind: 'EXTERNAL_CONFIRMED_CANONICAL' }
+  | { kind: 'INTERNAL_RECORD' }
+  | { kind: 'INTERNAL_CORROBORATED_RECORD' }
+
 const INSTANT_STRICT =
   /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|[+-](\d{2}):(\d{2}))$/
 

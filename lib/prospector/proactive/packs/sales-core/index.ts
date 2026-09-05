@@ -16,11 +16,20 @@ import {
 
 export const SALES_CORE_ID = 'sales-core'
 // v0.2 — SIGNAL_TEMPORAL_WINDOW_V0_001 : fenêtres temporelles déclarées sur
-// `sales-scale-up` et `strong-signal-low-context`. Les fenêtres changent la
-// sémantique des règles : la provenance de version doit dire la vérité.
-export const SALES_CORE_VERSION = 'v0.2'
+// `sales-scale-up` et `strong-signal-low-context`.
+// v0.3 — SIGNAL_EVIDENCE_STRENGTH_V0_001 : « fort » devient une AUTORITÉ
+// STRUCTURELLE (force épistémique du gate canonique), plus une égalité de
+// flottant. La provenance de version doit dire la vérité.
+export const SALES_CORE_VERSION = 'v0.3'
 
 export const MIN_EVIDENCE_CONFIDENCE = 0.6
+/**
+ * ⚠️ DÉPRÉCIÉE COMME AUTORITÉ DE DÉCISION (SIGNAL_EVIDENCE_STRENGTH_V0_001).
+ * Exportée pour compatibilité de surface UNIQUEMENT : « signal fort » se
+ * décide désormais STRUCTURELLEMENT (`EXTERNAL_CONFIRMED_CANONICAL` du gate
+ * canonique), jamais par `confidence >= 0.75` — l'égalité numérique avec la
+ * valeur externe héritée rendait ce seuil décoratif et fragile.
+ */
 export const STRONG_EVIDENCE_CONFIDENCE = 0.75
 export const MIN_SITUATION_CONFIDENCE = 0.7
 
@@ -177,8 +186,16 @@ function detectStrongSignalLowContext(
   evidence: readonly SalesEvidence[],
   context: SituationEvaluationContext,
 ): Situation | null {
+  // ── « FORT » EST STRUCTUREL, PAS NUMÉRIQUE (SIGNAL_EVIDENCE_STRENGTH_V0) ──
+  // Un signal n'est fort que s'il porte l'autorité épistémique complète du
+  // chemin externe : gate canonique passé + adjudication humaine + histoire
+  // d'assertions durable — c'est la classe EXTERNAL_CONFIRMED_CANONICAL du
+  // side-car. Side-car absent ⇒ PAS fort — échec fermé, jamais un repli sur
+  // `confidence >= 0.75` (une coïncidence d'égalité avec la constante héritée
+  // rendait tout signal externe « fort » par accident).
   const strongSignals = bestEvidenceByType(
-    evidence.filter((item) => item.confidence >= STRONG_EVIDENCE_CONFIDENCE),
+    evidence.filter((item) =>
+      context.evidenceStrengthByEvidenceId?.[item.id]?.kind === 'EXTERNAL_CONFIRMED_CANONICAL'),
     SALES_SCALE_TYPES,
   )
 

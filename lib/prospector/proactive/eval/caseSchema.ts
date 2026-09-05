@@ -27,7 +27,7 @@ import { LENS_REGISTRY } from '../lens/registry'
 import { PACK_REGISTRY } from '../packs/registry'
 import type { BusinessContextV0 } from '../lens/context'
 import type { KernelTarget } from '../decisionKernel'
-import type { EvidenceEvent, SignalTemporalAuthority } from '../types'
+import type { EvidenceEvent, EvidenceStrengthV0, SignalTemporalAuthority } from '../types'
 
 /** Version de contrat. Toute autre valeur est refusée — jamais « tolérée ». */
 export const EVAL_SCHEMA_VERSION = 'proactive-eval-v0.1'
@@ -52,6 +52,7 @@ const CLES_RACINE = [
   'targets',
   'evidence',
   'temporalAuthorityByEvidenceId',
+  'evidenceStrengthByEvidenceId',
   '_comment',
 ] as const
 
@@ -71,6 +72,14 @@ export interface EvalCase {
    * `observedAt` pendant que la production lit l'histoire immuable.
    */
   temporalAuthorityByEvidenceId?: Readonly<Record<string, SignalTemporalAuthority>>
+
+  /**
+   * SIGNAL_EVIDENCE_STRENGTH_V0_001 — force structurelle DÉCLARÉE PAR LE CAS
+   * (en production : side-car du gate canonique / producteur CRM). Absente
+   * pour une evidence dont une règle exige la force ⇒ échec fermé, identique
+   * à la production — jamais un repli sur `confidence`.
+   */
+  evidenceStrengthByEvidenceId?: Readonly<Record<string, EvidenceStrengthV0>>
 }
 
 export interface EvalError {
@@ -470,6 +479,30 @@ export function validateEvalCase(input: unknown): EvalCaseValidation {
     }
   }
 
+  // ── SIGNAL_EVIDENCE_STRENGTH_V0_001 : force structurelle déclarée ────────
+  // Optionnelle ; si présente, validée FERMÉE (classes closes uniquement).
+  const forces = c.evidenceStrengthByEvidenceId
+  if (forces !== undefined) {
+    if (!forces || typeof forces !== 'object' || Array.isArray(forces)) {
+      add(
+        'evidence_strength_invalid',
+        'evidenceStrengthByEvidenceId',
+        'Doit être un objet { evidenceId → { kind } }.',
+      )
+    } else {
+      const CLASSES = ['EXTERNAL_CONFIRMED_CANONICAL', 'INTERNAL_RECORD', 'INTERNAL_CORROBORATED_RECORD']
+      for (const [id, v] of Object.entries(forces as Record<string, any>)) {
+        if (!v || typeof v !== 'object' || !CLASSES.includes(v.kind)) {
+          add(
+            'evidence_strength_invalid',
+            `evidenceStrengthByEvidenceId.${id}`,
+            'Attendu : { kind: EXTERNAL_CONFIRMED_CANONICAL | INTERNAL_RECORD | INTERNAL_CORROBORATED_RECORD }.',
+          )
+        }
+      }
+    }
+  }
+
   if (errors.length > 0) return { ok: false, errors }
 
   return {
@@ -489,6 +522,12 @@ export function validateEvalCase(input: unknown): EvalCaseValidation {
         ? {
             temporalAuthorityByEvidenceId:
               autorite as Readonly<Record<string, SignalTemporalAuthority>>,
+          }
+        : {}),
+      ...(forces !== undefined
+        ? {
+            evidenceStrengthByEvidenceId:
+              forces as Readonly<Record<string, EvidenceStrengthV0>>,
           }
         : {}),
     },
