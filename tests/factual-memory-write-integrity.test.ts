@@ -255,11 +255,15 @@ describe('T10–T12 — aucune régression de sûreté', () => {
     // ⚠️ L'EXISTENCE AVANT L'ORDRE. Comparer deux `indexOf` ne suffit pas :
     // une garde ABSENTE rend `-1`, et `-1 < n` est vrai — le verrou passerait
     // sur le défaut même qu'il doit interdire.
-    const garde = bloc.indexOf('if (!sourceAssertionsEnabled()) return')
-    const ancrage = bloc.indexOf('canonicalFactsEnabled()')
+    // SIGNAL_CANONICAL_GATE_V0_001 : le registre n'est plus facultatif — les
+    // DEUX drapeaux sont exiges ENSEMBLE, AVANT toute ecriture, et un echec
+    // d'ecriture BLOQUE (la route repond 503, jamais un succes sans histoire).
+    const garde = bloc.indexOf('if (!sourceAssertionsEnabled() || !canonicalFactsEnabled())')
+    const ecriture = bloc.indexOf('recordSourceAssertions(lots, ws)')
     expect(garde).toBeGreaterThanOrEqual(0)
-    expect(ancrage).toBeGreaterThanOrEqual(0)
-    expect(garde).toBeLessThan(ancrage)
+    expect(ecriture).toBeGreaterThanOrEqual(0)
+    expect(garde).toBeLessThan(ecriture)
     expect(bloc).toMatch(/recordCanonicalAnchors\(lots, ws, new Set\(bilan\.durableIds\)\)/)
+    expect(bloc).toMatch(/reason: 'LEDGER_WRITE_FAILED'/)
   })
 })

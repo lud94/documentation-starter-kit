@@ -18,6 +18,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TEST_BUSINESS_CONTEXT } from './helpers/proactiveContext'
 import type { Lead, SignalHit } from '../types/prospector'
 
+// SIGNAL_CANONICAL_GATE_V0_001 : la promotion externe stricte EXIGE le
+// registre canonique — ces tests l'activent comme la production le fera.
+process.env.SIGNAL_ARCH_V1_SOURCE_ASSERTIONS = '1'
+process.env.SIGNAL_ARCH_V1_CANONICAL_FACTS = '1'
+
 const WS = 'ws_test_reach'
 const ACTOR = 'user_42'
 const SIREN = '552100554'
@@ -45,6 +50,9 @@ const etat = vi.hoisted(() => ({
   storeDown: false,
   storeDownKind: '' as string,
   listFails: false,
+  // R1-1 : simule une PERTE DE DONNÉES sur une collection (l'écriture a été
+  // acquittée, la relecture ne rend plus la ligne) — pas une panne (`ok:false`).
+  lireVide: '' as string,
   registryDown: false,
   registre: {} as Record<string, any>,
   leadsDown: false,
@@ -95,6 +103,16 @@ vi.mock('../lib/supabase/store', () => ({
     etat.persisted.push({ kind, id, ws, data })
     return true
   },
+  // SIGNAL_CANONICAL_GATE_V0_001 : le registre canonique ecrit par INSERTION
+  // SEULE — meme semantique « au plus un » que le repli memoire de production.
+  insertItemIfAbsent: async (kind: string, id: string, data: any, ws: string) => {
+    if (etat.writesFail) return false
+    const k = `${kind}|${id}|${ws}`
+    if (etat.store.has(k)) return false
+    etat.store.set(k, data)
+    etat.persisted.push({ kind, id, ws, data })
+    return true
+  },
   // ⚠️ Le magasin REFLÈTE réellement ce qui a été écrit : sans cela,
   // l'accumulation des faits d'un geste à l'autre ne serait pas testable.
   listItems: async (kind: string, ws: string) =>
@@ -108,7 +126,7 @@ vi.mock('../lib/supabase/store', () => ({
   listItemsStrict: async (kind: string, ws: string) =>
     (etat.listFails && !kind.startsWith('prospector_entity_resolution')) ? { ok: false } : {
       ok: true,
-      values: [...etat.store.entries()]
+      values: kind === etat.lireVide ? [] : [...etat.store.entries()]
         .filter(([k]) => k.startsWith(`${kind}|`) && k.endsWith(`|${ws}`))
         .map(([, v]) => v),
     },
@@ -187,7 +205,15 @@ async function emettre(h: SignalHit, ws = WS): Promise<string> {
  * « quelque chose a été accepté » là où le serveur n'a fait que mémoriser une
  * proposition. Les assertions « aucun fait produit » portent sur ceci.
  */
-const adjuge = () => etat.persisted.filter((p) => p.kind !== 'proactive_signal_candidate')
+// « Adjugé » = les SORTIES du modèle de décision (evidence/situations/reco).
+// Les registres canoniques (assertions/ancres) sont l'HISTOIRE de
+// l'adjudication, écrite en amont depuis SIGNAL_CANONICAL_GATE_V0_001 — ils ne
+// comptent pas comme résultat d'évaluation.
+const HORS_ADJUGE = new Set([
+  'proactive_signal_candidate', 'proactive_source_assertion',
+  'proactive_canonical_event', 'proactive_canonical_state_snapshot',
+])
+const adjuge = () => etat.persisted.filter((p) => !HORS_ADJUGE.has(p.kind))
 
 /** Appelle la route d'activation du contexte métier. */
 async function appelerContexte(method = 'POST') {
@@ -211,6 +237,7 @@ beforeEach(() => {
   etat.storeDown = false
   etat.storeDownKind = ''
   etat.listFails = false
+  etat.lireVide = ''
   etat.registryDown = false
   etat.leadsDown = false
   // Registre officiel : Acme résolue, site DÉCLARÉ AU REGISTRE.
@@ -297,6 +324,41 @@ describe('SIGNAL-PRODUCT-REACHABILITY-001 — E2E produit', () => {
     expect(['ACCEPTED_WITH_RESULT', 'ACCEPTED_NO_SITUATION']).toContain(r.body.state)
     expect(Array.isArray(r.body.situations)).toBe(true)
     expect(Array.isArray(r.body.recommendations)).toBe(true)
+  })
+
+  it('SIGNAL_CANONICAL_GATE_V0_001 — une evidence externe HÉRITÉE sans histoire canonique est EXCLUE et typée, jamais consommée', async () => {
+    // T0 : promotion complète — le registre canonique est écrit.
+    await appeler({ candidateId: await emettre(leveeBouclee()), canonicalKey: CLE_LEVEE, reviewedSourceUrls: [LEVEE_URL] })
+    // On efface le registre de cette promotion : la ligne d'Evidence RESTE —
+    // c'est exactement l'héritage pré-gate (aucune histoire reconstructible).
+    for (const k of [...etat.store.keys()]) {
+      if (k.startsWith('proactive_source_assertion|') || k.startsWith('proactive_canonical_event|')
+        || k.startsWith('proactive_canonical_state_snapshot|')) etat.store.delete(k)
+    }
+    const r = await appeler({ candidateId: await emettre(posteOuvert()), canonicalKey: CLE_POSTE, reviewedSourceUrls: [POSTE_URL] })
+    expect(r.status).toBe(200)
+    // L'héritée est EXCLUE et TYPÉE dans la réponse — jamais avalée.
+    expect(r.body.canonical.excluded.map((x: any) => x.state)).toContain('CANONICAL_HISTORY_MISSING')
+    // Et elle n'a PAS nourri l'évaluation : une seule famille externe reste —
+    // la Situation multi-familles `sales_scale_up` ne peut PAS naître d'une
+    // evidence non fondée (le CRM peut produire d'autres situations, valides).
+    expect(['ACCEPTED_WITH_RESULT', 'ACCEPTED_NO_SITUATION']).toContain(r.body.state)
+    expect((r.body.situations ?? []).map((x: any) => x.type)).not.toContain('sales_scale_up')
+  })
+
+  it('R1-1 — la promotion de CETTE requête non fondée au gate ⇒ 503, jamais « accepté », rien n’est évalué ni persisté', async () => {
+    // L'écriture du registre est acquittée, mais la relecture des ancres ne
+    // rend plus la ligne (perte de données — distincte d'une panne `ok:false`).
+    // La NOUVELLE evidence ressort donc exclue du gate : la route doit échouer
+    // FERMÉ avant `evaluate`/`persistEvaluation`, pas typer et continuer.
+    etat.lireVide = 'proactive_canonical_event'
+    const r = await appeler({ candidateId: await emettre(leveeBouclee()), canonicalKey: CLE_LEVEE, reviewedSourceUrls: [LEVEE_URL] })
+    expect(r.status).toBe(503)
+    expect(r.body.state).toBe('CANONICAL_HISTORY_INVALID')
+    expect(r.body.reason).toBe('NEW_PROMOTION_NOT_CANONICALLY_GROUNDED')
+    expect(r.body.canonical.excluded.map((x: any) => x.state)).toContain('CANONICAL_HISTORY_MISSING')
+    // Ni « accepté », ni évaluation persistée : aucune evidence/situation/reco.
+    expect(adjuge()).toEqual([])
   })
 
   it('l’horodatage d’adjudication vient du SERVEUR', async () => {
@@ -839,7 +901,10 @@ describe('SIGNAL-PRODUCT-REACHABILITY-001 — R1b·D durabilité avant annonce',
     })
 
     expect(r.status).toBe(503)
-    expect(r.body.state).toBe('PERSISTENCE_FAILED')
+    // SIGNAL_CANONICAL_GATE_V0_001 : la panne d'écriture frappe désormais le
+    // REGISTRE canonique en premier, devenu bloquant — l'échec reste typé,
+    // 503, et la route ne dit toujours JAMAIS « fait accepté ».
+    expect(r.body.state).toBe('CANONICAL_LEDGER_UNAVAILABLE')
     expect(['ACCEPTED_WITH_RESULT', 'ACCEPTED_NO_SITUATION']).not.toContain(r.body.state)
     expect(adjuge()).toEqual([])
   })

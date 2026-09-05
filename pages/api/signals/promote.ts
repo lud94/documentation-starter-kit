@@ -48,6 +48,7 @@ import {
   recordCanonicalAnchors,
 } from '../../../lib/prospector/proactive/canonicalFact'
 import { evaluate, persistEvaluation } from '../../../lib/prospector/proactive/orchestrator'
+import { canonicalSignalGate } from '../../../lib/prospector/proactive/canonicalSignalGate'
 import { accountIdForLead } from '../../../lib/prospector/proactive/dataBridge'
 import { listEvidenceStrict } from '../../../lib/prospector/proactive/persistence'
 import { listLeadsStrict } from '../../../lib/supabase/leads'
@@ -89,6 +90,9 @@ export type PromoteState =
   | 'LEAD_STORE_UNAVAILABLE'
   | 'EVIDENCE_HISTORY_INVALID'
   | 'EVIDENCE_HISTORY_UNAVAILABLE'
+  | 'CANONICAL_LEDGER_UNAVAILABLE'
+  | 'CANONICAL_HISTORY_INVALID'
+  | 'CANONICAL_HISTORY_UNAVAILABLE'
   | 'ACCEPTED_NO_SITUATION'
   | 'ACCEPTED_WITH_RESULT'
 
@@ -124,6 +128,8 @@ export interface PromoteRequest {
 export interface PromoteResponse {
   state: PromoteState
   evidence?: number
+  /** SIGNAL_CANONICAL_GATE_V0_001 — additif : etat du gate canonique. */
+  canonical?: { grounded: number; excluded: { evidenceId: string; state: string; reason: string }[] }
   situations?: { id: string; type: string }[]
   recommendations?: { id: string; decision: string }[]
   reason?: string
@@ -307,7 +313,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // doit JAMAIS invalider une adjudication humaine : l'utilisateur a confirmé
     // un fait, et un journal d'audit indisponible ne rend pas ce fait faux.
     // L'échec est journalisé côté serveur et n'apparaît dans aucune réponse.
-    await journaliserAssertions(pont.promotions, ws)
+    // ── SIGNAL_CANONICAL_GATE_V0_001 : LE REGISTRE D'ABORD, BLOQUANT. ─────
+    // La durabilite canonique doit etre OBSERVABLE avant toute consommation de
+    // Signal — drapeaux eteints ou ecriture en echec => 503 explicite.
+    const registre = await journaliserAssertions(pont.promotions, ws)
+    if (registre.ok === false) {
+      return repondre(res, 503, { state: 'CANONICAL_LEDGER_UNAVAILABLE' })
+    }
 
     // ⚠️ ET UNE HISTOIRE ILLISIBLE ARRÊTE TOUT. Voir `accumulerFaitsExternes`.
     const accumulation = await accumulerFaitsExternes(pont.evidence, accountId, ws)
@@ -318,7 +330,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           : 'EVIDENCE_HISTORY_UNAVAILABLE',
       })
     }
-    const externalEvidence = accumulation.values
+
+    // ── GATE CANONIQUE — pur, lecture seule : une evidence externe ne devient
+    // Signal que si son histoire immuable (assertions + ancres) la soutient.
+    // Les exclusions (heritage non couvert, projection divergente) sont TYPEES
+    // dans la reponse — jamais consommees, jamais avalees en silence.
+    const porte = await canonicalSignalGate(accumulation.values, ws)
+    if (porte.ok === false) {
+      return repondre(res, 503, {
+        state: porte.reason === 'CANONICAL_HISTORY_INVALID'
+          ? 'CANONICAL_HISTORY_INVALID'
+          : 'CANONICAL_HISTORY_UNAVAILABLE',
+      })
+    }
+    // ── R1-1 : LA PROMOTION DE CETTE REQUÊTE DOIT ELLE-MÊME ÊTRE FONDÉE. Le
+    // registre vient d'être écrit de manière bloquante : si l'evidence produite
+    // ICI ressort exclue du gate, l'histoire canonique qu'on vient d'exiger
+    // n'est pas reconstructible — répondre « fait accepté » là-dessus serait un
+    // mensonge d'autorité. Échec fermé AVANT toute évaluation et toute
+    // persistance. Les exclusions HISTORIQUES, elles, restent permises et
+    // typées : un héritage non couvert n'invalide pas l'adjudication du jour.
+    const fondees = new Set(porte.signals.map((s) => s.id))
+    if (pont.evidence.some((e) => !fondees.has(e.id))) {
+      return repondre(res, 503, {
+        state: 'CANONICAL_HISTORY_INVALID',
+        reason: 'NEW_PROMOTION_NOT_CANONICALLY_GROUNDED',
+        canonical: { grounded: porte.signals.length, excluded: porte.excluded },
+      })
+    }
+    const externalEvidence = porte.signals
 
     const evaluation = evaluate({
       leads: [lead.lead],
@@ -350,6 +390,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return repondre(res, 200, {
       state: evaluation.situations.length > 0 ? 'ACCEPTED_WITH_RESULT' : 'ACCEPTED_NO_SITUATION',
       evidence: pont.evidence.length,
+      canonical: { grounded: porte.signals.length, excluded: porte.excluded },
       situations: evaluation.situations.map((s) => ({ id: s.id, type: s.type })),
       recommendations: evaluation.recommendations.map((r) => ({ id: r.id, decision: r.decision })),
     })
@@ -566,7 +607,7 @@ export function urlOfficielleAbsolue(valeur: unknown): string | undefined {
  */
 async function journaliserAssertions(
   promotions: readonly BridgePromotion[], ws: string,
-): Promise<void> {
+): Promise<{ ok: true } | { ok: false; reason: 'LEDGER_DISABLED' | 'LEDGER_WRITE_FAILED' }> {
   const lots: AssertionBuildInput[] = promotions.map((p) => ({
     workspaceId: ws,
     accountId: p.evidence.accountId,
@@ -575,25 +616,28 @@ async function journaliserAssertions(
     qualifyingSources: p.qualifyingSources,
   }))
 
+  // ── SIGNAL_CANONICAL_GATE_V0_001 — LE REGISTRE N'EST PLUS FACULTATIF. ────
+  // ⚠️ CHANGEMENT D'AUTORITÉ ASSUMÉ ET BORNÉ : une promotion EXTERNE stricte
+  // exige désormais que son histoire canonique (assertions + ancres) soit
+  // DURABLEMENT écrite AVANT toute évaluation. Un succès runtime sans registre
+  // laisserait la consommation de Signals reconstruire un état sans preuve.
+  // Drapeaux éteints ou écriture en échec ⇒ l'appelant reçoit un 503 typé
+  // (CANONICAL_LEDGER_UNAVAILABLE) — jamais un « accepté » sans histoire.
+  //
   // ── LE REGISTRE COMMANDE. LES ANCRES EN DÉPENDENT. ──────────────────────
-  // ⚠️ LES DEUX DRAPEAUX NE SONT PLUS INDÉPENDANTS, ET C'ÉTAIT UN DÉFAUT.
-  // `CANONICAL_FACTS` allumé pendant que `SOURCE_ASSERTIONS` était éteint
-  // écrivait des faits canoniques SANS AUCUNE assertion persistée : des ancres
-  // orphelines, affirmant un fait dont l'appui n'était reconstructible nulle
-  // part. Le registre est l'histoire ; l'ancre n'en est qu'une projection.
-  if (!sourceAssertionsEnabled()) return
+  // `CANONICAL_FACTS` allumé pendant que `SOURCE_ASSERTIONS` est éteint
+  // écrirait des ancres orphelines : les deux drapeaux restent couplés.
+  if (!sourceAssertionsEnabled() || !canonicalFactsEnabled()) {
+    return { ok: false, reason: 'LEDGER_DISABLED' }
+  }
 
   const bilan = await recordSourceAssertions(lots, ws)
-  // ⚠️ OBSERVABLE EN INTERNE, MUET VERS L'EXTÉRIEUR. Un état d'écriture
-  // renseignerait un appelant sur la configuration interne, et il n'a rien à
-  // en faire.
-  if (bilan.failed > 0) {
+  if (bilan.failed > 0 || (lots.length > 0 && bilan.durableIds.length === 0)) {
     logSafeError('signals.source_assertion_write', new Error('ledger_write_failed'), {
       operation: 'signals_promote',
     })
+    return { ok: false, reason: 'LEDGER_WRITE_FAILED' }
   }
-
-  if (!canonicalFactsEnabled()) return
 
   // ⚠️ SEULES LES ASSERTIONS CONFIRMÉES EN BASE SOUTIENNENT UNE ANCRE. Un objet
   // construit en mémoire ne prouve rien : si son écriture a échoué, le fait
@@ -604,7 +648,9 @@ async function journaliserAssertions(
     logSafeError('signals.canonical_anchor_write', new Error('anchor_write_failed'), {
       operation: 'signals_promote',
     })
+    return { ok: false, reason: 'LEDGER_WRITE_FAILED' }
   }
+  return { ok: true }
 }
 
 async function accumulerFaitsExternes(
