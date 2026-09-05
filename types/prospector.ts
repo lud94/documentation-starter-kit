@@ -43,6 +43,20 @@ export interface Lead {
   lastName: string
   title: string
   company: string
+  /**
+   * @deprecated LEGACY, NON-AUTORITAIRE. Vaut `0` partout dans le produit
+   * actuel : aucun agent ne le calcule.
+   *
+   * ⚠️ N'EST JAMAIS UNE SOURCE DE FAIT. Ce champ a fabriqué, jusqu'à
+   * PROSPECTOR-DOMAIN-ADAPTERS-001, un dossier commercial entier — montant de
+   * levée, tranche d'effectif, offre d'emploi, attributions « source Pappers /
+   * Unipile / LinkedIn » — à partir de ce seul nombre. Cette branche est
+   * supprimée.
+   *
+   * Conservé pour la compatibilité des données déjà persistées. Ne doit jamais
+   * devenir une `EvidenceEvent`, ni alimenter le Decision Kernel, ni justifier
+   * un énoncé affiché comme un fait.
+   */
   score: number // 0-100
   temperature: Temperature
   status: LeadStatus
@@ -172,17 +186,285 @@ export interface SourcedCompany {
   signals: string[]   // ville, effectif… (signaux structurels)
 }
 
+// ── SIGNAL-ACQUISITION-CONTRACT-001 — SÉMANTIQUE STRUCTURÉE DE L'ACQUISITION ─
+//
+// ⚠️ POURQUOI CES CHAMPS EXISTENT. Un futur adaptateur déterministe doit savoir
+// si l'on observe un ÉVÉNEMENT ou un ÉTAT, si l'événement a eu lieu ou est
+// seulement annoncé, et à quelle date métier — SANS jamais lire la prose de
+// `detail`. Analyser une phrase pour retrouver ces distinctions reviendrait à
+// glisser un jugement de langage au cœur d'un moteur qu'on veut déterministe.
+//
+// L'EXTRACTION a le droit de lire la source : c'est son métier. L'ADAPTATEUR
+// n'a le droit de lire que ces champs clos. La frontière est là, et nulle part
+// ailleurs.
+//
+// `UNKNOWN` est une VALEUR PLEINE, jamais un défaut silencieux : « on ne sait
+// pas » doit se distinguer de « on n'a pas rempli le champ ».
+
+/**
+ * Nature de ce qui est observé.
+ *
+ * `EVENT` — un fait discret survenu à une date (une levée, une nomination).
+ * `STATE` — un état constaté maintenant, de début inconnu (un poste ouvert sur
+ *           une page carrière, une politique de présence). Un `STATE` n'a PAS
+ *           de date de survenue, et ne doit jamais s'en voir inventer une.
+ */
+export type SignalClaimNature = 'EVENT' | 'STATE' | 'UNKNOWN'
+
+/** Un `EVENT` a-t-il eu lieu, ou est-il seulement annoncé pour plus tard ? */
+export type SignalEventStatus = 'COMPLETED' | 'ANNOUNCED_FUTURE' | 'UNKNOWN'
+
+/** Précision réelle de `eventDate`. Jamais élargie, jamais rétrécie. */
+export type SignalDatePrecision = 'DAY' | 'MONTH' | 'UNKNOWN'
+
+export type SignalRoleStatus = 'OPEN' | 'FILLED' | 'UNKNOWN'
+
+/**
+ * Fonction du poste. `EXEC_OTHER` couvre une direction NON commerciale (CEO,
+ * CFO, CTO) : elle existe précisément pour qu'une nomination de dirigeant ne
+ * puisse pas être confondue avec l'arrivée d'un responsable Sales.
+ */
+export type SignalRoleFunction = 'SALES' | 'TECH' | 'OFFICE_PEOPLE' | 'EXEC_OTHER' | 'UNKNOWN'
+
+/**
+ * Provenance de l'EXTRACTION — comment ce résultat a été fabriqué.
+ *
+ * ⚠️ CE N'EST PAS UNE PREUVE. Savoir quel modèle a extrait une information ne
+ * dit rien de sa véracité. Ce bloc sert à rejouer et à auditer une acquisition,
+ * jamais à fonder une confiance.
+ */
+export interface SignalExtraction {
+  /**
+   * `manual-curated` (FACTUAL_REAL_WORLD_MANUAL_001) : fait assemblé À LA MAIN
+   * depuis des sources publiques explicitement identifiées, soumis par le
+   * harnais manuel. C'est une provenance d'EXTRACTION/ASSEMBLAGE, pas une
+   * qualité de preuve : elle n'augmente aucune confiance et ne contourne
+   * aucun validateur, adjudication ni canonicalisation.
+   */
+  /**
+   * `research-compiler` (RESEARCH_ARTIFACT_COMPILER_V0_001) : fait assemblé par
+   * le serveur depuis la sortie JSON stricte d'un compilateur externe appliqué
+   * à un ResearchArtifact importé. Ce n'est PAS `manual-curated` (personne n'a
+   * assemblé le fait à la main) ni `claude-web` (aucune navigation) : mentir
+   * sur la provenance rendrait l'audit impossible.
+   */
+  mode: 'exa+claude' | 'claude-web' | 'manual-curated' | 'research-compiler'
+  promptVersion: string
+  model?: string
+  /**
+   * Lignée durable vers l'origine recherche — RÉSERVÉE au mode
+   * `research-compiler`, où les DEUX champs sont OBLIGATOIRES. Pour tout autre
+   * mode ils doivent être ABSENTS : ce ne sont pas des champs génériques.
+   */
+  researchArtifactId?: string
+  researchCompilationId?: string
+}
+
 // Recherche par SIGNAL : entreprise détectée via une annonce/actu, avec icebreaker.
 export interface SignalHit {
+  /**
+   * Identifiant OPAQUE du candidat émis par le serveur
+   * (SIGNAL-PRODUCT-REACHABILITY-001-R1c).
+   *
+   * ⚠️ RENDU PAR `/api/signals/search`, JAMAIS ACCEPTÉ EN ENTRÉE d'un traitement
+   * porteur de vérité. C'est la SEULE chose que le navigateur renvoie pour
+   * désigner un candidat à l'adjudication : tous les champs structurés ci-dessous
+   * sont alors relus du registre serveur, jamais de la requête.
+   */
+  candidateId?: string
   company: string
-  siren?: string          // réconcilié sur data.gouv (undefined si non trouvé)
+  siren?: string          // rempli SEULEMENT à l'import (vérification data.gouv)
   signalType: 'recrutement' | 'levée' | 'actu' | 'autre'
   detail: string          // "recrute un Head of Sales (cybersécurité)"
   icebreaker: string      // accroche prête à l'emploi
   sourceUrl?: string
+  sourceName?: string     // média/site d'où vient le signal (jugement de fiabilité)
+  /**
+   * @deprecated AMBIGU — « date du signal » : ni le code ni le prompt n'ont
+   * jamais tranché entre date de publication et date de survenue. Conservé pour
+   * l'affichage existant (`pages/sourcing.tsx`) et pour lui seul.
+   *
+   * ⚠️ UN ADAPTATEUR NE DOIT JAMAIS EN FAIRE UN `occurredAt`. Les champs
+   * `eventDate` / `eventDatePrecision` / `sourcePublishedAt` font autorité.
+   */
+  date?: string
+  amount?: string         // montant de la levée si applicable
+  role?: string           // poste ouvert si recrutement
   sector?: string
   city?: string
-  verified: boolean       // true si réconcilié à un SIREN (existe vraiment)
+  verified: boolean       // true seulement après vérification data.gouv (à l'import)
+
+  // ── Contrat sémantique structuré (SIGNAL-ACQUISITION-CONTRACT-001) ────────
+  // Toujours présents et toujours explicites : l'absence d'information est
+  // portée par `UNKNOWN` / `null`, jamais par un champ manquant.
+  claimNature: SignalClaimNature
+  eventStatus: SignalEventStatus
+  /** Date de l'ÉVÉNEMENT MÉTIER — jamais la date de publication. */
+  eventDate: string | null
+  eventDatePrecision: SignalDatePrecision
+  /** Date de PUBLICATION de la source — jamais promue en date de survenue. */
+  sourcePublishedAt: string | null
+  roleStatus: SignalRoleStatus
+  roleFunction: SignalRoleFunction
+  extraction: SignalExtraction
+
+  /**
+   * CONTRAT D'ACQUISITION V2 (SIGNAL_ACQUISITION_CONTRACT_002) — ADDITIF.
+   *
+   * Absent = hit V1 pleinement valide (aucune migration des données
+   * existantes). Présent = doit être ENTIER et valide (`isAcquisitionFactV2`) :
+   * un bloc à moitié rempli ment, l'absence est silencieuse.
+   */
+  v2?: AcquisitionFactV2
+}
+
+// ── CONTRAT D'ACQUISITION V2 (SIGNAL_ACQUISITION_CONTRACT_002) ──────────────
+//
+// Principe fondateur : AUCUNE couche aval ne doit analyser de la prose libre
+// pour établir une identité factuelle. Tout ce qui alimente identité,
+// contradiction, temporalité ou Situation est un champ CLOS et validé ;
+// la prose (`rawDetail`) reste un détail d'audit et d'affichage.
+//
+// Interdit par construction : une « confiance » numérique universelle (la confiance
+// source vit dans la provenance, la validité d'extraction dans le schéma,
+// la confiance de fait sera DÉRIVÉE du registre d'assertions durables).
+
+export type AcquisitionFamilyV2 = 'FUNDING' | 'EXECUTIVE_CHANGE' | 'HIRING_SNAPSHOT'
+
+export type MoneyCurrency = 'EUR' | 'USD' | 'GBP' | 'CHF'
+
+/**
+ * Montant EXACT énoncé par la source. `amountMinor` en centimes.
+ * Jamais fabriqué à partir d'une formulation approximative.
+ */
+export interface MoneyExact {
+  amountMinor: number
+  currency: MoneyCurrency
+  asPublished: string
+}
+
+/**
+ * Montant APPROXIMATIF (« environ 12 M€ »). L'approximation est portée par le
+ * TYPE lui-même — volontairement AUCUNE borne basse/haute : inventer un
+ * intervalle serait fabriquer des nombres que la source n'a pas publiés.
+ */
+export interface MoneyApprox {
+  magnitudeMinor: number
+  currency: MoneyCurrency
+  asPublished: string
+}
+
+export type FundingInvestorRole = 'LEAD' | 'PARTICIPANT' | 'UNKNOWN'
+
+/**
+ * Investisseur DESCRIPTIF. Pas d'identité d'organisation, pas de graphe, pas
+ * de normalisation : `nameRaw` tel que publié. NE PARTICIPE JAMAIS à
+ * l'identité d'un FUNDING_ROUND.
+ */
+export interface FundingInvestor {
+  nameRaw: string
+  role: FundingInvestorRole
+}
+
+export type FundingRoundStage =
+  | 'SEED'
+  | 'SERIES_A'
+  | 'SERIES_B'
+  | 'SERIES_C_PLUS'
+  | 'DEBT'
+  | 'UNKNOWN'
+
+export interface FundingPayloadV2 {
+  family: 'FUNDING'
+  /** Exclusifs : un fait est exact OU approximatif, jamais les deux. */
+  amount?: MoneyExact
+  amountApprox?: MoneyApprox
+  roundStage: FundingRoundStage
+  investors?: FundingInvestor[]
+}
+
+export type PersonVerification = 'VERIFIED_EXTERNAL_REF' | 'NAME_ONLY'
+export type PersonExternalRefKind = 'LINKEDIN_URL' | 'PAPPERS_DIRIGEANT_ID'
+
+/**
+ * Identité de personne MINIMALE — refus explicite du graphe de personnes.
+ *
+ * `NAME_ONLY` est admis dans une identité factuelle V2, mais cette identité
+ * est TOUJOURS scopée au compte (deux « Jean Dupont » dans deux entreprises ne
+ * fusionnent jamais). Pas de fuzzy matching : la fausse scission (« Jean
+ * Dupont » / « Jean P. Dupont » = deux clés) est ACCEPTÉE, car visible et
+ * corrigeable ; la fausse fusion empoisonne en silence.
+ */
+export interface PersonRef {
+  fullNameRaw: string
+  /** DOIT être exactement `normalizePersonName(fullNameRaw)` — recalculée à la validation. */
+  normalizedName: string
+  externalRef?: { kind: PersonExternalRefKind; value: string }
+  verification: PersonVerification
+}
+
+export type ExecutiveChangeDirection = 'APPOINTMENT' | 'DEPARTURE' | 'UNKNOWN'
+export type ExecutiveRoleSeniority = 'C_LEVEL' | 'VP_DIRECTOR' | 'OTHER' | 'UNKNOWN'
+
+export interface ExecutivePayloadV2 {
+  family: 'EXECUTIVE_CHANGE'
+  /** `UNKNOWN` reste représentable (audit) mais BLOQUERA tout ancrage canonique futur. */
+  direction: ExecutiveChangeDirection
+  roleFunction: SignalRoleFunction
+  roleSeniority: ExecutiveRoleSeniority
+  person: PersonRef
+  roleTitleRaw?: string
+}
+
+export type HiringCountMethod = 'SOURCE_DECLARED' | 'ENUMERATED_POSTINGS'
+
+/**
+ * Décompte OBSERVÉ d'ouvertures. Zéro est une valeur PLEINE (une source
+ * déterministe peut confirmer zéro poste ouvert). Jamais estimé depuis la
+ * prose (« recrute massivement » ⇒ champ absent, pas un nombre inventé).
+ * Attribut d'ÉTAT descriptif : n'entre dans AUCUNE identité.
+ */
+export interface HiringCount {
+  value: number
+  method: HiringCountMethod
+  asPublished?: string
+}
+
+export interface HiringPayloadV2 {
+  family: 'HIRING_SNAPSHOT'
+  roleFunction: SignalRoleFunction
+  roleStatus: SignalRoleStatus
+  openingsObserved?: HiringCount
+}
+
+export type AcquisitionPayloadV2 = FundingPayloadV2 | ExecutivePayloadV2 | HiringPayloadV2
+
+/** Prose d'audit et d'affichage UNIQUEMENT — jamais lue par identité/mapping. */
+export interface AcquisitionRawDetail {
+  detail: string
+  icebreaker: string
+  sourceExcerpt?: string
+}
+
+/**
+ * Enveloppe commune V2. Double discriminant (`family` sur l'enveloppe ET sur
+ * le payload) : une incohérence entre les deux est un rejet, pas une devinette.
+ *
+ * Cohérence temporelle imposée par la validation :
+ *   FUNDING / EXECUTIVE_CHANGE → claimNature EVENT
+ *   HIRING_SNAPSHOT            → claimNature STATE (occurredAt null, précision UNKNOWN)
+ */
+export interface AcquisitionFactV2 {
+  contractVersion: 'v2'
+  family: AcquisitionFamilyV2
+  claimNature: SignalClaimNature
+  eventStatus: SignalEventStatus
+  occurredAt: string | null
+  occurredAtPrecision: SignalDatePrecision
+  sourcePublishedAt: string | null
+  rawDetail: AcquisitionRawDetail
+  extraction: SignalExtraction
+  payload: AcquisitionPayloadV2
 }
 
 // Étape 3 : contact résolu (Pappers dirigeants / Unipile LinkedIn personas).

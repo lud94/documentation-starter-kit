@@ -1,10 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { listItems, upsertItem } from '../../../lib/supabase/store'
-import { activeWs } from '../../../lib/auth/ws'
+import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { runStep } from '../../../lib/prospector/missionTools'
 import { MISSION_TOOL_META } from '../../../types/prospector'
 import type { Mission } from '../../../types/prospector'
+import { logSafeError, PUBLIC_ERROR } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -14,8 +15,15 @@ export const config = { maxDuration: 60 }
 // interruption gratuite, et pause avant toute étape sensible/coûteuse.
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
+  // MT-0 — espace client obligatoire avant tout appel LLM. Fail closed.
+  // SEC-0b — l'espace de PERSISTANCE est désormais le même : il venait
+  // d'`activeWs()`, qui repliait sur « admin ». Deux résolveurs pour une même
+  // requête, c'est deux vérités qui peuvent diverger ; il n'y en a plus qu'une.
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
+  const ws = tenant.id
   await hydrateKeystore()
-  const ws = await activeWs(req)
+
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const id = String(body?.id || '')
   const approve = !!body?.approve   // l'utilisateur a validé l'étape en attente
@@ -43,7 +51,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   mission.status = 'running'
   step.status = 'running'
   try {
-    const { result, context } = await runStep(step, mission, ws)
+    const { result, context } = await runStep(tenant, step, mission, ws)
     step.status = 'done'; step.result = result; step.endedAt = Date.now()
     mission.context = context
     mission.log.push({ at: Date.now(), text: `${MISSION_TOOL_META[step.tool].label} → ${result}` })
@@ -51,7 +59,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     mission.status = mission.cursor >= mission.steps.length ? 'done' : 'running'
     if (mission.status === 'done') mission.log.push({ at: Date.now(), text: 'Mission terminée.' })
   } catch (e: any) {
-    step.status = 'failed'; step.result = e?.message || 'Échec'; step.endedAt = Date.now()
+    // SEC-LOG-01 — `step.result` est PERSISTÉ puis réaffiché dans le journal de
+    // mission : c'est une frontière durable, pas un log éphémère.
+    logSafeError('missions.step_error', e, { operation: 'mission_step' })
+    step.status = 'failed'; step.result = PUBLIC_ERROR; step.endedAt = Date.now()
     mission.status = 'failed'
     mission.log.push({ at: Date.now(), text: `Échec : ${step.result}` })
   }

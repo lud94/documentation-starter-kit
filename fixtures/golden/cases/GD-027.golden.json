@@ -1,0 +1,176 @@
+{
+  "goldenSchemaVersion": "proactive-golden-v0.1",
+  "caseId": "GD-027",
+  "evaluationProfile": {
+    "rail": "SEMANTIC",
+    "lensId": "fabel-broker",
+    "lensVersion": "v0.1"
+  },
+  "provenance": {
+    "materializationTicket": "GOLDEN-MATERIALIZE-001",
+    "adjudicationProtocol": "GOLDEN-SOURCE-REVIEW-001-R1",
+    "adjudicatedOn": "2026-08-24"
+  },
+  "rawSource": {
+    "datasetPath": "fixtures/golden/raw/prospector-v3-golden-dataset.v0.1.json",
+    "datasetSchemaVersion": "prospector-v3-golden-dataset/0.1",
+    "datasetVersion": "0.1",
+    "datasetSha256": "131236360e882fc60b4dc077923983f7d6b8a071ce9c3b4e76bd253a5fb6803d",
+    "originalCaseId": "GD-027"
+  },
+  "assumptions": {
+    "now": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf",
+      "precision": "DAY"
+    },
+    "observedAt": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf"
+    },
+    "targetRelevance": {
+      "value": 0.5,
+      "rationale": "FIXED_REPLAY_CONSTANT — jamais un lens fit historique."
+    },
+    "evidenceConfidence": {
+      "value": 1,
+      "rationale": "FIXTURE_SEMANTIC_CERTAINTY — la claim est présente dans la fixture ; ce n’est PAS la confiance de la source."
+    },
+    "syntheticRuntimeProvider": {
+      "value": "synthetic-historical-nonfirstparty",
+      "rationale": "Aucune identité de provider d’ingestion historique pour ces faits issus du web. Volontairement hors FIRST_PARTY_PROVIDERS."
+    }
+  },
+  "adjudication": {
+    "rawEvidence": [
+      {
+        "rawEvidenceId": "GD-027-ev1",
+        "decompositionStatus": "COMPLETE",
+        "claims": [
+          {
+            "claimIndex": 0,
+            "semanticClaim": "Une restructuration touchant le siège parisien a été annoncée le 2025-06-15 ; 140 suppressions de postes PLANIFIÉES ; effet sur l’emploi enregistré à compter du 2025-09-15.",
+            "mappingDecision": "MAPPED",
+            "assertionType": "fact",
+            "temporalNature": "EVENT",
+            "temporalPrecision": "DAY",
+            "occurredAt": "2025-06-15",
+            "evidenceType": "restructuring_announced",
+            "evidenceId": "gd027-ev1",
+            "evidenceScope": "account",
+            "targetAccountId": "gd027-pernod",
+            "runtimeSource": {
+              "provider": "synthetic-historical-nonfirstparty",
+              "url": "https://apps.eurofound.europa.eu/restructuring-events/detail/203158"
+            },
+            "rationale": "PLANIFIÉ, non exécuté : le registre indique des suppressions PLANIFIÉES avec un effet emploi débutant le 2025-09-15. Typer ceci `workforce_contraction` affirmerait une contraction exécutée trois mois avant la date que la source donne.",
+            "sourceReview": [
+              {
+                "reviewClass": "EXTERNAL_REVIEW_EVIDENCE",
+                "sourceUrl": "https://apps.eurofound.europa.eu/restructuring-events/detail/203158",
+                "supportingClaim": "Number of planned job losses = 140; Announcement Date = 2025-06-15; Employment effect start = 2025-09-15"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rawEvidenceId": "GD-027-ev2",
+        "decompositionStatus": "COMPLETE",
+        "claims": [
+          {
+            "claimIndex": 0,
+            "semanticClaim": "Un objectif d’économies a été annoncé DANS le cadre de ce plan de restructuration, le 2025-06-15.",
+            "mappingDecision": "MAPPED",
+            "assertionType": "fact",
+            "temporalNature": "EVENT",
+            "temporalPrecision": "DAY",
+            "occurredAt": "2025-06-15",
+            "evidenceType": "cost_reduction_program",
+            "evidenceId": "gd027-ev2",
+            "evidenceScope": "account",
+            "targetAccountId": "gd027-pernod",
+            "runtimeSource": {
+              "provider": "synthetic-historical-nonfirstparty",
+              "url": "https://apps.eurofound.europa.eu/restructuring-events/detail/203158"
+            },
+            "rationale": "`occurredAt` est la date à laquelle l’objectif d’économies a été ANNONCÉ comme partie du plan de restructuration — PAS la date de réalisation des économies. Un seul acte de parole daté portant deux faits distincts ; ce n’est pas un héritage de source depuis un `eventDate` partagé.",
+            "sourceReview": [
+              {
+                "reviewClass": "EXTERNAL_REVIEW_EVIDENCE",
+                "sourceUrl": "https://apps.eurofound.europa.eu/restructuring-events/detail/203158"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "executability": "EXECUTABLE",
+  "executionContext": {
+    "businessContext": {
+      "contextId": "golden-fabel-semantic",
+      "contextVersion": "v0.1",
+      "role": "business_developer",
+      "scope": {
+        "mode": "workspace"
+      },
+      "authorizedMotions": {},
+      "lensId": "fabel-broker",
+      "lensVersion": "v0.1"
+    },
+    "targets": [
+      {
+        "accountId": "gd027-pernod"
+      }
+    ]
+  },
+  "expected": {
+    "situations": {
+      "space_contraction": {
+        "assertion": "REQUIRED",
+        "rationale": "Oracle humain : l’annonce de 140 suppressions de postes planifiées au siège parisien, combinée à un programme d’économies annoncé dans le même plan, constitue une convergence suffisante pour exiger la situation `space_contraction`. Cela ne transforme pas les suppressions planifiées en contraction d’effectif déjà exécutée."
+      },
+      "space_expansion": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucune attente d’expansion n’a été adjugée."
+      },
+      "flex_remove_window": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucun fait d’occupation ou de flex n’a été revu."
+      }
+    }
+  },
+  "legacyAssessment": {
+    "items": [
+      {
+        "rawRef": "/expected/primaryHypothesis",
+        "scope": "RAIL_S",
+        "status": "SUPPORTED",
+        "rationale": "SPACE_CONTRACTION est soutenu par les faits adjugés."
+      },
+      {
+        "rawRef": "/expected/behavior",
+        "scope": "RAIL_R",
+        "status": "NOT_ADJUDICATED",
+        "rationale": "OUT_OF_LENS est RAIL R."
+      },
+      {
+        "rawRef": "/expected/priority",
+        "scope": "RAIL_R",
+        "status": "NOT_ADJUDICATED",
+        "rationale": "La priorité est RAIL R."
+      },
+      {
+        "rawRef": "/whyThisCaseMatters",
+        "scope": "RAIL_R",
+        "status": "NOT_ADJUDICATED",
+        "rationale": "« Signal strength must not override FIT » porte sur le classement — RAIL S ne peut pas l’évaluer."
+      }
+    ]
+  },
+  "caseStatus": {
+    "state": "SIGNED_SEMANTIC_GOLDEN",
+    "blockers": []
+  }
+}

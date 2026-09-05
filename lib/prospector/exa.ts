@@ -2,6 +2,7 @@
 // https://exa.ai — nécessite EXA_API_KEY. Sans clé : renvoie [] (fallback amont).
 // Rôle : trouver les pages d'annonces/actu fraîches qui portent le signal,
 // et en renvoyer le CONTENU brut que Claude extraira ensuite.
+import { ProviderError } from '../observability/safeError'
 
 import { getKey } from './keystore'
 
@@ -11,32 +12,39 @@ export function exaConfigured(): boolean {
   return !!getKey('EXA_API_KEY')
 }
 
-// Domaines où vivent les signaux (annonces emploi FR + presse startup/levées).
-const SIGNAL_DOMAINS = [
-  'welcometothejungle.com', 'linkedin.com', 'indeed.fr', 'hellowork.com',
-  'maddyness.com', 'frenchweb.fr', 'lesechos.fr', 'usine-digitale.fr', 'eu-startups.com',
-]
-
 // `opts` permet de cibler les sources et la fenêtre de fraîcheur selon le type de
 // signal recherché (presse pour les levées, jobboards pour les recrutements).
-export async function searchExa(thesis: string, numResults = 12, opts?: { domains?: string[]; months?: number }): Promise<ExaDoc[]> {
+export async function searchExa(thesis: string, numResults = 12, opts?: { domains?: string[]; months?: number; timeoutMs?: number }): Promise<ExaDoc[]> {
   const key = getKey('EXA_API_KEY')
   if (!key || !thesis) return []
 
   const days = Math.max(30, Math.min((opts?.months || 3) * 30, 540))
+  // ⚠️ CE `fetch` PARTAIT SANS BORNE (QUICK-SIGNAL-SEARCH-BOUNDED-001). Exa
+  // précède Claude en séquentiel dans `searchSignals` : sa latence s'ajoute
+  // INTÉGRALEMENT au budget d'acquisition, et rien ne l'arrêtait. Sans
+  // `timeoutMs`, le comportement historique est conservé.
   const res = await fetch('https://api.exa.ai/search', {
+    ...(typeof opts?.timeoutMs === 'number' && opts.timeoutMs > 0
+      ? { signal: AbortSignal.timeout(opts.timeoutMs) }
+      : {}),
     method: 'POST',
     headers: { 'x-api-key': key, accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify({
       query: thesis,
       type: 'auto',
       numResults,
-      includeDomains: opts?.domains?.length ? opts.domains : SIGNAL_DOMAINS,
+      // Liste blanche uniquement si l'appelant en demande une : par défaut, recherche
+      // large (le site carrière d'une ESN est une source légitime), la pertinence
+      // étant assurée par les post-filtres. Sans domaines, on exclut LinkedIn.
+      ...(opts?.domains?.length
+        ? { includeDomains: opts.domains }
+        : { excludeDomains: ['linkedin.com'] }),
       startPublishedDate: recentIso(days),
       contents: { text: { maxCharacters: 1200 } },
     }),
   })
-  if (!res.ok) throw new Error(`Exa ${res.status} — ${(await res.text()).slice(0, 150)}`)
+  // SEC-LOG-01 — le corps de réponse ne franchit pas l'erreur.
+  if (!res.ok) throw new ProviderError({ code: 'provider_http', provider: 'exa', operation: 'search', status: res.status })
   const data = await res.json()
   return (data.results || []).map((r: any): ExaDoc => ({
     title: r.title || '',
@@ -56,7 +64,8 @@ export async function searchExaWeb(query: string, numResults = 6): Promise<ExaDo
     headers: { 'x-api-key': key, accept: 'application/json', 'content-type': 'application/json' },
     body: JSON.stringify({ query, type: 'auto', numResults, contents: { text: { maxCharacters: 1000 } } }),
   })
-  if (!res.ok) throw new Error(`Exa ${res.status} — ${(await res.text()).slice(0, 150)}`)
+  // SEC-LOG-01 — le corps de réponse ne franchit pas l'erreur.
+  if (!res.ok) throw new ProviderError({ code: 'provider_http', provider: 'exa', operation: 'search', status: res.status })
   const data = await res.json()
   return (data.results || []).map((r: any): ExaDoc => ({ title: r.title || '', url: r.url || '', text: r.text || '', publishedDate: r.publishedDate }))
 }

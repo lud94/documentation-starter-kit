@@ -1,0 +1,413 @@
+// GOLDEN-SCHEMA-001a — ANCRAGE SUR LES SOURCES RAW IMMUABLES.
+//
+// ── POURQUOI CE MODULE EST SÉPARÉ DE `goldenSchema.ts` ──────────────────────
+// `caseSchema.ts` n'effectue AUCUNE I/O : il valide une valeur déjà
+// désérialisée, et la lecture de fichier appartient à la CLI. Cette doctrine est
+// préservée ici. Un validateur qui ouvrirait `SHA256SUMS` deviendrait
+// dépendant du disque, donc non testable hors contexte, donc tenté de
+// « réparer » ce qu'il ne trouve pas.
+//
+// Les dépendances sont INJECTÉES : le dataset RAW parsé et le manifeste parsé
+// sont des paramètres. Les tests les chargent ; la fonction reste pure.
+//
+// ── CE QUE CET ANCRAGE GARANTIT ─────────────────────────────────────────────
+//   • Le cas Golden désigne un artefact PRÉCIS — chemin ET empreinte.
+//   • Aucune Evidence RAW n'a disparu             (couverture).
+//   • Aucune claim ne cite une Evidence inexistante (existence).
+//   • Aucune référence historique ne pointe dans le vide.
+//
+// Couverture + existence sont la forme MÉCANIQUE de « aucune suppression
+// silencieuse » : rien ne s'évapore, rien ne s'invente.
+
+import { createHash } from 'node:crypto'
+
+export interface RawManifestEntry {
+  path: string
+  sha256: string
+}
+
+/**
+ * L'ARTEFACT réellement fourni : son identité ET son contenu, ensemble.
+ *
+ * ── LE TROU QUE CETTE STRUCTURE FERME ───────────────────────────────────────
+ * Une version antérieure recevait `rawDataset` (l'objet parsé) et `rawManifest`
+ * SÉPARÉMENT, puis vérifiait d'un côté que le couple chemin+empreinte existait
+ * au manifeste, de l'autre que `schemaVersion`/`datasetVersion` correspondaient
+ * à l'objet. Rien ne liait les deux. Un appelant pouvait donc fournir le chemin
+ * et l'empreinte AUTHENTIQUES du fichier de POLITIQUES avec l'objet parsé du
+ * DATASET : chaque vérification passait isolément, et l'ancrage n'ancrait rien.
+ *
+ * Ici, `path`, `sha256` et `parsed` décrivent UN SEUL artefact. L'appelant —
+ * CLI ou test — calcule l'empreinte sur les OCTETS avant de parser, ce qui est
+ * la seule façon honnête de les lier. Le validateur, lui, reste PUR.
+ */
+export interface RawDatasetArtifact {
+  path: string
+  sha256: string
+  /**
+   * Le CONTENU BRUT du fichier, tel qu'il a été lu.
+   *
+   * ⚠️ PAS L'OBJET DÉJÀ PARSÉ, et c'est décisif. Avec `parsed`, rien ne relie
+   * l'empreinte au contenu : un appelant peut présenter le chemin et l'empreinte
+   * AUTHENTIQUES d'un fichier avec l'objet parsé d'un AUTRE, et aucune fonction
+   * pure ne peut le détecter — elle n'a pas les octets. En recevant le texte, le
+   * validateur RECALCULE l'empreinte lui-même : le mensonge devient
+   * inconstructible.
+   *
+   * Le hachage est du CALCUL, pas de l'I/O : la fonction reste pure.
+   */
+  text: string
+}
+
+export interface RawIntegrityError {
+  code: string
+  path: string
+  message: string
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/
+
+export type RawIntegrityValidation =
+  | { ok: true }
+  | { ok: false; errors: RawIntegrityError[] }
+
+/**
+ * Résout un JSON Pointer RFC 6901 contre une valeur.
+ *
+ * ⚠️ RFC 6901, PAS un chemin pointé maison. Un parseur de `a.b.c` inventé pour
+ * l'occasion se casse sur la première clé contenant un point et n'a aucune
+ * sémantique définie pour les index de tableau. Le standard existe ; les
+ * échappements `~1` (`/`) et `~0` (`~`) en font partie, et l'ordre de
+ * dé-échappement est normatif — `~1` d'abord.
+ *
+ * Rend `undefined` lorsque le pointeur ne résout pas. La chaîne vide désigne le
+ * document entier.
+ */
+export function resolveJsonPointer(document: unknown, pointer: string): unknown {
+  if (pointer === '') return document
+  if (typeof pointer !== 'string' || !pointer.startsWith('/')) return undefined
+
+  let courant: any = document
+
+  for (const segmentBrut of pointer.slice(1).split('/')) {
+    const segment = segmentBrut.replace(/~1/g, '/').replace(/~0/g, '~')
+
+    if (courant === null || courant === undefined) return undefined
+
+    if (Array.isArray(courant)) {
+      if (!/^(0|[1-9][0-9]*)$/.test(segment)) return undefined
+      const index = Number(segment)
+      if (index >= courant.length) return undefined
+      courant = courant[index]
+      continue
+    }
+
+    if (typeof courant !== 'object') return undefined
+    if (!Object.prototype.hasOwnProperty.call(courant, segment)) return undefined
+
+    courant = courant[segment]
+  }
+
+  return courant
+}
+
+/**
+ * Vérifie un cas Golden contre l'artefact RAW fourni et son manifeste. PURE.
+ *
+ * @param golden      cas Golden déjà validé structurellement
+ * @param artifact    l'artefact dataset : chemin, empreinte ET contenu parsé
+ * @param rawManifest entrées parsées de `SHA256SUMS`
+ */
+export function validateGoldenCaseAgainstRaw(
+  golden: any,
+  artifact: RawDatasetArtifact,
+  rawManifest: readonly RawManifestEntry[],
+): RawIntegrityValidation {
+  const errors: RawIntegrityError[] = []
+  const add = (code: string, path: string, message: string) =>
+    errors.push({ code, path, message })
+
+  const anchor = golden?.rawSource
+  if (!anchor || typeof anchor !== 'object') {
+    return {
+      ok: false,
+      errors: [
+        { code: 'raw_source_incomplete', path: 'rawSource', message: '`rawSource` absent.' },
+      ],
+    }
+  }
+
+  if (!artifact || typeof artifact !== 'object') {
+    return {
+      ok: false,
+      errors: [
+        {
+          code: 'raw_artifact_missing',
+          path: 'artifact',
+          message: 'Aucun artefact dataset fourni : rien à ancrer.',
+        },
+      ],
+    }
+  }
+
+  // ── FORME DE L'ARTEFACT — FAIL CLOSED, JAMAIS UNE EXCEPTION ─────────────
+  //
+  // ⚠️ `createHash().update(undefined)` LÈVE. Un artefact malformé faisait donc
+  // remonter une exception au lieu d'un refus : l'appelant recevait un plantage
+  // là où le contrat promet une liste d'erreurs, et un `try/catch` distrait plus
+  // haut aurait pu le lire comme « rien à signaler ».
+  const formeInvalide: string[] = []
+  if (typeof artifact.path !== 'string' || !artifact.path.trim()) formeInvalide.push('path')
+  if (typeof artifact.sha256 !== 'string' || !SHA256_HEX.test(artifact.sha256)) {
+    formeInvalide.push('sha256')
+  }
+  if (typeof artifact.text !== 'string') formeInvalide.push('text')
+
+  if (formeInvalide.length > 0) {
+    add(
+      'raw_artifact_invalid',
+      'artifact',
+      `Artefact malformé : ${formeInvalide.join(', ')}. \`path\` doit être une chaîne non vide, ` +
+        '`sha256` 64 caractères hexadécimaux minuscules, `text` une chaîne. Une forme invalide se ' +
+        'REFUSE, elle ne lève pas.',
+    )
+    return { ok: false, errors }
+  }
+
+  // ── L'EMPREINTE EST RECALCULÉE, JAMAIS CRUE SUR PAROLE ──────────────────
+  const empreinteReelle = createHash('sha256').update(artifact.text, 'utf8').digest('hex')
+
+  if (empreinteReelle !== artifact.sha256) {
+    add(
+      'raw_artifact_sha_not_from_content',
+      'artifact.sha256',
+      `L’artefact déclare l’empreinte « ${artifact.sha256} », mais son contenu hache ` +
+        `« ${empreinteReelle} ». Identité et contenu ne décrivent pas le même fichier.`,
+    )
+    return { ok: false, errors }
+  }
+
+  let rawDataset: any
+  try {
+    rawDataset = JSON.parse(artifact.text)
+  } catch {
+    add(
+      'raw_artifact_unparseable',
+      'artifact.text',
+      'Le contenu de l’artefact n’est pas un JSON valide.',
+    )
+    return { ok: false, errors }
+  }
+
+  // ── L'ANCRE DÉSIGNE-T-ELLE L'ARTEFACT RÉELLEMENT FOURNI ? ────────────────
+  //
+  // ⚠️ C'est le lien qui manquait. Sans lui, un appelant pouvait présenter le
+  // chemin et l'empreinte AUTHENTIQUES d'un fichier avec le contenu parsé d'un
+  // AUTRE : chaque contrôle passait isolément.
+  if (anchor.datasetPath !== artifact.path) {
+    add(
+      'raw_artifact_path_mismatch',
+      'rawSource.datasetPath',
+      `Le cas ancre « ${anchor.datasetPath} » mais l’artefact fourni est « ${artifact.path} ». ` +
+        'L’identité et le contenu doivent décrire UN SEUL fichier.',
+    )
+  }
+  if (anchor.datasetSha256 !== artifact.sha256) {
+    add(
+      'raw_artifact_sha_mismatch',
+      'rawSource.datasetSha256',
+      `Le cas ancre l’empreinte « ${anchor.datasetSha256} » mais l’artefact fourni porte ` +
+        `« ${artifact.sha256} ».`,
+    )
+  }
+
+  // ── LE COUPLE chemin+empreinte DE L'ARTEFACT, au manifeste ───────────────
+  //
+  // ⚠️ Le couple, jamais l'empreinte seule : « l'empreinte figure quelque part »
+  // laisserait passer le chemin des POLITIQUES avec l'empreinte du DATASET.
+  const entree = (rawManifest ?? []).find((e) => e && e.path === artifact.path)
+
+  if (!entree) {
+    add(
+      'raw_dataset_path_not_in_manifest',
+      'rawSource.datasetPath',
+      `Le chemin « ${artifact.path} » ne figure pas dans le manifeste des sources RAW.`,
+    )
+  } else if (entree.sha256 !== artifact.sha256) {
+    add(
+      'raw_sha_mismatch',
+      'rawSource.datasetSha256',
+      `Empreinte « ${artifact.sha256} » ≠ « ${entree.sha256} » enregistrée pour ` +
+        `« ${artifact.path} ». L’ancrage ne survit pas à une réécriture de l’archive — c’est ` +
+        'précisément ce qu’il existe pour empêcher.',
+    )
+  }
+
+  // ── Le CONTENU de l'artefact est-il bien celui que le cas prétend ancrer ? ─
+  if (anchor.datasetSchemaVersion !== rawDataset?.schemaVersion) {
+    add(
+      'raw_dataset_schema_version_mismatch',
+      'rawSource.datasetSchemaVersion',
+      `Version de schéma déclarée « ${anchor.datasetSchemaVersion} » ≠ ` +
+        `« ${rawDataset?.schemaVersion} » du dataset. ⚠️ La valeur RAW n’est jamais NORMALISÉE : ` +
+        'un ancrage qui « nettoie » l’identifiant qu’il ancre n’ancre plus rien.',
+    )
+  }
+  if (anchor.datasetVersion !== rawDataset?.datasetVersion) {
+    add(
+      'raw_dataset_version_mismatch',
+      'rawSource.datasetVersion',
+      `Version de dataset déclarée « ${anchor.datasetVersion} » ≠ ` +
+        `« ${rawDataset?.datasetVersion} » du dataset.`,
+    )
+  }
+
+  // ── R1 — L'HORLOGE DE REJEU EST CELLE DU SNAPSHOT, PAS UNE AUTRE ────────
+  //
+  // ⚠️ POURQUOI CE CONTRÔLE VIT ICI. La convention « now = observedAt =
+  // dataset.asOf » n'était affirmée que par une CHAÎNE, `source: "dataset.asOf"`,
+  // que rien ne confrontait à la réalité. Un cas pouvait donc déclarer cette
+  // provenance et rejouer à une autre date — décalant la fraîcheur, donc
+  // l'urgence, donc les verdicts, tout en paraissant conforme.
+  //
+  // Seule cette couche détient le dataset AUTHENTIFIÉ : c'est le seul endroit où
+  // la valeur peut être vérifiée plutôt que crue.
+  //
+  // Le dataset dit lui-même de quoi il parle : « expected Prospector behavior
+  // given evidence available as-of ». Rejouer à une autre date, ce serait juger
+  // le moteur sur un monde que le corpus ne décrit pas.
+  const asOf = rawDataset?.asOf
+
+  for (const champ of ['now', 'observedAt'] as const) {
+    const declare = golden?.assumptions?.[champ]
+
+    if (declare?.source !== 'dataset.asOf') {
+      add(
+        'assumption_clock_source_invalid',
+        `assumptions.${champ}.source`,
+        `\`${champ}.source\` doit valoir « dataset.asOf » : RAIL S rejoue le snapshot du dataset, ` +
+          'jamais une horloge choisie cas par cas.',
+      )
+    }
+
+    if (declare?.value !== asOf) {
+      add(
+        'assumption_clock_not_dataset_as_of',
+        `assumptions.${champ}.value`,
+        `\`${champ}.value\` vaut « ${declare?.value} » alors que le dataset authentifié déclare ` +
+          `\`asOf\` = « ${asOf} ». ⚠️ La provenance annoncée ne se croit pas : une horloge décalée ` +
+          'déplace la fraîcheur, donc l’urgence, donc les verdicts — tout en paraissant conforme.',
+      )
+    }
+  }
+
+  // `asOf` est un instantané au JOUR près dans ce schéma V0.1. Annoncer une
+  // précision plus fine reviendrait à prétendre savoir l'heure du snapshot.
+  if (golden?.assumptions?.now?.precision !== 'DAY') {
+    add(
+      'assumption_clock_precision_invalid',
+      'assumptions.now.precision',
+      `\`now.precision\` doit valoir « DAY » : \`dataset.asOf\` (« ${asOf} ») est un instantané ` +
+        'au jour près, et annoncer une précision plus fine prétendrait connaître l’heure du snapshot.',
+    )
+  }
+
+  // ── Le cas RAW existe-t-il ? ─────────────────────────────────────────────
+  const cases = Array.isArray(rawDataset?.cases) ? rawDataset.cases : []
+  const rawCase = cases.find((c: any) => c?.caseId === anchor.originalCaseId)
+
+  if (!rawCase) {
+    add(
+      'raw_case_id_unknown',
+      'rawSource.originalCaseId',
+      `Aucun cas « ${anchor.originalCaseId} » dans le dataset RAW fourni.`,
+    )
+    return { ok: false, errors }
+  }
+
+  // ── Couverture et existence ──────────────────────────────────────────────
+  const groupes = Array.isArray(golden?.adjudication?.rawEvidence)
+    ? golden.adjudication.rawEvidence
+    : []
+
+  const adjuges = new Map<string, number>()
+  for (const groupe of groupes) {
+    const id = groupe?.rawEvidenceId
+    if (typeof id !== 'string') continue
+    adjuges.set(id, (adjuges.get(id) ?? 0) + 1)
+  }
+
+  const rawEvidence = Array.isArray(rawCase.evidence) ? rawCase.evidence : []
+  const idsRaw = new Set<string>(rawEvidence.map((e: any) => e?.id).filter(Boolean))
+
+  for (const id of idsRaw) {
+    if (!adjuges.has(id)) {
+      add(
+        'raw_evidence_not_covered',
+        'adjudication.rawEvidence',
+        `L’Evidence RAW « ${id} » n’est adjugée nulle part. Une Evidence non adjugée a DISPARU de ` +
+          'la migration sans décision enregistrée — exactement ce que « aucune suppression ' +
+          'silencieuse » interdit.',
+      )
+    }
+  }
+
+  for (const id of adjuges.keys()) {
+    if (!idsRaw.has(id)) {
+      add(
+        'raw_evidence_adjudication_orphan',
+        'adjudication.rawEvidence',
+        `L’adjudication cite « ${id} », qui n’existe pas dans le cas RAW « ` +
+          `${anchor.originalCaseId} ». Un fait INVENTÉ est aussi grave qu’un fait supprimé.`,
+      )
+    }
+  }
+
+  // ── Références historiques ───────────────────────────────────────────────
+  const items = Array.isArray(golden?.legacyAssessment?.items) ? golden.legacyAssessment.items : []
+
+  items.forEach((item: any, i: number) => {
+    const pointeur = item?.rawRef
+    if (typeof pointeur !== 'string') return
+
+    if (resolveJsonPointer(rawCase, pointeur) === undefined) {
+      add(
+        'legacy_raw_ref_unresolvable',
+        `legacyAssessment.items[${i}].rawRef`,
+        `Le JSON Pointer « ${pointeur} » ne résout pas dans le cas RAW « ` +
+          `${anchor.originalCaseId} ». Une référence qui ne résout pas ne réfère à rien : le ` +
+          'libellé historique serait « évalué » sans que personne ne puisse le relire.',
+      )
+    }
+  })
+
+  if (errors.length > 0) return { ok: false, errors }
+  return { ok: true }
+}
+
+/**
+ * Parse un fichier `SHA256SUMS` au format coreutils.
+ *
+ * ⚠️ Les chemins y sont RELATIFS au répertoire du manifeste — c'est la
+ * convention de `sha256sum`. Le préfixe est donc fourni par l'appelant plutôt
+ * que deviné : c'est l'appelant qui sait où le manifeste a été lu.
+ *
+ * Fourni pour les tests et la future CLI. `validateGoldenCaseAgainstRaw` ne
+ * l'appelle jamais : elle reçoit le résultat déjà parsé.
+ */
+export function parseSha256Sums(contenu: string, prefixe = ''): RawManifestEntry[] {
+  const entrees: RawManifestEntry[] = []
+
+  for (const ligne of contenu.split('\n')) {
+    const nettoyee = ligne.trim()
+    if (!nettoyee) continue
+
+    // `<sha256>  <nom>` — deux espaces en mode texte, ` *` en mode binaire.
+    const match = /^([0-9a-f]{64})\s+\*?(.+)$/.exec(nettoyee)
+    if (!match) continue
+
+    entrees.push({ path: `${prefixe}${match[2]}`, sha256: match[1] })
+  }
+
+  return entrees
+}

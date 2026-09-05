@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Aucun secret n'est requis : `next build` fonctionne sans variables Supabase
+# (lib/supabase/client.ts renvoie null quand elles sont absentes) et les tests
+# unitaires n'ouvrent aucune connexion.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 22 est la BASELINE CI. Ce n'est pas un choix de confort :
+        #
+        #   • `@supabase/supabase-js` — dépendance de PRODUCTION — déclare
+        #     `engines.node >= 22.0.0`. Node 20 était donc hors du contrat
+        #     déclaré du dépôt, et non une cible qu'on aurait cessé de soutenir.
+        #
+        #   • `tests/proactive-eval-runner.test.ts` lance le CLI d'évaluation en
+        #     SOUS-PROCESSUS avec `--experimental-strip-types` — seul moyen
+        #     d'observer le vrai processus. Ce drapeau existe depuis Node 22.6 ;
+        #     Node 20 refusait de démarrer (`bad option`), et la suite échouait
+        #     sans que `npm test` mentionne jamais ce drapeau.
+        #
+        # Node 20 n'est donc plus une cible supportée. GitHub le déprécie par
+        # ailleurs de son côté sur les runners.
+        node: ['22']
+    name: verify (node ${{ matrix.node }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Vérification des types
+        run: npm run typecheck
+
+      - name: Garde-fou des écritures Supabase
+        run: npm run check:mutations
+
+      - name: Garde-fou de la passerelle Anthropic
+        run: npm run check:gateway
+
+      - name: Contexte tenant (MT-0)
+        run: npm run check:tenant
+
+      - name: Isolation des espaces clients (SEC-0)
+        run: npm run check:workspace
+
+      - name: Origine de l'extension (SEC-EXT-0.1)
+        run: npm run check:extension
+
+      - name: Tests unitaires
+        run: npm test
+
+      - name: Construction
+        run: npm run build

@@ -1,13 +1,32 @@
 // Recherche par SIGNAL — agent Claude (web search) qui détecte des entreprises
 // émettant un signal (annonce de recrutement, levée, actu) et propose un icebreaker.
-// Chaque entreprise est ensuite RÉCONCILIÉE sur un SIREN réel (data.gouv) pour
-// filtrer les hallucinations. Sans ANTHROPIC_API_KEY : fallback mock.
+// La DÉCOUVERTE ne fait aucun appel data.gouv : on ne garde que les résultats
+// sourcés (URL + date obligatoires) et conformes au ciblage demandé. La
+// vérification SIREN est un geste d'AJOUT → elle a lieu à l'import.
+// Sans ANTHROPIC_API_KEY : aucune donnée (jamais de mock).
 
-import type { SignalHit } from '../../types/prospector'
-import { reconcileByName } from './datagouv'
+import type {
+  SignalClaimNature,
+  SignalDatePrecision,
+  SignalEventStatus,
+  SignalExtraction,
+  SignalHit,
+  SignalRoleFunction,
+  SignalRoleStatus,
+} from '../../types/prospector'
 import { searchExa, exaConfigured, type ExaDoc } from './exa'
 import { getKey } from './keystore'
-import { callClaude as llmCall, cacheKey } from './llm'
+import { withBuild } from '../version'
+import { callClaude as llmCall, cacheKey, pickModel } from './llm'
+import { assembleLiveFactV2 } from './proactive/acquisitionV2'
+import {
+  startAcquisitionBudget,
+  QUICK_SEARCH_BUDGET_MS,
+  QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS,
+  type AcquisitionBudget,
+} from './acquisitionBudget'
+import type { TenantContext } from './tenant'
+import { logSafeError, PUBLIC_ERROR } from '../observability/safeError'
 
 const SIGNAL_AGENT = 'Recherche signal'
 
@@ -27,8 +46,12 @@ export function signalsMode(): 'exa+claude' | 'claude-web' | 'mock' {
 // au lieu d'une thèse en texte libre.
 export interface SignalTypeDef { key: string; label: string; group: 'financement' | 'croissance' | 'direction'; terms: string; domains: string[] }
 
-const PRESS = ['maddyness.com', 'frenchweb.fr', 'lesechos.fr', 'usine-digitale.fr', 'eu-startups.com', 'journaldunet.com', 'lejournaldesentreprises.com', 'bfmtv.com', 'latribune.fr']
-const JOBS = ['welcometothejungle.com', 'indeed.fr', 'hellowork.com', 'apec.fr', 'linkedin.com']
+// Sources de RÉFÉRENCE, utilisées comme simple préférence dans le prompt (et comme
+// filtre côté Exa). Jamais en `allowed_domains` sur la recherche web d'Anthropic :
+// elle refuse (400) tout domaine bloquant son crawler — bfmtv.com et latribune.fr
+// l'ont fait tomber. LinkedIn est exclu (pas de scraping LinkedIn).
+const PRESS = ['maddyness.com', 'frenchweb.fr', 'usine-digitale.fr', 'eu-startups.com', 'journaldunet.com', 'lejournaldesentreprises.com', 'sifted.eu', 'tech.eu']
+const JOBS = ['welcometothejungle.com', 'hellowork.com', 'apec.fr', 'cadremploi.fr', 'indeed.fr']
 
 export const SIGNAL_TYPES: SignalTypeDef[] = [
   { key: 'preseed', label: 'Pré-seed', group: 'financement', terms: 'levée pré-seed, pre-seed round, amorçage', domains: PRESS },
@@ -87,32 +110,235 @@ RÈGLES STRICTES :
 
 Réponds UNIQUEMENT en JSON valide.`
 
+/**
+ * VERSION DU CONTRAT D'ACQUISITION — pas seulement de `jsonInstruction`.
+ *
+ * ⚠️ À INCRÉMENTER DÈS QU'UNE CONSIGNE STATIQUE PEUT CHANGER LA SORTIE
+ * STRUCTURÉE. Cela couvre au moins :
+ *   • le contrat JSON (`jsonInstruction`) ;
+ *   • la sémantique d'extraction (définition des valeurs closes) ;
+ *   • les règles d'acquisition de `SYSTEM` ;
+ *   • la sémantique de ciblage (`focusInstruction`, `RECALL`).
+ *
+ * Elle a DEUX rôles, et le second est celui qu'on oublie :
+ *   1. elle est persistée dans `extraction.promptVersion` — deux résultats
+ *      produits par deux consignes différentes ne sont pas comparables ;
+ *   2. elle entre dans l'IDENTITÉ DE CACHE. Sans elle, une réponse produite par
+ *      l'ancien contrat serait resservie ET ÉTIQUETÉE de la version courante :
+ *      la provenance mentirait, ce qui est pire qu'un cache manqué.
+ *
+ * Les parties DYNAMIQUES de la requête (thèse, ciblage, sources préférées) ne
+ * relèvent PAS de cette constante : elles entrent dans la clé par leur valeur,
+ * via `semantiqueRequete()`.
+ */
+// v3 (LIVE_ACQUISITION_V2_EMISSION_001) : le contrat demande désormais les
+// champs clos du fait V2 (factFamily, roundStage, direction, personne,
+// séniorité, décompte, investisseurs). La version entre déjà dans l'identité
+// de cache via `semantiqueRequete` — aucune sortie v2 en cache ne peut être
+// resservie étiquetée v3.
+export const PROMPT_VERSION = 'signal-acquisition-v3'
+
 function jsonInstruction(max: number) {
-  return `Renvoie un objet JSON: {"hits":[{"company","signalType","detail","icebreaker","sector","city","sourceUrl","date","amount"}]} avec au plus ${max} entrées.
-signalType ∈ ["recrutement","levée","actu","autre"]. "detail" = le fait précis et daté. "amount" = montant de la levée si applicable (sinon "").`
+  return `Renvoie un objet JSON: {"hits":[{"company","signalType","detail","icebreaker","sector","city","sourceUrl","sourceName","date","amount","role","claimNature","eventStatus","eventDate","eventDatePrecision","sourcePublishedAt","roleStatus","roleFunction","factFamily","roundStage","investors","direction","personFullName","roleSeniority","openingsCount","openingsCountMethod"}]} avec au plus ${max} entrées.
+signalType ∈ ["recrutement","levée","actu","autre"].
+"detail" = le fait précis et daté (une phrase). "sourceName" = nom du média/site. "date" = date du signal (AAAA-MM ou AAAA-MM-JJ).
+"amount" = montant de la levée si applicable (sinon ""). "role" = poste ouvert si recrutement (sinon "").
+Chaque entrée DOIT avoir sourceUrl et date. Une entrée sans source vérifiable ne doit PAS être incluse.
+
+SÉMANTIQUE STRUCTURÉE — réponds par les valeurs EXACTES ci-dessous, jamais par une phrase.
+Quand la source ne permet pas de trancher, réponds "UNKNOWN" (ou null pour une date). Ne devine JAMAIS.
+"claimNature" ∈ ["EVENT","STATE","UNKNOWN"] — EVENT = fait survenu à une date (levée bouclée, nomination, ouverture réalisée) ; STATE = état constaté aujourd'hui sans date de début connue (poste actuellement ouvert, politique de présence en vigueur, occupation flex).
+"eventStatus" ∈ ["COMPLETED","ANNOUNCED_FUTURE","UNKNOWN"] — COMPLETED = c'est fait ; ANNOUNCED_FUTURE = seulement annoncé/prévu/envisagé. Ne réponds COMPLETED que si la source l'affirme.
+"eventDate" = date de SURVENUE de l'événement métier, "AAAA-MM-JJ" ou "AAAA-MM", sinon null. Ce n'est PAS la date de publication de l'article.
+"eventDatePrecision" ∈ ["DAY","MONTH","UNKNOWN"] — doit correspondre exactement au format de eventDate.
+"sourcePublishedAt" = date de PUBLICATION de la source, "AAAA-MM-JJ", sinon null.
+"roleStatus" ∈ ["OPEN","FILLED","UNKNOWN"] — OPEN = poste ouvert au recrutement ; FILLED = poste pourvu (nomination).
+"roleFunction" ∈ ["SALES","TECH","OFFICE_PEOPLE","EXEC_OTHER","UNKNOWN"] — SALES = commercial ; TECH = technique ; OFFICE_PEOPLE = office/workplace/people/facilities ; EXEC_OTHER = direction NON commerciale (CEO, CFO, CTO).
+
+FAMILLE FACTUELLE V2 — mêmes règles : valeurs EXACTES, jamais de devinette, champs non applicables à null.
+"factFamily" ∈ ["FUNDING","EXECUTIVE_CHANGE","HIRING_SNAPSHOT","UNSUPPORTED"] — FUNDING = levée de fonds BOUCLÉE ou annoncée ; EXECUTIVE_CHANGE = nomination ou départ d'un dirigeant NOMMÉ ; HIRING_SNAPSHOT = poste(s) actuellement ouvert(s) constatés ; UNSUPPORTED = tout le reste (rachat/M&A, ouverture de bureau, expansion, lancement produit, actu générale). Ne force JAMAIS un signal dans une famille qui ne le décrit pas exactement.
+Si factFamily = "FUNDING" : "amount" = la chaîne de montant TELLE QUE PUBLIÉE par la source (ex "€8.2M", "environ 12 M€"), sinon "". "roundStage" ∈ ["SEED","SERIES_A","SERIES_B","SERIES_C_PLUS","DEBT","UNKNOWN"]. "investors" = [{"nameRaw","role"}] avec role ∈ ["LEAD","PARTICIPANT","UNKNOWN"], nameRaw tel que publié ; [] si la source ne nomme personne.
+Si factFamily = "EXECUTIVE_CHANGE" : "direction" ∈ ["APPOINTMENT","DEPARTURE","UNKNOWN"]. "personFullName" = nom complet TEL QUE PUBLIÉ (jamais déduit) ; sans nom publié, factFamily = "UNSUPPORTED". "roleSeniority" ∈ ["C_LEVEL","VP_DIRECTOR","OTHER","UNKNOWN"]. "role" = l'intitulé du poste tel que publié.
+Si factFamily = "HIRING_SNAPSHOT" : "openingsCount" = nombre EXACT de postes si la source l'ÉNONCE (0 est valide), sinon null — jamais estimé depuis "recrute beaucoup" ou "plusieurs postes". "openingsCountMethod" ∈ ["SOURCE_DECLARED","ENUMERATED_POSTINGS"] si openingsCount est renseigné, sinon null.`
 }
 
-async function callClaude(thesis: string, max: number, q?: SignalQuery): Promise<SignalHit[]> {
+// Le SIGNAL DEMANDÉ doit être respecté : c'est la plainte n°1 (« je demande des
+// recrutements, il me sort des levées »). On l'impose dans le prompt…
+function focusInstruction(q?: SignalQuery): string {
+  const defs = SIGNAL_TYPES.filter((t) => (q?.types || []).includes(t.key))
+  if (!defs.length) return ''
+  const wanted = Array.from(new Set(defs.map((d) => d.group === 'financement' ? (d.key === 'rachat' ? 'actu' : 'levée') : d.group === 'croissance' && d.key.startsWith('recrutement') ? 'recrutement' : 'actu')))
+  return `\n\nCONTRAINTE DE CIBLAGE — l'utilisateur a demandé EXCLUSIVEMENT : ${defs.map((d) => d.label).join(', ')}.
+N'inclus AUCUNE entreprise dont le signal ne correspond pas à cette demande, même si elle est intéressante.
+signalType attendu : ${wanted.join(' ou ')}. Si tu ne trouves pas assez d'entreprises correspondantes, renvoie MOINS d'entrées — ne comble jamais avec autre chose.`
+}
+
+/**
+ * SÉMANTIQUE DYNAMIQUE D'UNE REQUÊTE — source UNIQUE du prompt et de la clé.
+ *
+ * ── LE DÉFAUT QUE CETTE FONCTION FERME ──────────────────────────────────────
+ * L'ancienne clé valait `['signal-web', thesis, max, 'v3']`. Deux failles :
+ *
+ *   1. `'v3'` était un jeton versionné À LA MAIN, indépendant du contrat. Une
+ *      consigne d'extraction pouvait changer sans que personne n'y pense, et
+ *      une réponse de l'ancien contrat était resservie ÉTIQUETÉE de la nouvelle
+ *      version. Un cache manqué coûte un appel ; une provenance fausse corrompt
+ *      la vérité en aval.
+ *
+ *   2. `thesis` NE RÉSUME PAS la requête. `buildThesis()` rend la thèse libre
+ *      telle quelle dès que `q.thesis` est fourni — sans y refléter `q.types`.
+ *      Deux recherches de même thèse libre mais de ciblages OPPOSÉS partageaient
+ *      donc une entrée de cache, alors que `focusInstruction(q)` change le
+ *      prompt et `domainsFor(q)` change les sources préférées.
+ *
+ * ⚠️ AUCUNE SECONDE NORMALISATION. On ne réécrit pas « ce que le ciblage veut
+ * dire » pour le cache : on prend les chaînes EXACTES injectées dans le prompt.
+ * Deux dérivations parallèles finiraient par diverger, et la clé cesserait
+ * silencieusement de décrire la requête.
+ *
+ * Fonction PURE — aucun réseau, aucune horloge, aucune clé d'API.
+ */
+export function semantiqueRequete(
+  thesis: string,
+  max: number,
+  q?: SignalQuery,
+): { focus: string; hint: string; cacheParts: string[] } {
+  const focus = focusInstruction(q)
+  const prefer = q ? domainsFor(q) : []
+  const hint = prefer.length
+    ? `\n\nSources à privilégier quand elles couvrent le sujet (non exclusif — le site officiel ou la page carrière de l'entreprise est une source valable) : ${prefer.join(', ')}.`
+    : ''
+
+  return {
+    focus,
+    hint,
+    cacheParts: [
+      'signal-web',        // espace de nom : ne collisionne pas avec un autre appelant
+      PROMPT_VERSION,      // contrat d'acquisition ayant produit la réponse
+      thesis,              // demande, libre ou construite
+      String(max),         // borne de résultats — elle est DANS le prompt
+      focus,               // ciblage exact injecté
+      hint,                // préférences de sources exactes injectées
+    ],
+  }
+}
+
+// web_fetch (ouvrir un article trouvé) n'existe que sur les modèles récents.
+// L'envoyer à un modèle qui ne le supporte pas ferait échouer toute la requête.
+function supportsWebFetch(model: string): boolean {
+  return /(opus-5|sonnet-5|fable-5|opus-4-[678]|sonnet-4-6)/i.test(model)
+}
+
+// Consigne d'EXHAUSTIVITÉ. Sans elle, l'agent se contente de 1 ou 2 exemples
+// « représentatifs » : c'est son comportement par défaut quand on lui demande de
+// trouver des entreprises. Or la presse spécialisée publie des récapitulatifs
+// mensuels qui en listent des dizaines — il faut lui dire d'aller les ouvrir.
+const RECALL = `MÉTHODE — vise l'EXHAUSTIVITÉ, pas l'illustration :
+1. Cherche d'abord les RÉCAPITULATIFS publiés par la presse spécialisée : « récap levées de fonds [mois] [année] », « les levées de la semaine », « baromètre des levées », « funding roundup France ».
+2. OUVRE ces articles (outil web_fetch) au lieu de te contenter de l'extrait de résultat : le corps de l'article liste souvent 20 à 40 entreprises que l'extrait ne montre pas.
+3. Énumère CHAQUE entreprise citée qui correspond au ciblage, une entrée par entreprise. Ne sélectionne pas « les plus intéressantes ».
+4. Complète ensuite par des recherches ciblées pour les entreprises absentes des récapitulatifs.
+Un résultat de 1 ou 2 entreprises sur une période de plusieurs mois est un ÉCHEC : il en existe beaucoup plus, cherche mieux.`
+
+// …et on le vérifie après coup (le prompt ne suffit pas toujours).
+function keepOnFocus(hits: SignalHit[], q?: SignalQuery): SignalHit[] {
+  const defs = SIGNAL_TYPES.filter((t) => (q?.types || []).includes(t.key))
+  if (!defs.length) return hits
+  const groups = new Set(defs.map((d) => d.group))
+  const wantsFinance = groups.has('financement')
+  const wantsRecrut = defs.some((d) => d.key.startsWith('recrutement'))
+  return hits.filter((h) => {
+    if (h.signalType === 'levée') return wantsFinance
+    if (h.signalType === 'recrutement') return wantsRecrut
+    return true // 'actu'/'autre' : on garde (ouverture, nomination, lancement…)
+  })
+}
+
+// Déduplication par nom normalisé (l'agent renvoie parfois « Acme » et « Acme SAS »).
+function dedupe(hits: SignalHit[]): SignalHit[] {
+  const seen = new Set<string>()
+  const out: SignalHit[] = []
+  for (const h of hits) {
+    const key = h.company.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/\b(sas|sasu|sarl|sa|group|groupe|france|technologies?)\b/g, '').replace(/[^a-z0-9]/g, '')
+    if (!key || seen.has(key)) continue
+    seen.add(key); out.push(h)
+  }
+  return out
+}
+
+async function callClaude(tenant: TenantContext, thesis: string, max: number, q?: SignalQuery, budget?: AcquisitionBudget): Promise<SignalHit[]> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return []
   // Sources ciblées selon le type de signal (presse pour les levées, jobboards
   // pour les recrutements) → moins de bruit, résultats plus fiables.
-  const allowed = q ? domainsFor(q) : []
-  const tool: any = { type: 'web_search_20250305', name: 'web_search', max_uses: 4, user_location: { type: 'approximate', country: 'FR' } }
-  if (allowed.length) tool.allowed_domains = allowed
+  // ── Choix d'architecture (volontaire) ──
+  // On NE met PAS de `allowed_domains` : une liste blanche est un point de
+  // défaillance unique (un seul domaine bloquant le crawler d'Anthropic = 400 sur
+  // TOUTE la requête) et elle amputerait la couverture (une ESN annonce souvent
+  // son recrutement sur son propre site carrière, pas sur un jobboard connu).
+  // Les sources de référence sont données comme PRÉFÉRENCE dans le prompt, et la
+  // pertinence est garantie par focusInstruction() + keepOnFocus() côté serveur.
+  const tools: any[] = [{
+    type: 'web_search_20250305', name: 'web_search', max_uses: 10,
+    user_location: { type: 'approximate', country: 'FR' },
+    blocked_domains: ['linkedin.com'], // pas de scraping LinkedIn (Unipile s'en charge)
+  }]
+  // ⚠️ LEVIER PRINCIPAL DE COUVERTURE : sans web_fetch, l'agent ne lit que les
+  // extraits de résultats de recherche — or un récapitulatif « les levées de juin »
+  // liste 30 entreprises dans le CORPS de l'article, invisible dans l'extrait.
+  // Avec web_fetch il ouvre l'article et les énumère toutes.
+  if (supportsWebFetch(pickModel('research'))) {
+    // ⚠️ `max_content_tokens` EST OBLIGATOIRE, ET C'ÉTAIT LE TROU DE COÛT.
+    // Sans lui, `money.ts` marque l'estimation INCOMPLÈTE — il le documente
+    // depuis C2a-2 : « le volume d'entrée injecté est NON BORNÉ, donc non
+    // estimable ». Six pages web entières réinjectées à chaque tour interne et
+    // facturées au tarif d'entrée du modèle : c'est l'amplificateur de coût le
+    // plus puissant du chemin, et le seul que rien ne bornait.
+    //
+    // La valeur vient d'UNE source unique, partagée avec l'estimateur : les
+    // laisser diverger rendrait l'estimation fausse dans le sens permissif.
+    tools.push({
+      type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 6,
+      max_content_tokens: QUICK_SEARCH_MAX_FETCH_CONTENT_TOKENS,
+      blocked_domains: ['linkedin.com'],
+    })
+  }
+  // UNE SEULE dérivation : le prompt ET la clé de cache lisent les MÊMES
+  // chaînes. Recalculer le ciblage d'un côté seulement rouvrirait exactement la
+  // faille qu'on ferme.
+  const { focus, hint, cacheParts } = semantiqueRequete(thesis, max, q)
   const r = await llmCall({
-    task: 'research', agent: SIGNAL_AGENT, system: SYSTEM,
-    tools: [tool],
-    messages: [{ role: 'user', content: `Thèse: ${thesis}\n\n${jsonInstruction(max)}` }],
-    cache: cacheKey(['signal-web', thesis, String(max)]),
+    tenant, task: 'research', agent: SIGNAL_AGENT, system: SYSTEM, tools,
+    messages: [{ role: 'user', content: `Thèse: ${thesis}${focus}${hint}\n\n${RECALL}\n\n${jsonInstruction(max)}` }],
+    cache: cacheKey(cacheParts),
+    budget,
   })
-  if (r.blocked) return []
-  return parseHits(r.text)
+  // Un budget épuisé est une ERREUR, pas « aucun résultat » : on le dit.
+  if (r.blocked) throw new Error(r.error || 'Appel IA refusé (budget).')
+
+  // ── RÈGLE DE VÉRITÉ : UN TOUR INACHEVÉ NE DONNE AUCUN CANDIDAT ───────────
+  // ⚠️ ON NE PARSE MÊME PAS. Le JSON d'un tour interrompu peut être
+  // syntaxiquement valide et sémantiquement faux — un tableau coupé, une levée
+  // sans sa date, une entreprise sans sa source. `parseHits` en tirerait des
+  // `SignalHit` d'apparence normale, qui deviendraient des candidats serveur,
+  // puis des faits. Une couverture inconnue n'est pas une couverture vide.
+  if (r.incomplete) throw echecInacheve(r.reason)
+
+  const hits = parseHits(r.text, {
+    mode: 'claude-web',
+    promptVersion: PROMPT_VERSION,
+    model: pickModel('research'),
+  })
+  // Réponse tronquée (plafond de tokens atteint) : le JSON est incomplet, donc
+  // parseHits rend peu ou rien. On le signale au lieu d'afficher « 0 résultat ».
+  if (!hits.length && r.truncated) throw new Error('Réponse IA tronquée (limite de tokens). Réduis le nombre de critères ou la période.')
+  return hits
 }
 
 // Claude EXTRACTEUR : à partir des documents Exa, sort les entreprises + signaux
 // + icebreakers. Pas de web tool ici (Exa a déjà cherché) → plus rapide/moins cher.
-async function extractWithClaude(thesis: string, docs: ExaDoc[], max: number): Promise<SignalHit[]> {
+async function extractWithClaude(tenant: TenantContext, thesis: string, docs: ExaDoc[], max: number, q?: SignalQuery, budget?: AcquisitionBudget): Promise<SignalHit[]> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key || docs.length === 0) return []
   // Économie : on borne le corpus (8 docs, 900 car.) — l'entrée est facturée.
@@ -121,20 +347,120 @@ async function extractWithClaude(thesis: string, docs: ExaDoc[], max: number): P
     .join('\n\n')
 
   const r = await llmCall({
-    task: 'research', agent: SIGNAL_AGENT,
+    tenant, task: 'research', agent: SIGNAL_AGENT,
     system: `${SYSTEM}\nOn te fournit des extraits web déjà collectés. N'invente RIEN au-delà de ces extraits. Attribue à chaque entreprise l'URL source d'où vient le signal.`,
-    messages: [{ role: 'user', content: `Thèse: ${thesis}\n\nExtraits web:\n${corpus}\n\n${jsonInstruction(max)}` }],
+    messages: [{ role: 'user', content: `Thèse: ${thesis}${focusInstruction(q)}\n\nExtraits web:\n${corpus}\n\n${jsonInstruction(max)}` }],
+    budget,
   })
-  if (r.blocked) return []
-  return parseHits(r.text)
+  if (r.blocked) throw new Error(r.error || 'Appel IA refusé (budget).')
+  // Même règle que dans `callClaude` : inachevé ⇒ aucun candidat, jamais un parse.
+  if (r.incomplete) throw echecInacheve(r.reason)
+  return parseHits(r.text, {
+    mode: 'exa+claude',
+    promptVersion: PROMPT_VERSION,
+    model: pickModel('research'),
+  })
 }
 
-function parseHits(text: string): SignalHit[] {
+// ── NORMALISATION DU CONTRAT SÉMANTIQUE ─────────────────────────────────────
+//
+// ⚠️ CES FONCTIONS NE LISENT JAMAIS `detail`, `role` NI AUCUNE PROSE. Elles ne
+// font que RECONNAÎTRE une valeur close déjà produite par l'extraction. Une
+// valeur inconnue, absente ou mal formée devient `UNKNOWN` / `null` — jamais une
+// valeur devinée. C'est toute la différence entre normaliser et interpréter :
+// si `parseHits` déduisait « VP Sales » de la phrase, la sémantique serait de
+// nouveau produite par une analyse de langage, à l'endroit exact que ce lot
+// existe pour assainir.
+function valeurClose<T extends string>(valeur: unknown, admises: readonly T[], defaut: T): T {
+  return typeof valeur === 'string' && (admises as readonly string[]).includes(valeur)
+    ? (valeur as T)
+    : defaut
+}
+
+const NATURES: readonly SignalClaimNature[] = ['EVENT', 'STATE', 'UNKNOWN']
+const STATUTS: readonly SignalEventStatus[] = ['COMPLETED', 'ANNOUNCED_FUTURE', 'UNKNOWN']
+const PRECISIONS: readonly SignalDatePrecision[] = ['DAY', 'MONTH', 'UNKNOWN']
+const STATUTS_POSTE: readonly SignalRoleStatus[] = ['OPEN', 'FILLED', 'UNKNOWN']
+const FONCTIONS: readonly SignalRoleFunction[] = [
+  'SALES', 'TECH', 'OFFICE_PEOPLE', 'EXEC_OTHER', 'UNKNOWN',
+]
+
+const FAMILLES_V2: readonly ('FUNDING' | 'EXECUTIVE_CHANGE' | 'HIRING_SNAPSHOT' | 'UNSUPPORTED')[] = [
+  'FUNDING', 'EXECUTIVE_CHANGE', 'HIRING_SNAPSHOT', 'UNSUPPORTED',
+]
+
+const JOUR = /^(\d{4})-(\d{2})-(\d{2})$/
+const MOIS = /^(\d{4})-(\d{2})$/
+
+/**
+ * Le jour existe-t-il RÉELLEMENT au calendrier ?
+ *
+ * ⚠️ `Date.parse` ne suffit pas : il est permissif et NORMALISE. `2026-02-30`
+ * y devient le 2 mars, `2026-13-01` échoue mais `2026-08` réussit en donnant le
+ * 1ᵉʳ août — c'est-à-dire une précision au jour qui n'a jamais été observée. On
+ * compare donc les composantes rendues à celles qui ont été écrites.
+ */
+function jourReel(annee: number, mois: number, jour: number): boolean {
+  if (mois < 1 || mois > 12 || jour < 1 || jour > 31) return false
+  const d = new Date(Date.UTC(annee, mois - 1, jour))
+  return (
+    d.getUTCFullYear() === annee && d.getUTCMonth() === mois - 1 && d.getUTCDate() === jour
+  )
+}
+
+/**
+ * Date de survenue et précision, VALIDÉES ENSEMBLE.
+ *
+ * ⚠️ UNE PRÉCISION ANNONCÉE QUI NE CORRESPOND PAS À LA VALEUR EST UNE
+ * CONTRADICTION, PAS UNE APPROXIMATION. `DAY` sur « 2026-08 » n'est pas
+ * « presque juste » : l'extraction s'est contredite, et choisir laquelle des
+ * deux affirmations croire serait deviner. On refuse les deux.
+ *
+ * Un mois n'est JAMAIS promu en jour. Ni le 1ᵉʳ, ni le dernier, ni aujourd'hui,
+ * ni `observedAt`.
+ */
+function normaliserDateEvenement(
+  valeur: unknown,
+  precision: unknown,
+): { eventDate: string | null; eventDatePrecision: SignalDatePrecision } {
+  const refus = { eventDate: null, eventDatePrecision: 'UNKNOWN' as SignalDatePrecision }
+
+  const p = valeurClose(precision, PRECISIONS, 'UNKNOWN')
+  if (p === 'UNKNOWN') return refus
+  if (typeof valeur !== 'string') return refus
+
+  const brut = valeur.trim()
+
+  if (p === 'DAY') {
+    const m = JOUR.exec(brut)
+    if (!m) return refus
+    if (!jourReel(Number(m[1]), Number(m[2]), Number(m[3]))) return refus
+    return { eventDate: brut, eventDatePrecision: 'DAY' }
+  }
+
+  const m = MOIS.exec(brut)
+  if (!m) return refus
+  const mois = Number(m[2])
+  if (mois < 1 || mois > 12) return refus
+  return { eventDate: brut, eventDatePrecision: 'MONTH' }
+}
+
+/** Date de PUBLICATION : jour exact et réel, ou rien. */
+function normaliserDatePublication(valeur: unknown): string | null {
+  if (typeof valeur !== 'string') return null
+  const brut = valeur.trim()
+  const m = JOUR.exec(brut)
+  if (!m) return null
+  return jourReel(Number(m[1]), Number(m[2]), Number(m[3])) ? brut : null
+}
+
+export function parseHits(text: string, extraction: SignalExtraction): SignalHit[] {
   const match = text.match(/\{[\s\S]*\}/)
   if (!match) return []
   let parsed: any
   try { parsed = JSON.parse(match[0]) } catch { return [] }
-  return (parsed.hits || []).map((h: any): SignalHit => ({
+  return (parsed.hits || []).map((h: any): SignalHit | null => {
+    const hit: SignalHit = {
     company: String(h.company || '').trim(),
     signalType: ['recrutement', 'levée', 'actu'].includes(h.signalType) ? h.signalType : 'autre',
     detail: String(h.detail || ''),
@@ -142,8 +468,84 @@ function parseHits(text: string): SignalHit[] {
     sector: h.sector || undefined,
     city: h.city || undefined,
     sourceUrl: h.sourceUrl || undefined,
+    sourceName: h.sourceName || undefined,
+    // Champ hérité, volontairement inchangé : le réinterpréter ici trancherait
+    // en silence une ambiguïté que personne n'a levée.
+    date: h.date || undefined,
+    amount: h.amount || undefined,
+    role: h.role || undefined,
     verified: false,
-  }))
+    claimNature: valeurClose(h.claimNature, NATURES, 'UNKNOWN'),
+    eventStatus: valeurClose(h.eventStatus, STATUTS, 'UNKNOWN'),
+    ...normaliserDateEvenement(h.eventDate, h.eventDatePrecision),
+    sourcePublishedAt: normaliserDatePublication(h.sourcePublishedAt),
+    roleStatus: valeurClose(h.roleStatus, STATUTS_POSTE, 'UNKNOWN'),
+    roleFunction: valeurClose(h.roleFunction, FONCTIONS, 'UNKNOWN'),
+    // Copie : deux hits ne doivent pas partager le même objet de provenance.
+    extraction: { ...extraction },
+    }
+
+    // ── ÉMISSION V2 (LIVE_ACQUISITION_V2_EMISSION_001 + R1) ────────────────
+    // ⚠️ FAIL CLOSED, ET LA DISTINCTION EST TOUT L'ENJEU (§7 + porte R1) :
+    //   discriminateur ABSENT ou INVALIDE → extraction malformée → hit ÉCARTÉ
+    //     (le contrat v3 EXIGE factFamily ; « manquant » n'est pas « non
+    //     supporté », et le coercer en UNSUPPORTED rouvrirait l'ancien chemin
+    //     de promotion V1) ;
+    //   UNSUPPORTED portant une FORME héritée couverte par V2 → hit ÉCARTÉ
+    //     (une levée ou un recrutement v3 ne contournent pas le contrat V2 en
+    //     se déclarant UNSUPPORTED — champs CLOS uniquement, aucune prose) ;
+    //   UNSUPPORTED réellement hors familles (M&A, bureau, produit, actu…)
+    //     → hit hérité légitime, SANS v2 ;
+    //   famille V2 déclarée mais fait inconstructible → hit ÉCARTÉ.
+    // Jamais de rétrogradation silencieuse vers V1. Les candidats V1 DÉJÀ
+    // persistés ne passent pas par ici : leur compatibilité est intacte.
+    if (!(FAMILLES_V2 as readonly unknown[]).includes(h.factFamily)) return null
+    const famille = h.factFamily as (typeof FAMILLES_V2)[number]
+    if (famille === 'UNSUPPORTED') {
+      // Formes structurellement couvertes par V2 (et, pour les deux mappings
+      // V1 encore vivants, promotables par l'ancien chemin) :
+      if (hit.signalType === 'levée' || hit.signalType === 'recrutement') return null
+      if (hit.claimNature === 'STATE' && hit.roleStatus === 'OPEN' && hit.roleFunction === 'SALES') return null
+      // ── R2 : UNSUPPORTED n'est pas une échappatoire à EXECUTIVE_CHANGE. ──
+      // Si les champs CLOS suffisent déjà à construire un fait exécutif —
+      // ÉVÉNEMENT + direction ÉTABLIE + personne NOMMÉE par la source — la
+      // famille devait être déclarée : rejet. Une direction UNKNOWN ou une
+      // personne absente laissent le hit hérité (rien n'est réparé depuis la
+      // prose ; UNKNOWN reste préférable à l'invention).
+      const directionEtablie = h.direction === 'APPOINTMENT' || h.direction === 'DEPARTURE'
+      const personneNommee = typeof h.personFullName === 'string' && h.personFullName.trim() !== ''
+      if (hit.claimNature === 'EVENT' && directionEtablie && personneNommee) return null
+      return hit
+    }
+
+    const fait = assembleLiveFactV2({
+      factFamily: famille,
+      claimNature: hit.claimNature,
+      eventStatus: hit.eventStatus,
+      eventDate: hit.eventDate,
+      eventDatePrecision: hit.eventDatePrecision,
+      sourcePublishedAt: hit.sourcePublishedAt,
+      detail: hit.detail,
+      icebreaker: hit.icebreaker,
+      extraction: { ...extraction },
+      roundStage: h.roundStage,
+      amountText: h.amount,
+      investors: h.investors,
+      direction: h.direction,
+      personFullName: h.personFullName,
+      roleSeniority: h.roleSeniority,
+      roleTitleRaw: h.role,
+      roleFunction: hit.roleFunction,
+      roleStatus: hit.roleStatus,
+      openingsCount: h.openingsCount,
+      openingsCountMethod: h.openingsCountMethod,
+    })
+    if (fait === null) return null // rejet — jamais un repli V1
+    return { ...hit, v2: fait }
+  })
+  // Rejets V2 d'abord, puis : sans nom d'entreprise ni source vérifiable, un
+  // « signal » n'a aucune valeur.
+  .filter((h: SignalHit | null): h is SignalHit => h !== null && !!h.company && !!h.sourceUrl)
 }
 
 // ⚠️ PLUS DE DONNÉES DE DÉMONSTRATION. Avant, un échec d'appel retombait sur des
@@ -151,37 +553,231 @@ function parseHits(text: string): SignalHit[] {
 // résultats, badge SIREN inclus. C'était le pire des mensonges possibles.
 // Désormais : soit des résultats réels, soit une ERREUR EXPLICITE.
 
+// Découpe la fenêtre demandée en mois calendaires (3 passes au maximum, pour
+// borner le coût). Chaque passe cible un mois nommé — c'est ce qui permet à
+// l'agent de trouver le récapitulatif mensuel correspondant.
+/**
+ * Découpage mensuel — CONSERVÉ POUR L'ACQUISITION EN MISSION.
+ *
+ * ⚠️ PLUS UTILISÉ PAR LA QUICK SEARCH, et c'est délibéré : en une seule requête
+ * HTTP, un balayage multi-passes ne peut être que tronqué en silence quand le
+ * budget s'épuise. Il redeviendra pertinent quand chaque lot sera borné,
+ * persisté et reprenable — c'est-à-dire dans le ticket Mission.
+ */
+export function monthSlices(months: number): string[] {
+  const n = Math.min(Math.max(months, 1), 3)
+  const fmt = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' })
+  const now = new Date()
+  return Array.from({ length: n }, (_, i) => fmt.format(new Date(now.getFullYear(), now.getMonth() - i, 1)))
+}
+
+/**
+ * L'acquisition n'a pas terminé dans son budget.
+ *
+ * ⚠️ CLASSE DISTINCTE, ET LA DISTINCTION EST TOUT L'ENJEU. « je n'ai rien
+ * trouvé » et « je n'ai pas fini de chercher » appellent des gestes opposés :
+ * l'un invite à élargir les critères, l'autre à réessayer. Les confondre ferait
+ * annoncer une absence de signal que personne n'a constatée — `NO DATA != NO
+ * SIGNAL`.
+ */
+export class AcquisitionTimeout extends Error {
+  constructor() {
+    super('acquisition_timeout')
+    this.name = 'AcquisitionTimeout'
+  }
+}
+
+/**
+ * La conversation fournisseur n'a pas convergé dans le nombre de tours permis,
+ * ALORS QUE DU TEMPS RESTAIT.
+ *
+ * ⚠️ CE N'EST PAS UN DÉLAI DÉPASSÉ, et les confondre serait un mensonge de
+ * diagnostic. Quatre reprises `pause_turn` rapides épuisent la boucle en
+ * quelques secondes : dire à l'utilisateur « la recherche n'a pas terminé dans
+ * le délai disponible » l'inviterait à réessayer plus tard un problème que le
+ * temps ne résoudra pas.
+ */
+export class AcquisitionIncomplete extends Error {
+  constructor() {
+    super('acquisition_incomplete')
+    this.name = 'AcquisitionIncomplete'
+  }
+}
+
+/** Traduit un tour inachevé en la classe d'échec qui lui correspond. */
+function echecInacheve(reason?: 'deadline' | 'turn_limit'): Error {
+  return reason === 'turn_limit' ? new AcquisitionIncomplete() : new AcquisitionTimeout()
+}
+
+/**
+ * Plafond de hits demandés par passe Claude, pour la Quick Search UNIQUEMENT.
+ *
+ * ── POURQUOI 10, ET POURQUOI CE N'EST PAS UNE LIMITE PRODUIT ────────────────
+ * La route demandait `max = 25`. À `months = 1`, `monthSlices` rend UNE tranche,
+ * donc `per = max(8, ceil(25/1)) = 25` : le chemin que l'utilisateur emprunte
+ * pour « alléger » sa recherche était en réalité le PLUS LOURD. Demander vingt-
+ * cinq entreprises en une passe pousse l'agent à épuiser ses dix recherches web
+ * et ses six `web_fetch`, ce qui est précisément ce qui déclenche `pause_turn` —
+ * donc les reprises, donc le dépassement.
+ *
+ * 10 est le haut de la fourchette 8–10 : on conserve autant de couverture que le
+ * budget permet d'en obtenir de façon FIABLE, plutôt qu'une couverture
+ * théorique plus large qui expire avant d'être rendue.
+ *
+ * ⚠️ CE PLAFOND NE VAUT QUE POUR LA QUICK SEARCH. Ce n'est ni un maximum de
+ * résultats de Mission, ni une limite de couverture du moteur de signaux : une
+ * acquisition en Mission accumulera 20, 30, 40+ candidats sur plusieurs lots
+ * bornés. Réutiliser cette constante ailleurs transformerait une contrainte
+ * d'exécution en politique produit.
+ */
+export const QUICK_SEARCH_MAX_HITS = 10
+
+/**
+ * Plafond propre au transport Exa.
+ *
+ * Exa précède Claude en séquentiel : sans plafond distinct, un fournisseur lent
+ * consommerait la fenêtre entière et ne laisserait rien au raisonnement — on
+ * aurait des documents, et aucune analyse.
+ */
+export const EXA_TIMEOUT_MS = 10_000
+
+/**
+ * Issue d'une acquisition, du point de vue du PRODUIT.
+ *
+ * ⚠️ TROIS ÉTATS, JAMAIS DEUX. « terminé, rien trouvé » et « pas fini » sont des
+ * faits différents sur le monde : le premier est une observation, le second un
+ * aveu d'ignorance. Les fusionner ferait annoncer une absence de signal que
+ * personne n'a constatée.
+ */
+export type AcquisitionState = 'COMPLETE' | 'TIMEOUT' | 'PROVIDER_ERROR' | 'BUDGET_EXCEEDED'
+
+/**
+ * L'acquisition s'est ARRÊTÉE VOLONTAIREMENT avant de dépasser un plafond.
+ *
+ * ⚠️ DISTINCT DE `TIMEOUT` ET DE `PROVIDER_ERROR`, et la distinction porte du
+ * sens : rien n'a échoué, rien n'a expiré — le système a refusé d'engager une
+ * dépense. C'est un succès du garde-fou, pas une panne, et l'utilisateur doit
+ * pouvoir le distinguer d'une absence de signal.
+ */
+export class AcquisitionBudgetExceeded extends Error {
+  constructor(readonly denial: string) {
+    super('acquisition_budget_exceeded')
+    this.name = 'AcquisitionBudgetExceeded'
+  }
+}
+
 // `q` (critères structurés) est optionnel : sans lui, on garde la thèse libre.
-export async function searchSignals(thesis: string, max = 8, q?: SignalQuery): Promise<{ mode: string; hits: SignalHit[]; thesis: string; error?: string }> {
+export async function searchSignals(
+  tenant: TenantContext,
+  thesis: string,
+  max = 8,
+  q?: SignalQuery,
+  budget?: AcquisitionBudget,
+): Promise<{ mode: string; hits: SignalHit[]; thesis: string; passes?: number; error?: string; state?: AcquisitionState }> {
   const mode = signalsMode()
   if (mode === 'mock') {
-    return { mode, hits: [], thesis, error: 'Aucune clé IA configurée : ajoute ANTHROPIC_API_KEY dans Admin → Connexions pour activer la veille par signal.' }
+    return { mode, hits: [], thesis, state: 'PROVIDER_ERROR', error: 'Aucune clé IA configurée : ajoute ANTHROPIC_API_KEY dans Admin → Connexions pour activer la veille par signal.' }
   }
 
   let hits: SignalHit[] = []
   try {
     if (mode === 'exa+claude') {
-      const docs = await searchExa(thesis, 12, q ? { domains: domainsFor(q), months: q.months } : undefined)
-      hits = docs.length ? await extractWithClaude(thesis, docs, max) : await callClaude(thesis, max, q)
+      // Exa : on garde le filtre de FRAÎCHEUR (le vrai apport : la fenêtre demandée
+      // devient une contrainte réelle, pas un souhait adressé au modèle) mais PAS de
+      // liste blanche de domaines — un signal se trouve aussi sur le site de
+      // l'entreprise. Le tri de pertinence se fait par keepOnFocus() en sortie.
+      //
+      // ⚠️ EXA NE PART PAS SANS BUDGET. Il précède Claude en SÉQUENTIEL : chaque
+      // seconde qu'il consomme est prise sur l'acquisition. Son plafond propre
+      // évite qu'un fournisseur lent mange la fenêtre qui doit servir au
+      // raisonnement — on aurait des documents, et aucune analyse.
+      if (budget && !budget.canAfford()) throw new AcquisitionTimeout()
+      const docs = await searchExa(thesis, 12, {
+        months: q?.months,
+        timeoutMs: budget ? budget.transportTimeoutMs(EXA_TIMEOUT_MS) : undefined,
+      })
+      if (budget && !budget.canAfford()) throw new AcquisitionTimeout()
+
+      hits = docs.length
+        ? await extractWithClaude(tenant, thesis, docs, max, q, budget)
+        : await callClaude(tenant, thesis, max, q, budget)
+
+      // Exa a bien répondu mais rien d'exploitable n'en sort (documents hors sujet) :
+      // on repasse par la recherche web plutôt que de rendre une page vide.
+      //
+      // ⚠️ LE REPLI EST UN TRANSPORT DE PLUS. S'il ne peut pas être payé, la
+      // couverture demandée n'a PAS été entièrement tentée : ce n'est plus un
+      // résultat complet, c'est un délai dépassé.
+      if (!hits.length) {
+        if (budget && !budget.canAfford()) throw new AcquisitionTimeout()
+        hits = await callClaude(tenant, thesis, max, q, budget)
+      }
     } else {
-      hits = await callClaude(thesis, max, q)
+      // ── UNE SEULE ACQUISITION BORNÉE — PAS DE BALAYAGE MENSUEL ────────────
+      // ⚠️ LE BALAYAGE PAR MOIS FABRIQUAIT UNE COUVERTURE PARTIELLE SILENCIEUSE.
+      // Le code rendait `COMPLETE` alors qu'il avait pu SAUTER des tranches
+      // faute de budget : « mois 1 fait, mois 2 et 3 jamais tentés » ressortait
+      // comme une recherche terminée. Pire, mois 1 sans résultat + tranches
+      // sautées donnait `COMPLETE` + `[]` — soit « aucun signal » affirmé sur
+      // une couverture que personne n'a mesurée.
+      //
+      // La Quick Search est donc UNE acquisition logique bornée sur la fenêtre
+      // demandée. La fraîcheur reste portée par la thèse (`buildThesis` écrit
+      // « sur les N derniers mois »), donc rien n'est perdu du ciblage. Soit
+      // cette passe aboutit — et la couverture demandée a bien été tentée
+      // intégralement — soit l'état n'est pas `COMPLETE`. Il n'y a plus de
+      // troisième cas.
+      //
+      // ⚠️ `monthSlices` EST CONSERVÉ, ET DÉLIBÉRÉMENT. Le balayage multi-passes
+      // reste la bonne façon d'obtenir de la COUVERTURE — il appartient à
+      // l'acquisition en Mission, où chaque lot est borné, persisté et
+      // reprenable. Ici, il ne pouvait qu'être tronqué en silence.
+      hits = await callClaude(tenant, thesis, max, q, budget)
     }
   } catch (e: any) {
+    // ── LIMITE DE TOURS : PANNE FOURNISSEUR, PAS DÉLAI DÉPASSÉ ──────────────
+    // ⚠️ Du temps restait : dire « réessaie dans quelques instants » enverrait
+    // attendre un problème que l'attente ne résout pas.
+    // ── ARRÊT VOLONTAIRE AVANT DÉPENSE ─────────────────────────────────────
+    // ⚠️ NI UNE PANNE, NI UN DÉLAI. Le garde-fou a fonctionné : aucune requête
+    // n'a été émise au-delà du plafond. Le confondre avec `PROVIDER_ERROR`
+    // ferait diagnostiquer une indisponibilité fournisseur ; avec `TIMEOUT`,
+    // inviterait à réessayer un problème que l'attente ne résout pas.
+    if (e?.name === 'BudgetExceeded' || e instanceof AcquisitionBudgetExceeded) {
+      logSafeError('signals.search_budget', e, { operation: 'signals_search' })
+      return { mode, hits: [], thesis, passes: 1, state: 'BUDGET_EXCEEDED' }
+    }
+    if (e instanceof AcquisitionIncomplete) {
+      logSafeError('signals.search_incomplete', e, { operation: 'signals_search' })
+      return { mode, hits: [], thesis, passes: 1, state: 'PROVIDER_ERROR', error: withBuild(PUBLIC_ERROR) }
+    }
+    // ── DÉLAI DÉPASSÉ : ÉTAT PROPRE, JAMAIS « AUCUN SIGNAL » ────────────────
+    // ⚠️ La couverture est INCONNUE, pas nulle. Le dire est la seule réponse
+    // honnête, et c'est ce qui interdit à l'écran d'afficher « 0 résultat ».
+    if (e instanceof AcquisitionTimeout || e?.name === 'DeadlineExceeded' || (budget && budget.expired())) {
+      logSafeError('signals.search_timeout', e, { operation: 'signals_search' })
+      return { mode, hits: [], thesis, passes: 1, state: 'TIMEOUT' }
+    }
     // On remonte l'erreur RÉELLE (modèle indisponible, outil web non activé, quota…)
     // au lieu de fabriquer des résultats.
-    return { mode, hits: [], thesis, error: String(e?.message || e).slice(0, 300) }
+    // SEC-LOG-01 — ce champ part TEL QUEL dans la réponse HTTP 200 de
+    // `/api/signals/search`. Le message d'exception n'y a donc pas sa place :
+    // seule la classe de panne est communiquée, le détail va au journal.
+    logSafeError('signals.search_failed', e, { operation: 'signals_search' })
+    return { mode, hits: [], thesis, state: 'PROVIDER_ERROR', error: withBuild(PUBLIC_ERROR) }
   }
 
-  if (!hits.length) return { mode, hits: [], thesis }
+  // Post-traitement LOCAL (gratuit, instantané) : on respecte le ciblage demandé
+  // puis on déduplique. Aucun appel réseau ici.
+  const clean = dedupe(keepOnFocus(hits, q))
 
-  // Réconciliation SIREN — vérifie l'existence réelle, filtre les hallucinations.
-  const reconciled = await Promise.all(
-    hits.map(async (h) => {
-      const r = await reconcileByName(h.company)
-      return r
-        ? { ...h, siren: r.siren, sector: h.sector || r.sector, city: h.city || r.city, verified: true }
-        : { ...h, verified: false }
-    }),
-  )
-  return { mode, hits: reconciled, thesis }
+  // ⚠️ PAS de vérification data.gouv ici. Vérifier 8 entreprises à chaque recherche
+  // ralentissait tout (cause de timeout) et marquait « non vérifiée » des sociétés
+  // réelles dont le nom ne matchait pas exactement. La vérification SIREN est un
+  // geste d'AJOUT, pas de découverte → elle se fait à l'import (voir capabilities).
+  // ⚠️ PLAFOND APPLIQUÉ AU RÉSULTAT AUSSI. `max` borne ce qui est DEMANDÉ ; ce
+  // `slice` borne ce qui est RENDU. Les deux sont nécessaires : un modèle peut
+  // rendre plus d'entrées qu'on ne lui en a demandé, et chaque hit rendu devient
+  // un candidat persisté.
+  return { mode, hits: clean.slice(0, max), thesis, passes: 1, state: 'COMPLETE' }
 }

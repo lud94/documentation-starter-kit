@@ -9,9 +9,12 @@ import { DEFAULT_PERMISSIONS } from '../../../types/prospector'
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   await hydrateKeystore()
   const claims = await readSession(req.cookies[SESSION_COOKIE])
-  const role = claims?.role || 'admin'
+  // ⚠️ `claims?.role || 'admin'` : sans session valide, cette route se
+  // présentait comme l'administrateur. Le middleware la couvre, mais une
+  // identité ne se déduit pas d'une absence.
+  if (!claims) return res.status(401).json({ error: 'unauthorized' })
 
-  if (role === 'client' && claims?.ws) {
+  if (claims.role === 'client' && claims.ws) {
     const ws = await getWorkspaceById(claims.ws)
     return res.status(200).json({
       email: claims.sub, role: 'client',
@@ -20,5 +23,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       status: ws?.status || 'active',
     })
   }
-  res.status(200).json({ email: getEmail() || claims?.sub || null, role: 'admin' })
+  res.status(200).json({ email: getEmail() || claims.sub || null, role: 'admin' })
 }

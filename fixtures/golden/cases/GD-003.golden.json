@@ -1,0 +1,174 @@
+{
+  "goldenSchemaVersion": "proactive-golden-v0.1",
+  "caseId": "GD-003",
+  "evaluationProfile": {
+    "rail": "SEMANTIC",
+    "lensId": "fabel-broker",
+    "lensVersion": "v0.1"
+  },
+  "provenance": {
+    "materializationTicket": "GOLDEN-MATERIALIZE-001",
+    "adjudicationProtocol": "GOLDEN-SOURCE-REVIEW-001-R1",
+    "adjudicatedOn": "2026-08-24"
+  },
+  "rawSource": {
+    "datasetPath": "fixtures/golden/raw/prospector-v3-golden-dataset.v0.1.json",
+    "datasetSchemaVersion": "prospector-v3-golden-dataset/0.1",
+    "datasetVersion": "0.1",
+    "datasetSha256": "131236360e882fc60b4dc077923983f7d6b8a071ce9c3b4e76bd253a5fb6803d",
+    "originalCaseId": "GD-003"
+  },
+  "assumptions": {
+    "now": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf",
+      "precision": "DAY"
+    },
+    "observedAt": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf"
+    },
+    "targetRelevance": {
+      "value": 0.5,
+      "rationale": "FIXED_REPLAY_CONSTANT — jamais un lens fit historique."
+    },
+    "evidenceConfidence": {
+      "value": 1,
+      "rationale": "FIXTURE_SEMANTIC_CERTAINTY — la claim est présente dans la fixture ; ce n’est PAS la confiance de la source."
+    },
+    "syntheticRuntimeProvider": {
+      "value": "synthetic-historical-nonfirstparty",
+      "rationale": "Aucune identité de provider d’ingestion historique pour ces faits issus du web. Volontairement hors FIRST_PARTY_PROVIDERS."
+    }
+  },
+  "adjudication": {
+    "rawEvidence": [
+      {
+        "rawEvidenceId": "GD-003-ev1",
+        "decompositionStatus": "COMPLETE",
+        "claims": [
+          {
+            "claimIndex": 0,
+            "semanticClaim": "Prelude a bouclé une série A de 17,2 M€ (rapportée 20 M$ — un seul et même tour) le 2026-05-20.",
+            "mappingDecision": "MAPPED",
+            "assertionType": "fact",
+            "temporalNature": "EVENT",
+            "temporalPrecision": "DAY",
+            "occurredAt": "2026-05-20",
+            "evidenceType": "recent_funding",
+            "evidenceId": "gd003-ev1",
+            "evidenceScope": "account",
+            "targetAccountId": "gd003-prelude",
+            "runtimeSource": {
+              "provider": "synthetic-historical-nonfirstparty",
+              "url": "https://www.startup.eu/investments/prelude-20-m-series-a-05-2026"
+            },
+            "sourceReview": [
+              {
+                "reviewClass": "INDEPENDENT_CORROBORATION",
+                "notes": "les sources écrivent « €17.2 million ($20 million) » : l’écart de devise est clos, il ne s’agit pas de deux tours"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rawEvidenceId": "GD-003-ev2",
+        "decompositionStatus": "COMPLETE",
+        "claims": [
+          {
+            "claimIndex": 0,
+            "semanticClaim": "Prelude a annoncé, dans le cadre de l’annonce de levée du 2026-05-20, son intention de faire croître son équipe (ingénierie, partenariats télécom, customer success) ; l’équipe compte actuellement environ 50 personnes.",
+            "mappingDecision": "MISSING_TYPE",
+            "assertionType": "fact",
+            "temporalNature": "EVENT",
+            "temporalPrecision": "DAY",
+            "occurredAt": "2026-05-20",
+            "rationale": "L’ANNONCE est un fait observé — assertionType `fact`, jamais « intent ». Aucun EvidenceType ne porte une intention de recrutement annoncée : ni `hiring_volume_surge` (aucun volume d’offres publiées), ni `headcount_acceleration` (« environ 50 personnes » est un NIVEAU, pas un delta). Ce n’est pas NOT_MAPPABLE : c’est un fait métier réel du compte, qui ne correspond à aucune ExclusionClass. Bloqué sur EVIDENCE-INTENT-001.",
+            "sourceReview": [
+              {
+                "reviewClass": "EXTERNAL_REVIEW_EVIDENCE",
+                "sourceUrl": "https://www.eu-startups.com/2026/05/paris-based-prelude-raises-e17-2-million-series-a-to-scale-its-onboarding-and-trust-infrastructure-platform/",
+                "supportingClaim": "plans to use the new funding to … grow its team, which currently consists of around 50 employees"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "executability": "ADJUDICATED_NON_EXECUTABLE",
+  "executionContext": {
+    "businessContext": {
+      "contextId": "golden-fabel-semantic",
+      "contextVersion": "v0.1",
+      "role": "business_developer",
+      "scope": {
+        "mode": "workspace"
+      },
+      "authorizedMotions": {},
+      "lensId": "fabel-broker",
+      "lensVersion": "v0.1"
+    },
+    "targets": [
+      {
+        "accountId": "gd003-prelude"
+      }
+    ]
+  },
+  "expected": {
+    "situations": {
+      "space_expansion": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée, oracle humain ratifié (GOLDEN-SCHEMA-001-R2 §17) : l’attente historique d’expansion n’est PAS soutenue, mais une intention de recrutement annoncée est un indice FAIBLE EN FAVEUR d’une expansion, non contre elle. UNSPECIFIED, jamais FORBIDDEN."
+      },
+      "space_contraction": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucun fait de contraction n’a été revu."
+      },
+      "flex_remove_window": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucun fait d’occupation ou de flex n’a été revu."
+      }
+    }
+  },
+  "legacyAssessment": {
+    "items": [
+      {
+        "rawRef": "/expected/primaryHypothesis",
+        "scope": "RAIL_S",
+        "status": "NOT_SUPPORTED",
+        "rationale": "Seule F1_CAPITAL est présente ; le second signal est une intention annoncée sans EvidenceType. NOT_SUPPORTED enregistre l’ABSENCE DE SOUTIEN — cela n’affirme PAS l’inverse."
+      },
+      {
+        "rawRef": "/whyThisCaseMatters",
+        "scope": "RAIL_S",
+        "status": "NOT_SUPPORTED",
+        "rationale": "« Two convergent growth families » est réfuté : une seule famille est présente, et c’est celle qui est exclue du gate dynamique."
+      },
+      {
+        "rawRef": "/expected/behavior",
+        "scope": "RAIL_R",
+        "status": "NOT_ADJUDICATED",
+        "rationale": "ACTIVE_CANDIDATE est un verdict de comportement — RAIL R."
+      },
+      {
+        "rawRef": "/notes",
+        "scope": "RAIL_R",
+        "status": "NOT_ADJUDICATED",
+        "rationale": "« Exact Fabel employee-size fit still to verify » est une question de lens fit."
+      }
+    ]
+  },
+  "caseStatus": {
+    "state": "BLOCKED",
+    "blockers": [
+      {
+        "kind": "EVIDENCE_TYPE_GAP",
+        "rawEvidenceId": "GD-003-ev2",
+        "claimIndex": 0,
+        "note": "Intention de recrutement annoncée : aucun EvidenceType prospectif."
+      }
+    ]
+  }
+}

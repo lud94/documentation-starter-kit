@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs'
 import type { Workspace, WorkspacePermissions } from '../../types/prospector'
 import { DEFAULT_PERMISSIONS } from '../../types/prospector'
 import { supabase, supabaseConfigured } from './client'
+import { writeAllowed } from '../env'
 
 const TABLE = 'prospector_workspaces'
 const g = globalThis as any
@@ -31,6 +32,7 @@ const memHash: Record<string, string> = g2.__wsClientHash || (g2.__wsClientHash 
 
 // Définit/réinitialise le mot de passe d'accès du client au workspace.
 export async function setClientPassword(id: string, pw: string): Promise<boolean> {
+  if (!writeAllowed('prospector_workspaces')) return false
   const hash = bcrypt.hashSync(pw, 10)
   const sb = supabase()
   if (!sb) { memHash[id] = hash; return true }
@@ -72,6 +74,7 @@ export async function listWorkspaces(): Promise<Workspace[]> {
 }
 
 export async function createWorkspace(name: string, plan: string): Promise<Workspace> {
+  if (!writeAllowed('prospector_workspaces')) throw new Error('Écriture bloquée : incohérence de configuration d\'environnement.')
   const base: Workspace = { id: '', name: name.trim() || 'Nouveau client', leads: 0, users: 1, plan, status: 'active', permissions: { ...DEFAULT_PERMISSIONS } }
   const sb = supabase()
   if (!sb) {
@@ -85,6 +88,7 @@ export async function createWorkspace(name: string, plan: string): Promise<Works
 }
 
 export async function updateWorkspace(id: string, patch: { name?: string; plan?: string; clientEmail?: string; status?: string; permissions?: WorkspacePermissions }): Promise<Workspace | null> {
+  if (!writeAllowed('prospector_workspaces')) return null
   const sb = supabase()
   const dbPatch: any = {}
   if (patch.name !== undefined) dbPatch.name = patch.name
@@ -106,6 +110,7 @@ export async function updateWorkspace(id: string, patch: { name?: string; plan?:
 }
 
 export async function deleteWorkspace(id: string): Promise<boolean> {
+  if (!writeAllowed('prospector_workspaces')) return false
   const sb = supabase()
   if (!sb) { const i = mem.findIndex((w) => w.id === id); if (i >= 0) mem.splice(i, 1); return true }
   const { error } = await sb.from(TABLE).delete().eq('id', id)

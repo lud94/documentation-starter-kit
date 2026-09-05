@@ -1,7 +1,36 @@
 # Handoff — Session LeadFlow / Prospector
 
+> **État des branches — constat daté du 31 juillet 2026 (audit du dépôt).**
+> Ce bloc est une **photographie**, pas une vérité permanente : il se périme à chaque
+> commit. Ne pas s'y fier sans avoir rejoué les commandes ci-dessous.
+>
+> Au moment de l'audit : `main` et `origin/main` étaient sur `e2ea22a`, la branche de
+> travail `claude/elegant-gates-jen674` sur `44d650e`, soit **8 commits d'avance et
+> 0 de retard**. Aucune pull request n'avait jamais été ouverte, donc **aucune fusion
+> n'avait eu lieu** — contrairement à ce qu'affirmait la version précédente de ce
+> document, dont l'erreur a induit un mauvais diagnostic pendant plusieurs échanges.
+>
+> **Vérifier l'état courant :**
+> ```sh
+> git fetch origin
+> git rev-parse origin/main claude/elegant-gates-jen674
+> git rev-list --left-right --count origin/main...claude/elegant-gates-jen674
+> git log --oneline origin/main..claude/elegant-gates-jen674
+> git merge-base --is-ancestor origin/main claude/elegant-gates-jen674 \
+>   && echo "fast-forward possible" || echo "divergence"
+> ```
+> Un compte `0  0` signifie que la branche est fusionnée et à jour.
+
 > Rédigé pour reprise dans une nouvelle session Claude (accès Google Drive requis).
 > Contexte : Ludwig, CEO Smart.AI.
+
+> **État des lots de stabilisation : `docs/BACKLOG_STABILISATION.md`.** C'est ce
+> document-là qui fait foi sur ce qui est livré, ce qui bloque quoi et ce qui
+> attend une action extérieure. Trois points saillants au 1er août 2026 :
+> le lot **C1** (garde-fou budget fail-safe) est implémenté et le P0 budget est
+> **fortement mitigé mais non fermé** ; **C2** (réservation atomique, après A3b)
+> est **bloquant** avant tout niveau de sécurité financière définitif ; le suivi
+> d'usage **par `workspace_id`** est requis avant tout budget client individualisé.
 
 ---
 
@@ -104,6 +133,6 @@ Principe : filtrer par signal avant de dépenser sur l'enrichissement coûteux (
 
 ## 5. Notes pratiques / gotchas rencontrés en session
 
-- **Déploiement Vercel** : bien vérifier que la branche de production pointe vers `main` (le repo a aussi une branche `claude/elegant-gates-jen674` utilisée pendant le dev, mergée dans `main`).
+- **Déploiement Vercel** : bien vérifier que la branche de production pointe vers `main`. Le dépôt a aussi une branche de travail `claude/elegant-gates-jen674` — voir l'encart d'état en tête de ce document pour savoir si elle a été fusionnée.
 - **Build TypeScript** : `Set` ne peut pas être itéré directement avec `[...set]` sous la target TS par défaut de Next — utiliser `Array.from(set)` à la place (rencontré dans `store/leads.ts`).
 - **Webhooks n8n** : contiennent un token Apify en clair dans l'URL du nœud HTTP Request du workflow original (`apify_api_...`) — à rotation recommandée si le JSON du workflow est partagé ou committé quelque part.

@@ -1,0 +1,77 @@
+{
+  "_comment": [
+    "FIXTURE TECHNIQUE — NOT GROUND TRUTH.",
+    "Elle ne dit PAS ce qu'un courtier devrait faire. Elle prouve seulement qu'une",
+    "chaine Evidence -> real-estate-fabel -> Situation -> Recommendation s'execute",
+    "hors ligne et de facon deterministe. Le Golden Dataset viendra de",
+    "GOLDEN-MIGRATE-001 et vivra ailleurs. Ne mesurer AUCUNE qualite de moteur ici."
+  ],
+  "schemaVersion": "proactive-eval-v0.1",
+  "now": "2026-08-23T00:00:00.000Z",
+  "businessContext": {
+    "contextId": "fabel-technical",
+    "contextVersion": "v0.1",
+    "role": "broker",
+    "scope": {
+      "mode": "workspace"
+    },
+    "authorizedMotions": {
+      "prepare_outreach": "allowed",
+      "contact_prospect": "allowed",
+      "enrich_data": "allowed",
+      "schedule_reminder": "allowed"
+    },
+    "lensId": "fabel-broker",
+    "lensVersion": "v0.1"
+  },
+  "targets": [
+    {
+      "accountId": "acc_fabel_1",
+      "relevance": 0.8
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev_fund",
+      "accountId": "acc_fabel_1",
+      "type": "recent_funding",
+      "scope": "account",
+      "assertionType": "fact",
+      "confidence": 0.9,
+      "source": {
+        "provider": "fabel-crm"
+      },
+      "temporality": "dated_event",
+      "occurredAt": "2026-05-01T00:00:00.000Z",
+      "observedAt": "2026-05-01T00:00:00.000Z"
+    },
+    {
+      "id": "ev_site",
+      "accountId": "acc_fabel_1",
+      "type": "site_expansion",
+      "scope": "account",
+      "assertionType": "fact",
+      "confidence": 0.85,
+      "source": {
+        "provider": "fabel-crm"
+      },
+      "temporality": "dated_event",
+      "occurredAt": "2026-06-15T00:00:00.000Z",
+      "observedAt": "2026-06-15T00:00:00.000Z"
+    },
+    {
+      "id": "ev_cut",
+      "accountId": "acc_fabel_1",
+      "type": "workforce_contraction",
+      "scope": "account",
+      "assertionType": "fact",
+      "confidence": 0.9,
+      "source": {
+        "provider": "fabel-crm"
+      },
+      "temporality": "dated_event",
+      "occurredAt": "2026-07-20T00:00:00.000Z",
+      "observedAt": "2026-07-20T00:00:00.000Z"
+    }
+  ]
+}

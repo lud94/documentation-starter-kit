@@ -1,0 +1,544 @@
+// ENTITY_OFFICIAL_DOMAIN_GROUNDING_001 — domaine première-partie ADJUGÉ.
+//
+// ⚠️ HORS LIGNE : magasin réel (repli mémoire), capture INJECTÉE, horloges
+// injectées. La primitive réseau est testée dans legal-proof-ssrf.test.ts ;
+// ici on la double au niveau du module et des routes.
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const etatCapture = vi.hoisted(() => ({
+  resultat: null as any,
+  appels: [] as Array<{ domainHost: string; proofUrl: string }>,
+}))
+
+vi.mock('../lib/prospector/tenant', async (orig) => ({
+  ...(await orig<typeof import('../lib/prospector/tenant')>()),
+  resolveActorFromRequest: async () => etatSession.session,
+}))
+vi.mock('../lib/prospector/datagouv', async (orig) => ({
+  ...(await orig<typeof import('../lib/prospector/datagouv')>()),
+  lookupByName: async (name: string) => {
+    if (etatSession.registreMuet) throw new Error('registry unavailable')
+    return etatSession.registre[String(name).trim()] ?? { found: false, resolution: 'not_found' }
+  },
+  lookupBySiren: async () => ({ found: false, resolution: 'not_found' }),
+}))
+vi.mock('../lib/prospector/proactive/legalProofFetch', async (orig) => {
+  const reel = await orig<typeof import('../lib/prospector/proactive/legalProofFetch')>()
+  return {
+    ...reel,
+    captureLegalProof: async (domainHost: string, proofUrl: string) => {
+      etatCapture.appels.push({ domainHost, proofUrl })
+      return etatCapture.resultat ?? { ok: false, reason: 'FETCH_FAILED' }
+    },
+  }
+})
+
+const etatSession = vi.hoisted(() => ({
+  session: null as any,
+  registre: {} as Record<string, any>,
+  registreMuet: false,
+}))
+
+import {
+  buildProofAnchor, DOMAIN_ADJUDICATION_KIND, DOMAIN_PROOF_OBSERVATION_KIND, extractProofText,
+  domainAdjudicationId, domainProofObservationId, eligibleAdjudicatedDomain,
+  extractSirens, isDomainProofObservation, readDomainProofObservation,
+  observationRecordHash, recordDomainAdjudication, recordDomainProofObservation,
+} from '../lib/prospector/proactive/domainBinding'
+import { sourceEvidenceFromHit } from '../lib/prospector/proactive/signalBridge'
+import proofHandler from '../pages/api/internal/domain-proof'
+import adjHandler from '../pages/api/internal/domain-adjudication'
+import { registerCandidates } from '../lib/prospector/proactive/signalCandidates'
+import type { SignalHit } from '../types/prospector'
+
+const g: any = globalThis as any
+beforeEach(() => {
+  if (g.__prospectorStore) g.__prospectorStore.clear()
+  etatCapture.resultat = null
+  etatCapture.appels = []
+  etatSession.session = { tenant: { id: WS, kind: 'user' }, actorId: 'user_adjudicateur' }
+  etatSession.registre = {}
+  etatSession.registreMuet = false
+})
+
+const WS = 'ws_domain_a'
+const AUTRE_WS = 'ws_domain_b'
+const SIREN = '989284955'
+const HOTE = 'gradium.ai'
+const PAGE = `Mentions légales — GRADIUM SAS, SIREN 989 284 955, 10 rue de Paris. Hébergeur : OVH SAS, SIREN 424761419.`
+const T0 = () => new Date('2026-09-01T10:00:00.000Z')
+const T1 = () => new Date('2026-09-01T11:00:00.000Z')
+
+const obsInput = (extra: Record<string, unknown> = {}) => ({
+  siren: SIREN, domainHost: HOTE,
+  proofUrl: `https://${HOTE}/mentions-legales`,
+  finalUrl: `https://${HOTE}/mentions-legales`,
+  body: PAGE, registryLegalName: 'GRADIUM',
+  ...extra,
+})
+
+async function observation(extra: Record<string, unknown> = {}, now = T0) {
+  const r = await recordDomainProofObservation(obsInput(extra) as any, WS, now)
+  if (r.ok === false) throw new Error(r.reason)
+  return r.observation
+}
+
+describe('observation de preuve (append-only)', () => {
+  it('SIREN compact, espacé, pointé : détectés ; mauvais SIREN absent ; multiples CONSERVÉS triés', () => {
+    expect(extractSirens('SIREN 989284955')).toEqual(['989284955'])
+    expect(extractSirens('SIREN 989 284 955 et RCS 424.761.419')).toEqual(['424761419', '989284955'])
+    expect(extractSirens('numéro 12345678901234 long')).toEqual([]) // jamais découpé dans une suite plus longue
+    const o = extractSirens(PAGE)
+    expect(o).toEqual(['424761419', '989284955'])
+  })
+
+  it('observation nominale : dérivée SERVEUR, ancre littérale bornée contenant le SIREN cible', async () => {
+    const o = await observation()
+    expect(o.id).toMatch(/^dpo_[0-9a-f]{32}$/)
+    expect(o.targetSirenFound).toBe(true)
+    expect(o.sirensFound).toEqual(['424761419', '989284955'])
+    expect(o.proofAnchor).toContain('989 284 955')
+    expect(o.proofAnchor.length).toBeLessThanOrEqual(400)
+    expect(o.legalNameObserved).toBe(true)
+    expect(o.proofObservedAt).toBe('2026-09-01T10:00:00.000Z') // horloge serveur injectée
+    expect(buildProofAnchor(PAGE, SIREN)).toBe(o.proofAnchor) // déterministe
+  })
+
+  it('même corps, instants DIFFÉRENTS : DEUX observations historiques distinctes', async () => {
+    const a = await observation({}, T0)
+    const b = await observation({}, T1)
+    expect(a.id).not.toBe(b.id)
+    expect(a.proofContentHash).toBe(b.proofContentHash)
+    const lignes = [...g.__prospectorStore.keys()].filter((k: string) => k.startsWith(`${DOMAIN_PROOF_OBSERVATION_KIND}|`))
+    expect(lignes.length).toBe(2)
+  })
+
+  it('corps différent : observation distincte ; SIREN cible absent ⇒ targetSirenFound=false, persistée quand même', async () => {
+    const a = await observation({}, T0)
+    const b = await observation({ body: 'Mentions légales — OVH SAS, SIREN 424 761 419 uniquement.' }, T1)
+    expect(b.id).not.toBe(a.id)
+    expect(b.targetSirenFound).toBe(false)
+    expect(b.sirensFound).toEqual(['424761419'])
+    expect(b.proofAnchor).toBe('') // cible absente ⇒ AUCUN repli sur un autre motif
+  })
+
+  it('relecture stricte ; altération (recordHash, drapeau cible, ancre) ⇒ TAMPERED ; autre espace ⇒ inconnu ; clé inconnue rejetée', async () => {
+    const o = await observation()
+    const cle = `${DOMAIN_PROOF_OBSERVATION_KIND}|${WS}|${o.id}`
+    const relu = await readDomainProofObservation(o.id, WS)
+    expect(relu.ok).toBe(true)
+    expect((await readDomainProofObservation(o.id, AUTRE_WS)).ok).toBe(false)
+    const original = JSON.parse(JSON.stringify(g.__prospectorStore.get(cle)))
+    for (const mutation of [
+      (r: any) => { r.recordHash = 'e'.repeat(64) },
+      (r: any) => { r.targetSirenFound = false }, // drapeau incohérent avec la liste
+      (r: any) => { r.sirensFound = ['424761419'] }, // liste réduite au commode
+      (r: any) => { r.proofAnchor = 'ancre substituée sans le SIREN' },
+      (r: any) => { r.score = 0.9 }, // clé hors contrat
+    ]) {
+      const row = JSON.parse(JSON.stringify(original)); mutation(row)
+      g.__prospectorStore.set(cle, row)
+      expect(await readDomainProofObservation(o.id, WS)).toEqual({ ok: false, reason: 'OBSERVATION_TAMPERED' })
+    }
+    g.__prospectorStore.set(cle, original)
+  })
+
+  it('hôte final hors du domaine lié, ou URLs non-https : REJET d’entrée', async () => {
+    expect((await recordDomainProofObservation(obsInput({ finalUrl: 'https://autre.fr/x' }) as any, WS, T0)))
+      .toEqual({ ok: false, reason: 'INVALID_INPUT' })
+    expect((await recordDomainProofObservation(obsInput({ proofUrl: 'http://gradium.ai/x' }) as any, WS, T0)))
+      .toEqual({ ok: false, reason: 'INVALID_INPUT' })
+  })
+})
+
+describe('texte de preuve — durcissement extraction (DOMAIN_PROOF_EXTRACTION_HARDENING_001)', () => {
+  it('DEFACTO-like : texte légal visible ⇒ SIREN trouvé, ancre = contexte légal', async () => {
+    const html = `<html><head><style>.x502174924__root{color:red}</style></head><body>
+      <h1>Mentions légales</h1><p>Defacto, SAS<br/>RCS&nbsp;: 899 270 979 R.C.S. Paris<br/>SIREN&nbsp;: 899 270 979</p>
+      </body></html>`
+    const o = await observation({ siren: '899270979', body: html, registryLegalName: 'DEFACTO' })
+    expect(o.sirensFound).toEqual(['899270979']) // le motif CSS 502174924 n'y est PAS
+    expect(o.targetSirenFound).toBe(true)
+    expect(o.proofAnchor).toContain('899 270 979')
+    expect(o.proofAnchor).toContain('R.C.S. Paris')
+    expect(o.legalNameObserved).toBe(true)
+  })
+
+  it('ENCARTA/Wix-like : identifiants CSS/JS générés ⇒ AUCUN pseudo-SIREN, ancre vide', async () => {
+    const html = `<html><head>
+      <style>.HamburgerMenuContainer502174924__root{--x:1}</style>
+      <script>const id = "892160442"; run(id)</script>
+      </head><body><article>Communiqué : première clôture de 5 M€.</article></body></html>`
+    const o = await observation({ siren: '912293784', body: html })
+    expect(o.sirensFound).toEqual([])
+    expect(o.targetSirenFound).toBe(false)
+    expect(o.proofAnchor).toBe('')
+  })
+
+  it('adversarial : script/style/commentaire ne portent JAMAIS la cible ; le texte visible la porte', () => {
+    const cible = '899270979'
+    expect(extractSirens(extractProofText('<script>const s="899270979"</script>corps'))).toEqual([])
+    expect(extractSirens(extractProofText('<style>.a{content:"899 270 979"}</style>corps'))).toEqual([])
+    expect(extractSirens(extractProofText('<!-- SIREN 899270979 -->corps'))).toEqual([])
+    expect(extractSirens(extractProofText('<noscript>899270979</noscript>x'))).toEqual([])
+    expect(extractSirens(extractProofText('<template>899270979</template>x'))).toEqual([])
+    expect(extractSirens(extractProofText('<p>SIREN 899270979</p>'))).toEqual([cible])
+    // Balise NON FERMÉE : conservateur — la charge ne devient jamais du texte.
+    expect(extractSirens(extractProofText('avant<script>const s="899270979"'))).toEqual([])
+    // Cible séparée par un balisage simple : les balises deviennent des espaces.
+    expect(extractSirens(extractProofText('SIREN 899 <span>270</span> 979 Paris'))).toEqual([cible])
+    // Le hachage, lui, reste celui du CORPS ORIGINAL (vérifié via l'enregistrement nominal).
+  })
+
+  it('cible absente MAIS autre SIREN visible : il reste dans sirensFound, l’ancre reste VIDE', async () => {
+    const o = await observation({ siren: '912293784', body: '<p>Hébergeur : OVH SAS, SIREN 424 761 419.</p>' })
+    expect(o.sirensFound).toEqual(['424761419'])
+    expect(o.targetSirenFound).toBe(false)
+    expect(o.proofAnchor).toBe('')
+  })
+
+  it('buildProofAnchor SEUL : cible absente ⇒ chaîne vide, même si un AUTRE SIREN est présent (le repli est mort)', () => {
+    expect(buildProofAnchor('Hébergeur OVH SAS, SIREN 424 761 419.', '912293784')).toBe('')
+    expect(buildProofAnchor('', '912293784')).toBe('')
+    // Et le verrou structurel : l'enregistrement garde sa PROPRE porte —
+    // deux couches indépendantes, aucune ne doit disparaître.
+    const { readFileSync } = require('node:fs')
+    const src = readFileSync('lib/prospector/proactive/domainBinding.ts', 'utf8')
+    expect(src).toMatch(/proofAnchor: targetSirenFound \? buildProofAnchor\(texteDePreuve, siren\) : ''/)
+  })
+
+  it('ancre FORGÉE avec recordHash recalculé en cohérence : la vérification sémantique du validateur rejette quand même', async () => {
+    const o = await observation({ siren: '912293784', body: '<p>OVH SAS, SIREN 424 761 419</p>' }, T1)
+    expect(o.targetSirenFound).toBe(false)
+    const cle = `${DOMAIN_PROOF_OBSERVATION_KIND}|${WS}|${o.id}`
+    const row = JSON.parse(JSON.stringify(g.__prospectorStore.get(cle)))
+    // L'attaquant forge une ancre plausible ET recompute le recordHash — l'id,
+    // qui n'inclut pas l'ancre, reste valide : seule la COHÉRENCE sémantique
+    // drapeau ↔ ancre du validateur le trahit.
+    row.proofAnchor = 'contexte forgé mentionnant 912 293 784'
+    row.targetSirenFound = false // il ne peut pas mentir sur la liste (cohérence liste↔drapeau)
+    const { id: _i, recordHash: _r, ...sans } = row
+    row.recordHash = observationRecordHash(sans as any)
+    g.__prospectorStore.set(cle, row)
+    expect(await readDomainProofObservation(o.id, WS)).toEqual({ ok: false, reason: 'OBSERVATION_TAMPERED' })
+  })
+
+  it('validateur : drapeau vrai avec ancre vide ou sans la cible ⇒ TAMPERED ; drapeau faux avec ancre non vide ⇒ TAMPERED', async () => {
+    const o = await observation()
+    const cle = `${DOMAIN_PROOF_OBSERVATION_KIND}|${WS}|${o.id}`
+    const original = JSON.parse(JSON.stringify(g.__prospectorStore.get(cle)))
+    for (const mutation of [
+      (r: any) => { r.proofAnchor = '' },                                   // vrai + vide
+      (r: any) => { r.proofAnchor = 'contexte plausible sans la cible' },   // vrai sans cible
+    ]) {
+      const row = JSON.parse(JSON.stringify(original)); mutation(row)
+      g.__prospectorStore.set(cle, row)
+      expect(await readDomainProofObservation(o.id, WS)).toEqual({ ok: false, reason: 'OBSERVATION_TAMPERED' })
+    }
+    g.__prospectorStore.set(cle, original)
+    const sans = await observation({ siren: '912293784', body: 'aucun siren' }, T1)
+    const cle2 = `${DOMAIN_PROOF_OBSERVATION_KIND}|${WS}|${sans.id}`
+    const row2 = JSON.parse(JSON.stringify(g.__prospectorStore.get(cle2)))
+    row2.proofAnchor = 'faux contexte'
+    g.__prospectorStore.set(cle2, row2)
+    expect(await readDomainProofObservation(sans.id, WS)).toEqual({ ok: false, reason: 'OBSERVATION_TAMPERED' })
+  })
+})
+
+describe('adjudication (append-only)', () => {
+  it('ACCEPTED puis REJECTED puis ACCEPTED : TROIS enregistrements, dernier déterministe', async () => {
+    const o = await observation()
+    const t = (h: string) => () => new Date(`2026-09-01T${h}:00.000Z`)
+    const a1 = await recordDomainAdjudication({ observationId: o.id, verdict: 'ACCEPTED_FIRST_PARTY' }, 'alice', WS, t('12:00'))
+    const a2 = await recordDomainAdjudication({ observationId: o.id, verdict: 'REJECTED' }, 'alice', WS, t('12:05'))
+    const a3 = await recordDomainAdjudication({ observationId: o.id, verdict: 'ACCEPTED_FIRST_PARTY' }, 'alice', WS, t('12:10'))
+    if (a1.ok === false || a2.ok === false || a3.ok === false) throw new Error('adjudication échouée')
+    expect(new Set([a1.adjudication.id, a2.adjudication.id, a3.adjudication.id]).size).toBe(3)
+    const lignes = [...g.__prospectorStore.keys()].filter((k: string) => k.startsWith(`${DOMAIN_ADJUDICATION_KIND}|`))
+    expect(lignes.length).toBe(3)
+  })
+
+  it('observation sans SIREN cible : ACCEPT refusé, REJECT permis', async () => {
+    const o = await observation({ body: 'SIREN 424 761 419 seulement' })
+    expect(o.targetSirenFound).toBe(false)
+    expect(await recordDomainAdjudication({ observationId: o.id, verdict: 'ACCEPTED_FIRST_PARTY' }, 'alice', WS, T0))
+      .toEqual({ ok: false, reason: 'OBSERVATION_NOT_ELIGIBLE' })
+    expect((await recordDomainAdjudication({ observationId: o.id, verdict: 'REJECTED' }, 'alice', WS, T0)).ok).toBe(true)
+  })
+
+  it('inter-espaces refusé ; verdict hors vocabulaire refusé ; l’identité inclut acteur ET instant', async () => {
+    const o = await observation()
+    expect(await recordDomainAdjudication({ observationId: o.id, verdict: 'ACCEPTED_FIRST_PARTY' }, 'x', AUTRE_WS, T0))
+      .toEqual({ ok: false, reason: 'OBSERVATION_UNKNOWN' })
+    expect(await recordDomainAdjudication({ observationId: o.id, verdict: 'MAYBE' }, 'x', WS, T0))
+      .toEqual({ ok: false, reason: 'INVALID_INPUT' })
+    expect(domainAdjudicationId(WS, o.id, 'ACCEPTED_FIRST_PARTY', 'alice', '2026-09-01T12:00:00.000Z'))
+      .not.toBe(domainAdjudicationId(WS, o.id, 'ACCEPTED_FIRST_PARTY', 'bob', '2026-09-01T12:00:00.000Z'))
+    expect(domainAdjudicationId(WS, o.id, 'ACCEPTED_FIRST_PARTY', 'alice', '2026-09-01T12:00:00.000Z'))
+      .not.toBe(domainAdjudicationId(WS, o.id, 'ACCEPTED_FIRST_PARTY', 'alice', '2026-09-01T12:01:00.000Z'))
+  })
+})
+
+describe('éligibilité courante (dérivée, revalidée à l’usage)', () => {
+  async function liaisonAdjugee() {
+    const o = await observation()
+    const a = await recordDomainAdjudication({ observationId: o.id, verdict: 'ACCEPTED_FIRST_PARTY' }, 'alice', WS, T0)
+    if (a.ok === false) throw new Error(a.reason)
+    return o
+  }
+  const captureIdentique = () => {
+    etatCapture.resultat = { ok: true, finalUrl: `https://${HOTE}/mentions-legales`, body: PAGE }
+  }
+
+  it('acceptée + re-capture au contenu IDENTIQUE ⇒ éligible ; la revalidation est réellement exécutée et PERSISTÉE', async () => {
+    await liaisonAdjugee()
+    captureIdentique()
+    const r = await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1)
+    expect(r).toEqual({ eligible: true, domainHost: HOTE, authority: 'HUMAN_ADJUDICATED_LEGAL_NOTICE' })
+    expect(etatCapture.appels).toEqual([{ domainHost: HOTE, proofUrl: `https://${HOTE}/mentions-legales` }])
+    const lignes = [...g.__prospectorStore.keys()].filter((k: string) => k.startsWith(`${DOMAIN_PROOF_OBSERVATION_KIND}|`))
+    expect(lignes.length).toBe(2) // l'observation de revalidation est un fait historique
+  })
+
+  it('dernier verdict REJECTED ⇒ inéligible SANS re-capture ; aucune adjudication ⇒ inéligible', async () => {
+    const o = await liaisonAdjugee()
+    await recordDomainAdjudication({ observationId: o.id, verdict: 'REJECTED' }, 'alice', WS, T1)
+    captureIdentique()
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'LATEST_REJECTED' })
+    expect(etatCapture.appels).toEqual([])
+    if (g.__prospectorStore) g.__prospectorStore.clear()
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'NO_ACCEPTED_ADJUDICATION' })
+  })
+
+  it('contenu CHANGÉ ⇒ inéligible, nouvelle observation persistée en attente d’une NOUVELLE adjudication — jamais l’ancienne réutilisée', async () => {
+    await liaisonAdjugee()
+    etatCapture.resultat = {
+      ok: true, finalUrl: `https://${HOTE}/mentions-legales`,
+      body: PAGE + '\n(mise à jour du site)', // même SIREN, même hôte — mais contenu ≠
+    }
+    const r = await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1)
+    expect(r).toEqual({ eligible: false, reason: 'PROOF_CHANGED' })
+    const obs = [...g.__prospectorStore.entries()]
+      .filter(([k]: any) => k.startsWith(`${DOMAIN_PROOF_OBSERVATION_KIND}|`)).map(([, v]: any) => v)
+    expect(obs.length).toBe(2)
+    // Le SIREN cible a DISPARU de la page ⇒ inéligible aussi (jamais un A sans preuve courante).
+    etatCapture.resultat = { ok: true, finalUrl: `https://${HOTE}/mentions-legales`, body: 'plus de siren ici' }
+    expect((await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, () => new Date('2026-09-01T12:00:00.000Z'))).eligible).toBe(false)
+  })
+
+  it('revalidation en échec (SSRF/réseau/contenu) ⇒ inéligible ; hôte différent ⇒ hors périmètre', async () => {
+    await liaisonAdjugee()
+    etatCapture.resultat = { ok: false, reason: 'PROHIBITED_TARGET' }
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'REVALIDATION_FAILED' })
+    captureIdentique()
+    expect(await eligibleAdjudicatedDomain(SIREN, 'app.gradium.ai', WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'NO_ACCEPTED_ADJUDICATION' }) // sous-domaine ≠ hôte lié
+    expect(await eligibleAdjudicatedDomain('899270979', HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'NO_ACCEPTED_ADJUDICATION' }) // autre SIREN
+  })
+})
+
+// ── DOMAIN_REVALIDATION_STABILITY_001 — la stabilité d'autorité se juge sur la
+// MATIÈRE LÉGALE ADJUGÉE (SIREN + ancre stricte), plus sur le hash du HTML brut.
+describe('stabilité de revalidation — ancre stricte, jamais le hash brut seul', () => {
+  // Page LONGUE : ±160 caractères autour du SIREN restent DANS le corps légal,
+  // si bien qu'un changement lointain (script, queue de page) ne touche pas
+  // l'ancre, tandis qu'un changement du voisinage la change nécessairement.
+  const PREFIXE = 'Preambule editorial sans matiere legale. '.repeat(8)
+  const SUFFIXE = 'Clause annexe repetee pour eloigner la fin de page. '.repeat(8)
+  const CORPS_LEGAL = `Mentions légales — GRADIUM SAS, SIREN 989 284 955, R.C.S. Paris, 10 rue de Paris.`
+  const pageHtml = (script: string, queue: string) =>
+    `<html><head><script>${script}</script><style>.x{color:red}</style></head>` +
+    `<body>${PREFIXE}${CORPS_LEGAL} ${SUFFIXE}${queue}</body></html>`
+  const PAGE_V1 = pageHtml('var build="a1";', '')
+  // V2 : UNIQUEMENT du HTML hors matière de preuve change (script dynamique +
+  // markup de queue au-delà de la fenêtre d'ancre). Texte légal intact.
+  const PAGE_V2 = pageHtml('var build="b2";window.__nonce="xyz";', '<div>footer dynamique 2026</div>')
+  // V3 : la matière légale dans le VOISINAGE déterministe du SIREN change.
+  const PAGE_V3 = pageHtml('var build="a1";', '').replace('R.C.S. Paris', 'R.C.S. Lyon')
+
+  async function liaisonAdjugeeLongue() {
+    const r = await recordDomainProofObservation(obsInput({ body: PAGE_V1 }), WS, T0)
+    if (r.ok === false) throw new Error(r.reason)
+    const a = await recordDomainAdjudication({ observationId: r.observation.id, verdict: 'ACCEPTED_FIRST_PARTY' }, 'alice', WS, T0)
+    if (a.ok === false) throw new Error(a.reason)
+    return { obs: r.observation, adj: a.adjudication }
+  }
+  const capture = (body: string) => {
+    etatCapture.resultat = { ok: true, finalUrl: `https://${HOTE}/mentions-legales`, body }
+  }
+  const lignesDe = (kind: string) =>
+    [...g.__prospectorStore.entries()].filter(([k]: any) => k.startsWith(`${kind}|`)).map(([, v]: any) => v)
+
+  it('1 — même hash brut + même ancre + SIREN présent ⇒ éligible', async () => {
+    await liaisonAdjugeeLongue()
+    capture(PAGE_V1)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: true, domainHost: HOTE, authority: 'HUMAN_ADJUDICATED_LEGAL_NOTICE' })
+  })
+
+  it('2 + mutant clé — HTML hors matière de preuve changé : hash brut ≠, ancre =, ⇒ éligible ; nouvelle DPO persistée ; anciennes lignes immuables ; aucune adjudication auto', async () => {
+    const { obs, adj } = await liaisonAdjugeeLongue()
+    capture(PAGE_V2)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: true, domainHost: HOTE, authority: 'HUMAN_ADJUDICATED_LEGAL_NOTICE' })
+
+    // La recapture est un fait historique persistant, au hash BRUT différent
+    // mais à l'ancre IDENTIQUE — c'est exactement le cas E2E Defacto/Gradium.
+    const observations = lignesDe(DOMAIN_PROOF_OBSERVATION_KIND)
+    expect(observations.length).toBe(2)
+    const fraiche = observations.find((o: any) => o.id !== obs.id)
+    expect(fraiche.proofContentHash).not.toBe(obs.proofContentHash)
+    expect(fraiche.proofAnchor).toBe(obs.proofAnchor)
+    expect(fraiche.targetSirenFound).toBe(true)
+
+    // Ancienne observation ET ancienne adjudication : octet pour octet intactes.
+    const obsRelue = observations.find((o: any) => o.id === obs.id)
+    expect(obsRelue).toEqual(obs)
+    const adjudications = lignesDe(DOMAIN_ADJUDICATION_KIND)
+    expect(adjudications).toEqual([adj]) // aucune adjudication créée automatiquement
+  })
+
+  it('3 — matière légale changée dans le voisinage du SIREN : ancre ≠ (SIREN pourtant présent) ⇒ PROOF_CHANGED', async () => {
+    await liaisonAdjugeeLongue()
+    capture(PAGE_V3)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'PROOF_CHANGED' })
+    // Preuve que le cas est bien « SIREN présent mais voisinage altéré ».
+    const fraiche = lignesDe(DOMAIN_PROOF_OBSERVATION_KIND).find((o: any) => o.proofAnchor.includes('Lyon'))
+    expect(fraiche.targetSirenFound).toBe(true)
+  })
+
+  it('4 — SIREN cible disparu ⇒ PROOF_CHANGED, jamais un repli sur l’ancre seule', async () => {
+    await liaisonAdjugeeLongue()
+    capture(PAGE_V1.replace('989 284 955', '000 000 000'))
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'PROOF_CHANGED' })
+  })
+
+  it('5/6 — dernier verdict REJECTED reste fermé (sans recapture) ; capture impossible ⇒ REVALIDATION_FAILED', async () => {
+    const { obs } = await liaisonAdjugeeLongue()
+    await recordDomainAdjudication({ observationId: obs.id, verdict: 'REJECTED' }, 'alice', WS, T1)
+    capture(PAGE_V2)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'LATEST_REJECTED' })
+    expect(etatCapture.appels).toEqual([])
+    if (g.__prospectorStore) g.__prospectorStore.clear()
+    await liaisonAdjugeeLongue()
+    etatCapture.resultat = { ok: false, reason: 'FETCH_FAILED' }
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'REVALIDATION_FAILED' })
+  })
+
+  it('10 — isolation d’espace inchangée : l’adjudication d’un espace ne décerne rien dans un autre', async () => {
+    await liaisonAdjugeeLongue()
+    capture(PAGE_V1)
+    expect(await eligibleAdjudicatedDomain(SIREN, HOTE, AUTRE_WS, undefined, T1))
+      .toEqual({ eligible: false, reason: 'NO_ACCEPTED_ADJUDICATION' })
+  })
+
+  it('verrou structurel — la condition d’autorité est bien (SIREN ∧ ancre stricte), le hash brut n’y figure plus seul', () => {
+    const { readFileSync } = require('node:fs')
+    const src = readFileSync('lib/prospector/proactive/domainBinding.ts', 'utf8')
+    expect(src).toMatch(/targetSirenFound !== true\s*\|\|\s*persistee\.observation\.proofAnchor !== adjugee\.proofAnchor/)
+    expect(src).not.toMatch(/proofContentHash !== adjugee\.proofContentHash/)
+  })
+})
+
+describe('routes — frontières de confiance', () => {
+  async function appeler(handler: any, body: any) {
+    const req: any = { method: 'POST', body, cookies: {} }
+    let status = 0; let json: any = null
+    const res: any = { status(c: number) { status = c; return res }, json(b: any) { json = b; return res } }
+    await handler(req, res)
+    return { status, body: json }
+  }
+  const hit = (sourceUrl: string): SignalHit => ({
+    company: 'Gradium', signalType: 'levée', detail: '', icebreaker: '',
+    sourceUrl, verified: false, claimNature: 'EVENT', eventStatus: 'COMPLETED',
+    eventDate: '2026-07-08', eventDatePrecision: 'DAY', sourcePublishedAt: null,
+    roleStatus: 'UNKNOWN', roleFunction: 'UNKNOWN',
+    extraction: { mode: 'claude-web', promptVersion: 'signal-acquisition-v3' },
+  } as SignalHit)
+
+  it('capture : candidat + entité résolue + hôte de preuve == hôte SOURCE ⇒ observation dérivée SERVEUR', async () => {
+    etatSession.registre['Gradium'] = { found: true, resolution: 'resolved', siren: SIREN, name: 'GRADIUM' }
+    const [cid] = await registerCandidates([hit(`https://${HOTE}/blog/levee`)], WS, T0)
+    etatCapture.resultat = { ok: true, finalUrl: `https://${HOTE}/mentions-legales`, body: PAGE }
+    const r = await appeler(proofHandler, {
+      candidateId: cid, proofUrl: `https://${HOTE}/mentions-legales`,
+      // ⚠️ Tentatives d'injection : TOUTES ignorées, le serveur dérive.
+      siren: '000000000', domainHost: 'attaquant.fr', body: 'FAUX', targetSirenFound: true,
+    })
+    expect(r.status).toBe(200)
+    expect(r.body.observation.siren).toBe(SIREN)         // du registre, pas du corps
+    expect(r.body.observation.domainHost).toBe(HOTE)      // de la source du candidat
+    expect(r.body.observation.targetSirenFound).toBe(true) // du contenu capturé par le serveur
+  })
+
+  it('capture : hôte de preuve ≠ hôte source (EU-Startups → syntetica.com) ⇒ PROOF_HOST_MISMATCH', async () => {
+    etatSession.registre['Gradium'] = { found: true, resolution: 'resolved', siren: SIREN, name: 'GRADIUM' }
+    const [cid] = await registerCandidates([hit('https://www.eu-startups.com/2026/07/gradium')], WS, T0)
+    const r = await appeler(proofHandler, { candidateId: cid, proofUrl: `https://${HOTE}/mentions-legales` })
+    expect(r.status).toBe(409)
+    expect(r.body.state).toBe('PROOF_HOST_MISMATCH')
+    expect(etatCapture.appels).toEqual([]) // aucune capture tentée
+  })
+
+  it('capture : entité NON RÉSOLUE (Shiplog/Mio) ⇒ bloquée — la liaison ne contourne jamais la résolution', async () => {
+    const [cid] = await registerCandidates([hit('https://useshiplog.com/post')], WS, T0)
+    // ⚠️ AMBIGU **AVEC** un SIREN candidat : seule la garde `resolution ===
+    // 'resolved'` bloque — un simple contrôle de format ne suffirait pas.
+    etatSession.registre['Gradium'] = { found: true, resolution: 'ambiguous', siren: SIREN, name: 'GRADIUM' }
+    const r = await appeler(proofHandler, { candidateId: cid, proofUrl: 'https://useshiplog.com/legal' })
+    expect(r.status).toBe(409)
+    expect(r.body.state).toBe('ENTITY_NOT_RESOLVED')
+    expect(etatCapture.appels).toEqual([])
+  })
+
+  it('adjudication : le navigateur ne fixe NI l’acteur NI l’instant ; espace de session seul', async () => {
+    const o = await observation()
+    const r = await appeler(adjHandler, {
+      observationId: o.id, verdict: 'ACCEPTED_FIRST_PARTY',
+      adjudicatedBy: 'attaquant', adjudicatedAt: '1999-01-01T00:00:00.000Z',
+    })
+    expect(r.status).toBe(200)
+    expect(r.body.adjudication.adjudicatedBy).toBe('user_adjudicateur') // acteur de SESSION
+    expect(r.body.adjudication.adjudicatedAt).not.toBe('1999-01-01T00:00:00.000Z')
+  })
+})
+
+describe('grade et promotion — frontières', () => {
+  const hitSur = (url: string): SignalHit => ({
+    company: 'Gradium', signalType: 'levée', detail: '', icebreaker: '', sourceUrl: url,
+    verified: false, claimNature: 'EVENT', eventStatus: 'COMPLETED', eventDate: '2026-07-08',
+    eventDatePrecision: 'DAY', sourcePublishedAt: null, roleStatus: 'UNKNOWN', roleFunction: 'UNKNOWN',
+    extraction: { mode: 'claude-web', promptVersion: 'signal-acquisition-v3' },
+  } as SignalHit)
+
+  it('domainAuthority ne s’attache QUE sur le chemin A site-officiel — jamais B/C/UNKNOWN ni sans correspondance', () => {
+    const officiel = sourceEvidenceFromHit(hitSur(`https://${HOTE}/blog/levee`), `https://${HOTE}`, undefined, undefined, undefined, 'HUMAN_ADJUDICATED_LEGAL_NOTICE')!
+    expect(officiel.grade).toBe('A')
+    expect(officiel.domainAuthority).toBe('HUMAN_ADJUDICATED_LEGAL_NOTICE')
+    const presse = sourceEvidenceFromHit(hitSur('https://www.eu-startups.com/a'), `https://${HOTE}`, undefined, undefined, undefined, 'REGISTRY_DECLARED')!
+    expect(presse.grade).toBe('B')
+    expect(presse.domainAuthority).toBeUndefined()
+    const sans = sourceEvidenceFromHit(hitSur(`https://${HOTE}/x`), undefined, undefined, undefined, undefined, 'REGISTRY_DECLARED')!
+    expect(sans.domainAuthority).toBeUndefined() // pas de site fourni ⇒ pas d'autorité recopiée
+    const ancienne = sourceEvidenceFromHit(hitSur(`https://${HOTE}/x`), `https://${HOTE}`)!
+    expect(ancienne.domainAuthority).toBeUndefined() // appels historiques inchangés
+  })
+
+  it('verrous structurels : registre d’abord, repli adjugé SEULEMENT en son absence, jamais Lead.website', async () => {
+    const { readFileSync } = await import('node:fs')
+    const code = readFileSync('pages/api/signals/promote.ts', 'utf8')
+    expect(code).toMatch(/let officialWebsiteAutorite = lead\.officialWebsite/)
+    expect(code).toMatch(/if \(!officialWebsiteAutorite\) \{[\s\S]{0,600}eligibleAdjudicatedDomain\(/)
+    expect(code).not.toMatch(/officialWebsiteAutorite[^\n]*lead\.lead\.website/)
+    expect(code).not.toMatch(/eligibleAdjudicatedDomain\([^)]*website/i)
+    expect(code).toMatch(/sourceEvidenceFromHit\(.*officialWebsiteAutorite.*dateRecuperation, autoriteDomaine, lead\.entite\)/)
+  })
+})

@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "FIXTURE TECHNIQUE — NOT GROUND TRUTH.",
+    "Elle ne dit PAS ce qu'un courtier devrait faire. Elle prouve seulement qu'une",
+    "chaine Evidence -> real-estate-fabel -> Situation -> Recommendation s'execute",
+    "hors ligne et de facon deterministe. Le Golden Dataset viendra de",
+    "GOLDEN-MIGRATE-001 et vivra ailleurs. Ne mesurer AUCUNE qualite de moteur ici."
+  ],
+  "schemaVersion": "proactive-eval-v0.1",
+  "now": "2026-08-23T00:00:00.000Z",
+  "businessContext": {
+    "contextId": "fabel-technical",
+    "contextVersion": "v0.1",
+    "role": "broker",
+    "scope": {
+      "mode": "workspace"
+    },
+    "authorizedMotions": {
+      "prepare_outreach": "allowed",
+      "contact_prospect": "allowed",
+      "enrich_data": "allowed",
+      "schedule_reminder": "allowed"
+    },
+    "lensId": "fabel-broker",
+    "lensVersion": "v0.1"
+  },
+  "targets": [
+    {
+      "accountId": "acc_fabel_1",
+      "relevance": 0.8
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev_occ",
+      "accountId": "acc_fabel_1",
+      "type": "real_estate.flex_occupancy_observed",
+      "scope": "account",
+      "assertionType": "inference",
+      "confidence": 0.9,
+      "source": {
+        "provider": "scraper"
+      },
+      "temporality": "undated_state",
+      "observedAt": "2026-08-01T00:00:00.000Z"
+    }
+  ]
+}

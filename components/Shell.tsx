@@ -1,10 +1,52 @@
 import Link from 'next/link'
 import { useRouter } from 'next/router'
+import { BUILD } from '../lib/version'
+import EnvironmentBanner from './EnvironmentBanner'
 import { useEffect, useState } from 'react'
 import CreateLeadModal from './CreateLeadModal'
 import Jarvis from './Jarvis'
 import { getNotifications, markNotificationsRead } from '../lib/prospector/capabilities'
 import type { Notification } from '../lib/prospector/capabilities'
+import { invalidateLeads } from '../lib/prospector/capabilities'
+
+import ReminderPopup from './ReminderPopup'
+
+const REMINDER_POPUP_STORAGE_KEY = 'prospector:reminder-popup-seen-v1'
+const SHOWN_REMINDER_POPUPS = new Set<string>()
+
+function reminderPopupSignature(notification: Notification) {
+  return notification.id + '|' + notification.when
+}
+
+function nextReminderPopup(items: Notification[]) {
+  let persisted: string[] = []
+  try {
+    const raw = window.localStorage.getItem(REMINDER_POPUP_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    if (Array.isArray(parsed)) persisted = parsed.filter((value: unknown): value is string => typeof value === 'string')
+  } catch {}
+
+  const seen = new Set(persisted)
+  const candidate = items.find((item) => {
+    if (!item.unread || item.type !== 'task' || item.priority !== 'important' || !item.id.startsWith('reminder_')) return false
+    const signature = reminderPopupSignature(item)
+    return !seen.has(signature) && !SHOWN_REMINDER_POPUPS.has(signature)
+  })
+
+  if (!candidate) return null
+
+  const signature = reminderPopupSignature(candidate)
+  SHOWN_REMINDER_POPUPS.add(signature)
+
+  try {
+    window.localStorage.setItem(
+      REMINDER_POPUP_STORAGE_KEY,
+      JSON.stringify([...seen, signature].slice(-100)),
+    )
+  } catch {}
+
+  return candidate
+}
 
 const NOTIF_ICON: Record<Notification['type'], string> = {
   reply: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.9 9.9 0 01-4-.8L3 20l.8-3.2A7.9 7.9 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z',
@@ -67,6 +109,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [wsName, setWsName] = useState<string | null>(null)
   const [notifs, setNotifs] = useState<Notification[]>([])
   const [notifOpen, setNotifOpen] = useState(false)
+  const [activeReminder, setActiveReminder] = useState<Notification | null>(null)
   const now = useClock()
 
   // Sélecteur d'espace
@@ -81,12 +124,75 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const switchWs = async (id: string) => {
     setWsOpen(false)
     await fetch('/api/workspaces/active', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ws: id }) })
+    // Invalidation EXPLICITE du cache de leads avant de changer d'espace. La
+    // navigation dure ci-dessous le détruit déjà, mais s'appuyer sur cet effet de
+    // bord serait fragile : une future navigation côté client ferait apparaître
+    // les leads d'un espace dans un autre, sans erreur visible.
+    invalidateLeads()
     window.location.href = '/pipeline' // recharge dans le nouvel espace
   }
   useEffect(() => {
     fetch('/api/auth/me').then((r) => r.json()).then((d) => { setEmail(d.email); setRole(d.role || 'admin'); setPerms(d.permissions || null); setWsName(d.workspaceName || null) }).catch(() => {})
   }, [])
-  useEffect(() => { getNotifications().then(setNotifs) }, [])
+  useEffect(() => {
+  let cancelled = false
+
+  const refreshNotifications = () => {
+    getNotifications()
+      .then((items) => {
+        if (!cancelled) {
+          setNotifs(items)
+          setActiveReminder((current) => current || nextReminderPopup(items))
+        }
+      })
+      .catch(() => {})
+  }
+
+  // Chargement initial.
+  refreshNotifications()
+
+  // Les rappels sont produits côté serveur :
+  // la cloche vérifie régulièrement les nouveautés.
+  const timer = window.setInterval(
+    refreshNotifications,
+    15_000,
+  )
+
+  // Retour sur l'onglet / l'application :
+  // synchronisation immédiate sans attendre le prochain polling.
+  const onFocus = () => {
+    refreshNotifications()
+  }
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'visible') {
+      refreshNotifications()
+    }
+  }
+
+  window.addEventListener('focus', onFocus)
+
+  document.addEventListener(
+    'visibilitychange',
+    onVisibilityChange,
+  )
+
+  return () => {
+    cancelled = true
+
+    window.clearInterval(timer)
+
+    window.removeEventListener(
+      'focus',
+      onFocus,
+    )
+
+    document.removeEventListener(
+      'visibilitychange',
+      onVisibilityChange,
+    )
+  }
+}, [])
   // Raccourci ⌘K / Ctrl+K → ouvre Jarvis.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setJarvisOpen((v) => !v) } }
@@ -103,7 +209,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen flex">
+    <div className="min-h-screen flex flex-col">
+      <EnvironmentBanner />
+      <div className="flex-1 flex">
       {/* Sidebar */}
       <aside className="w-60 bg-white border-r border-gray-100 flex flex-col fixed inset-y-0 left-0 z-40">
         {/* Logo + workspace */}
@@ -201,6 +309,11 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
           </button>
         </div>
+        {/* Empreinte de build : ce que cette page contient VRAIMENT. Un clic la
+            sélectionne entière, prête à coller dans un message. */}
+        <div className="px-4 pb-3 text-[10px] text-gray-300 select-all" title={`${BUILD.env} · ${BUILD.sha}`}>
+          build {BUILD.branch}@{BUILD.short}
+        </div>
       </aside>
 
       {/* Main */}
@@ -297,6 +410,8 @@ export default function Shell({ children }: { children: React.ReactNode }) {
 
       {modal && modal !== 'sourcing' && <CreateLeadModal mode={modal} onClose={() => setModal(null)} />}
       <Jarvis open={jarvisOpen} onClose={() => setJarvisOpen(false)} />
+      {activeReminder && <ReminderPopup notification={activeReminder} onDismiss={() => setActiveReminder(null)} />}
+      </div>
     </div>
   )
 }

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import Head from 'next/head'
 import type { SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../types/prospector'
 import { PromptDialog } from '../components/Dialog'
-import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
+import { getSourcing, importCompaniesToPipeline, importSignalToPipeline, addContactsToPipeline, findContactsForCompany, findContactsForCompanies, getImportedSirens, searchPeople, importPerson, createList, ambiguityLabel, PROVIDER_UNAVAILABLE, takeWriteRejections, rejectionLabel, PERSONA_TARGETS, CONTACT_BATCH_CAP, type Period } from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { PersonHit } from '../lib/prospector/capabilities'
 
@@ -96,6 +96,7 @@ export default function SourcingPage() {
   const [sigRunning, setSigRunning] = useState(false)
   const [sigHits, setSigHits] = useState<SignalHit[]>([])
   const [sigMode, setSigMode] = useState('')
+  const [sigPasses, setSigPasses] = useState(1)
   const [sigError, setSigError] = useState<string | null>(null)
   const [sigImported, setSigImported] = useState<Set<string>>(new Set())
   // Critères structurés de la recherche par signal
@@ -191,19 +192,80 @@ export default function SourcingPage() {
           ? { types: Array.from(sigTypes), sector: sigSector, location: sigLocation, months: sigMonths, keywords: sigKeywords }
           : { thesis: q }),
       })
-      const d = await res.json()
+      // Un timeout de la fonction renvoie du HTML, pas du JSON : sans ce garde-fou
+      // l'utilisateur voyait « Unexpected token '<' » au lieu du vrai problème.
+      const raw = await res.text()
+      let d: any = null
+      // ⚠️ LE CONSEIL PRÉCÉDENT ÉTAIT FAUX, ET LE TERRAIN L'A PROUVÉ. Il disait
+      // « réduis la période ou les critères » ; or une recherche à 1 MOIS
+      // échouait aussi — et c'était même la passe la plus lourde. On envoyait
+      // donc l'utilisateur corriger ce qui n'était pas en cause.
+      try { d = JSON.parse(raw) } catch { throw new Error(res.ok ? 'Réponse illisible du serveur' : 'La recherche n’a pas terminé dans le délai disponible. Réessaie dans quelques instants.') }
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`)
-      setSigHits(d.hits || []); setSigMode(d.mode || ''); setSigBuilt(d.thesis || '')
-      // Plus de données de démonstration : une erreur est une erreur, on l'affiche.
-      if (d.error) setSigError(d.error)
+      setSigHits(d.hits || []); setSigMode(d.mode || ''); setSigBuilt(d.thesis || ''); setSigPasses(d.passes || 1)
+
+      // ── DÉLAI DÉPASSÉ N'EST PAS « AUCUN SIGNAL » ──────────────────────────
+      // ⚠️ La couverture est INCONNUE, pas nulle. Sans ce cas, l'écran afficherait
+      // « 0 entreprise trouvée » pour une recherche que personne n'a terminée —
+      // et l'utilisateur en conclurait qu'il n'y a rien à trouver.
+      // ⚠️ LE LIBELLÉ « DÉLAI » NE VAUT QUE POUR UN VRAI DÉPASSEMENT D'ÉCHÉANCE.
+      // Une conversation fournisseur qui ne converge pas épuise ses tours en
+      // quelques secondes : dire « réessaie dans quelques instants » enverrait
+      // attendre un problème que l'attente ne résout pas.
+      if (d.state === 'TIMEOUT') {
+        setSigError('La recherche n’a pas terminé dans le délai disponible. Réessaie dans quelques instants.')
+      } else if (d.state === 'BUDGET_EXCEEDED') {
+        // ⚠️ NI UNE PANNE, NI UNE ABSENCE DE SIGNAL. Le système s'est arrêté
+        // VOLONTAIREMENT avant de dépasser le coût autorisé. Le présenter comme
+        // « aucun résultat » ferait conclure qu'il n'y a rien à trouver ; comme
+        // une erreur, ferait chercher une panne inexistante.
+        //
+        // Aucun montant, aucun modèle, aucun compte de jetons : l'utilisateur
+        // n'a pas à connaître les internes de facturation pour comprendre.
+        setSigError('La recherche a été arrêtée avant de dépasser la limite de coût autorisée.')
+      } else if (d.error) {
+        // Plus de données de démonstration : une erreur est une erreur, on l'affiche.
+        setSigError(d.error)
+      }
     } catch (e: any) {
       setSigError(e.message || 'Agent indisponible')
     } finally { setSigRunning(false); setSigDone(true) }
   }
 
+  // Résultat de la vérification data.gouv, obtenue AU MOMENT de l'import.
+  // Refus d'écriture remontés par la couche de persistance : ils DOIVENT être
+  // affichés, sinon l'utilisateur croit avoir importé.
+  const [writeRejected, setWriteRejected] = useState<string | null>(null)
+  const reportRejections = () => {
+    const r = takeWriteRejections()
+    setWriteRejected(r.length ? `${r.length} enregistrement(s) refusé(s) — ${rejectionLabel(r[0].reason)}. Rien n'a été écrasé.` : null)
+  }
+  const [sigCheck, setSigCheck] = useState<Record<string, { verified: boolean; siren?: string }>>({})
+  const [sigBusy, setSigBusy] = useState<string | null>(null)
+  // Entreprises dont la résolution data.gouv est ambiguë : rien n'a été importé.
+  const [sigAmbigu, setSigAmbigu] = useState<Record<string, string>>({})
+
   const importSignal = async (h: SignalHit) => {
-    await importSignalToPipeline(h)
-    setSigImported((s) => new Set(s).add(h.company))
+    setSigBusy(h.company)
+    try {
+      const r: any = await importSignalToPipeline(h)
+      reportRejections()
+      // ⚠️ AMBIGU ≠ IMPORTÉ. Rien n'a été créé : ne pas marquer l'entreprise
+      // comme importée, sans quoi l'écran afficherait un succès inexistant et
+      // interdirait de réessayer après précision.
+      // Panne fournisseur : rien n'a été importé, et ce n'est pas un « introuvable ».
+      if (r?.resolution === 'provider_error') {
+        setSigAmbigu((a) => ({ ...a, [h.company]: PROVIDER_UNAVAILABLE }))
+        return
+      }
+      if (r?.ambiguous) {
+        setSigAmbigu((a) => ({ ...a, [h.company]: ambiguityLabel(h.company, r.candidates) }))
+        return
+      }
+      setSigAmbigu((a) => { const n = { ...a }; delete n[h.company]; return n })
+      setSigCheck((c) => ({ ...c, [h.company]: { verified: !!r?.verified, siren: r?.siren } }))
+      setSigImported((s) => new Set(s).add(h.company))
+    } finally { setSigBusy(null) }
   }
 
   const router = useRouter()
@@ -213,10 +275,156 @@ export default function SourcingPage() {
   const createSignalList = async (name: string) => {
     setSignalListOpen(false)
     const ids: string[] = []
-    for (const h of sigHits) { const r = await importSignalToPipeline(h); if (r?.id) ids.push(r.id) }
-    setSigImported((s) => { const n = new Set(s); sigHits.forEach((h) => n.add(h.company)); return n })
+    const importees: string[] = []
+    const aResoudre: string[] = []
+    const indisponibles: string[] = []
+    for (const h of sigHits) {
+      const r: any = await importSignalToPipeline(h)
+      // Une ambiguïté est SAUTÉE, jamais importée — et elle ne bloque pas les
+      // autres entreprises du lot.
+      if (r?.resolution === 'provider_error') { indisponibles.push(h.company); continue }
+      if (r?.ambiguous) { aResoudre.push(h.company); continue }
+      if (r?.id) ids.push(r.id)
+      importees.push(h.company)
+    }
+    reportRejections()
+    setSigAmbigu((a) => {
+      const n = { ...a }
+      importees.forEach((c) => delete n[c])
+      aResoudre.forEach((c) => { n[c] = `Plusieurs sociétés portent ce nom — résolution nécessaire avant import.` })
+      indisponibles.forEach((c) => { n[c] = PROVIDER_UNAVAILABLE })
+      return n
+    })
+    // Seules les entreprises RÉELLEMENT importées sont marquées comme telles.
+    setSigImported((s) => { const n = new Set(s); importees.forEach((c) => n.add(c)); return n })
     await createList(name, ids, 'signaux Exa/Claude')
-    setSignalListMsg(`Liste « ${name} » créée depuis les signaux.`); setTimeout(() => setSignalListMsg(null), 4000)
+    setSignalListMsg(
+      aResoudre.length || indisponibles.length
+        ? [
+            `Liste « ${name} » créée (${ids.length} importée(s)).`,
+            aResoudre.length ? `${aResoudre.length} entreprise(s) nécessitent une résolution et n'ont PAS été importées : ${aResoudre.slice(0, 5).join(', ')}.` : '',
+            indisponibles.length ? `${indisponibles.length} n'ont pas pu être vérifiées (data.gouv indisponible) et n'ont PAS été importées.` : '',
+          ].filter(Boolean).join(' ')
+        : `Liste « ${name} » créée depuis les signaux.`,
+    )
+    setTimeout(() => setSignalListMsg(null), 8000)
+  }
+
+  // ── SIGNAL-PRODUCT-REACHABILITY-001 — revue et adjudication d'un candidat ──
+  // ⚠️ CET ÉCRAN NE PRÉSENTE JAMAIS UN CANDIDAT COMME UN FAIT ÉTABLI. Il montre
+  // ce que la source affirme, et demande une confirmation EXPLICITE. Le
+  // navigateur n'envoie que la désignation du candidat : l'acteur, l'instant,
+  // l'espace et le contexte métier sont dérivés côté serveur.
+  const [factState, setFactState] = useState<Record<string, { state: string; label: string }>>({})
+  const [factBusy, setFactBusy] = useState<string | null>(null)
+
+  /** Revendication candidate lisible — ou `null` si le contrat ne la porte pas. */
+  const candidateClaim = (h: SignalHit): { key: string; label: string; temporal: string } | null => {
+    const siren = sigCheck[h.company]?.siren
+    if (!siren) return null
+    // ⚠️ SANS IDENTIFIANT SERVEUR, RIEN N'EST ADJUGEABLE. Le candidat n'existe
+    // comme objet promouvable que s'il a été émis par `/api/signals/search` :
+    // un hit reconstruit côté navigateur ne désigne aucune ligne du registre.
+    if (!h.candidateId) return null
+    const account = `acc_siren_${siren}`
+    if (h.signalType === 'levée' && h.claimNature === 'EVENT' && h.eventStatus === 'COMPLETED'
+        && h.eventDatePrecision === 'DAY' && h.eventDate) {
+      return {
+        key: `recent_funding|${account}|${h.eventDate}`,
+        label: 'Levée de fonds bouclée',
+        temporal: `Événement daté du ${h.eventDate}`,
+      }
+    }
+    if (h.claimNature === 'STATE' && h.roleStatus === 'OPEN' && h.roleFunction === 'SALES') {
+      return {
+        key: `sales_hiring|${account}|STATE`,
+        label: 'Poste commercial actuellement ouvert',
+        temporal: 'État constaté — date de début inconnue',
+      }
+    }
+    return null
+  }
+
+  const LIBELLES_FAIT: Record<string, string> = {
+    ACCEPTED_WITH_RESULT: 'Fait accepté — situation détectée.',
+    ACCEPTED_NO_SITUATION: 'Fait accepté, mais les preuves ne suffisent pas encore à une situation.',
+    BUSINESS_CONTEXT_REQUIRED: 'Contexte métier à configurer avant toute acceptation.',
+    BUSINESS_CONTEXT_INVALID: 'Contexte métier invalide — à réparer.',
+    BUSINESS_CONTEXT_UNAVAILABLE: 'Configuration indisponible — réessayez dans un instant.',
+    PERSISTENCE_FAILED: 'Rien n’a été enregistré — réessayez.',
+    SIGNAL_NOT_RESOLVED: 'Entreprise non résolue : importez-la et vérifiez son SIREN d’abord.',
+    CONFIRMATION_SOURCE_MISMATCH: 'Les sources confirmées ne correspondent pas au candidat.',
+    CLAIM_NOT_PROMOTABLE: 'Ce candidat ne porte pas de revendication exploitable.',
+    NO_FACT_PRODUCED: 'Aucun fait accepté — le candidat ne franchit pas les contrôles.',
+    CANDIDATE_UNKNOWN: 'Ce candidat n’est plus connu du serveur — relancez la recherche.',
+    CANDIDATE_STORE_UNAVAILABLE: 'Candidat momentanément illisible — réessayez.',
+    ENTITY_REGISTRY_UNAVAILABLE: 'Registre des entreprises indisponible — réessayez.',
+    EVIDENCE_HISTORY_UNAVAILABLE: 'Historique des faits illisible — rien n’a été évalué. Réessayez.',
+    EVIDENCE_HISTORY_INVALID: 'Un fait enregistré est corrompu — rien n’a été évalué. Signalez-le.',
+    LEAD_STORE_UNAVAILABLE: 'Fiches entreprises momentanément illisibles — réessayez.',
+    UNAUTHENTICATED: 'Session expirée.',
+    WORKSPACE_UNRESOLVED: 'Espace client indéterminé.',
+  }
+
+  // ── ACTIVATION EXPLICITE DU CONTEXTE MÉTIER (R1c·P1) ──────────────────────
+  // ⚠️ GESTE HUMAIN, JAMAIS AUTOMATIQUE. Aucun `useEffect` n'active le contexte :
+  // un espace non configuré le reste jusqu'à ce qu'une personne le décide. Ce
+  // bouton n'apparaît d'ailleurs qu'après un refus explicite du serveur.
+  //
+  // ⚠️ LE CORPS EST VIDE, ET C'EST LE POINT. Le navigateur demande l'activation ;
+  // il ne dit pas ce qui est activé. Capacités, périmètre et version de lens sont
+  // construits côté serveur à partir du registre.
+  const [ctxBusy, setCtxBusy] = useState(false)
+  const [ctxMsg, setCtxMsg] = useState<string | null>(null)
+  const activerContexte = async () => {
+    setCtxBusy(true)
+    try {
+      const r = await fetch('/api/proactive/context', { method: 'POST' })
+      const d = await r.json().catch(() => null)
+      setCtxMsg(d?.state === 'BUSINESS_CONTEXT_ACTIVE'
+        ? 'Lecture proactive activée (Sales V0). La prise de contact reste soumise à votre approbation.'
+        : 'Activation impossible pour le moment — réessayez.')
+      // On efface les refus liés au contexte : ils ne décrivent plus l'état réel.
+      if (d?.state === 'BUSINESS_CONTEXT_ACTIVE') {
+        setFactState((f) => {
+          const n = { ...f }
+          for (const k of Object.keys(n)) if (n[k].state.startsWith('BUSINESS_CONTEXT')) delete n[k]
+          return n
+        })
+      }
+    } catch {
+      setCtxMsg('Activation indisponible.')
+    } finally { setCtxBusy(false) }
+  }
+
+  const confirmFact = async (h: SignalHit) => {
+    const claim = candidateClaim(h)
+    if (!claim) return
+    setFactBusy(h.company)
+    try {
+      const r = await fetch('/api/signals/promote', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        // ⚠️ AUCUN CHAMP PORTEUR DE VÉRITÉ N'EST ENVOYÉ. On envoyait auparavant
+        // `hits: [h]` et `resolvedSiren` : le navigateur choisissait donc la
+        // date, le statut d'événement, l'URL de source ET le compte de
+        // rattachement. Il ne DÉSIGNE plus qu'un candidat émis par le serveur ;
+        // tout le reste est relu du registre, côté serveur.
+        body: JSON.stringify({
+          candidateId: h.candidateId,
+          canonicalKey: claim.key,
+          reviewedSourceUrls: [h.sourceUrl],
+        }),
+      })
+      const d = await r.json().catch(() => null)
+      const state = d?.state || 'NO_FACT_PRODUCED'
+      const base = LIBELLES_FAIT[state] || 'Aucun fait accepté.'
+      const detail = state === 'ACCEPTED_WITH_RESULT' && Array.isArray(d?.situations)
+        ? ` (${d.situations.length} situation(s), ${d.recommendations?.length ?? 0} recommandation(s))`
+        : ''
+      setFactState((f) => ({ ...f, [h.company]: { state, label: base + detail } }))
+    } catch {
+      setFactState((f) => ({ ...f, [h.company]: { state: 'NO_FACT_PRODUCED', label: 'Acceptation indisponible.' } }))
+    } finally { setFactBusy(null) }
   }
 
   const copyIce = (h: SignalHit) => { navigator.clipboard?.writeText(h.icebreaker); setCopied(h.company); setTimeout(() => setCopied(null), 1500) }
@@ -239,6 +447,7 @@ export default function SourcingPage() {
 
   const importOne = async (c: SourcedCompany) => {
     await importCompaniesToPipeline([c])
+    reportRejections()
     setImported((s) => new Set(s).add(c.id))
   }
   const importAll = async () => {
@@ -463,47 +672,126 @@ export default function SourcingPage() {
                 {sigMode === 'exa+claude'
                   ? '⚡ Capteur Exa → cerveau Claude'
                   : '⚡ Claude web seul (ajoute EXA_API_KEY pour un capteur plus frais et un meilleur ciblage des sources)'}
+                {sigPasses > 1 && ` · ${sigPasses} passes (une par mois) pour couvrir la période`}
               </p>
             )}
           </div>
 
+          {writeRejected && (
+            <div className="card p-4 max-w-3xl border-l-4 border-red-500">
+              <p className="text-xs text-red-600 font-semibold">⚠️ {writeRejected}</p>
+            </div>
+          )}
+
           {sigHits.length > 0 && (
             <div className="card p-5 max-w-3xl">
               <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
-                <h2 className="text-sm font-semibold text-gray-700">Entreprises détectées ({sigHits.filter((h) => h.verified).length} vérifiées)</h2>
+                <h2 className="text-sm font-semibold text-gray-700">Entreprises détectées ({sigHits.length})</h2>
                 <button onClick={makeSignalList} className="text-xs font-semibold text-indigo-600 border border-indigo-200 bg-indigo-50/50 px-2.5 py-1 rounded-lg hover:bg-indigo-50">+ Créer une liste depuis ces signaux</button>
               </div>
-              <p className="text-xs text-gray-400 mb-4">Chaque entreprise citée par l'agent est réconciliée sur un SIREN réel. Les non-vérifiées sont à contrôler manuellement (lien de recherche).</p>
+              <p className="text-xs text-gray-400 mb-4">Chaque résultat cite sa source et sa date — cliquez sur « Source » pour contrôler. La vérification SIREN (data.gouv) se déclenche <b>à l&apos;import</b>, uniquement sur les entreprises que vous retenez. Le bouton corbeille écarte un résultat hors cible.</p>
               <div className="space-y-2">
                 {sigHits.map((h) => (
                   <div key={h.company} className="p-3 rounded-xl border border-gray-100">
                     <div className="flex items-center gap-2 flex-wrap mb-1.5">
                       <span className="text-sm font-medium text-gray-800">{h.company}</span>
                       <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${SIG_STYLE[h.signalType]}`}>{h.signalType}</span>
-                      {h.verified
-                        ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">✓ existe (SIREN {h.siren})</span>
-                        : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">non vérifiée</span>}
+                      {sigCheck[h.company] && (sigCheck[h.company].verified
+                        ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">✓ SIREN {sigCheck[h.company].siren}</span>
+                        : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">SIREN introuvable</span>)}
                       {h.city && <span className="text-xs text-gray-400">{h.city}</span>}
                       {/* Écarter un résultat non pertinent (hors cible, doublon, faux positif). */}
                       <button onClick={() => setSigHits((hs) => hs.filter((x) => x.company !== h.company))} title="Écarter ce résultat" className="ml-auto text-gray-300 hover:text-red-500 flex-shrink-0">
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                       </button>
                     </div>
-                    <p className="text-xs text-gray-500 mb-2">📌 {h.detail}</p>
+                    <p className="text-xs text-gray-500 mb-1.5">📌 {h.detail}</p>
+                    {/* Traçabilité : ce que la source dit réellement (aucun champ inventé). */}
+                    {(h.date || h.amount || h.sourceName || h.role) && (
+                      <div className="flex items-center gap-2 flex-wrap mb-2 text-[11px] text-gray-400">
+                        {h.date && <span>🗓 {h.date}</span>}
+                        {h.amount && <span className="font-medium text-gray-500">💰 {h.amount}</span>}
+                        {h.role && <span>👤 {h.role}</span>}
+                        {h.sourceName && <span>📰 {h.sourceName}</span>}
+                      </div>
+                    )}
                     <div className="bg-indigo-50/40 border border-indigo-100 rounded-lg p-2.5 mb-2">
                       <p className="text-xs text-gray-700 italic">« {h.icebreaker} »</p>
                     </div>
+                    {/* ── REVUE DU CANDIDAT ─────────────────────────────────
+                        ⚠️ Présenté comme CANDIDAT, jamais comme un fait établi.
+                        Le libellé le dit explicitement : rien n'est acquis tant
+                        que personne n'a confirmé. */}
+                    {(() => {
+                      const claim = candidateClaim(h)
+                      const etat = factState[h.company]
+                      if (!claim) return null
+                      const accepte = etat?.state?.startsWith('ACCEPTED')
+                      return (
+                        <div className="border border-gray-200 rounded-lg p-2.5 mb-2">
+                          <p className="text-[11px] font-semibold text-gray-600 mb-1">{claim.label}</p>
+                          <p className="text-[11px] text-gray-400 mb-1">{claim.temporal}</p>
+                          {h.sourceUrl && (
+                            <a href={h.sourceUrl} target="_blank" rel="noreferrer"
+                               className="text-[11px] text-indigo-500 underline break-all">
+                              {h.sourceName || h.sourceUrl}
+                            </a>
+                          )}
+                          {!etat && (
+                            <p className="text-[11px] text-amber-600 mt-1.5">
+                              Candidat non vérifié — ce n’est pas encore un fait accepté.
+                            </p>
+                          )}
+                          {etat && (
+                            <p className={`text-[11px] mt-1.5 ${accepte ? 'text-emerald-600' : 'text-amber-600'}`}>
+                              {accepte ? '✓ ' : '⚠️ '}{etat.label}
+                            </p>
+                          )}
+                          {/* ⚠️ L'ACTIVATION N'EST PROPOSÉE QU'APRÈS UN REFUS
+                              EXPLICITE du serveur. Elle n'est jamais offerte
+                              « au cas où » : sans ce refus, rien n'indique que
+                              l'espace ait besoin d'être configuré. */}
+                          {etat?.state === 'BUSINESS_CONTEXT_REQUIRED' && (
+                            <div className="mt-2">
+                              <button
+                                onClick={activerContexte}
+                                disabled={ctxBusy}
+                                className="text-[11px] font-medium px-2.5 py-1 rounded-lg border border-gray-300 disabled:opacity-40">
+                                {ctxBusy ? 'Activation…' : 'Activer la lecture proactive (Sales V0)'}
+                              </button>
+                              {ctxMsg && <p className="text-[11px] text-gray-500 mt-1">{ctxMsg}</p>}
+                            </div>
+                          )}
+                          {!accepte && (
+                            <button
+                              onClick={() => confirmFact(h)}
+                              disabled={factBusy === h.company}
+                              className="mt-2 text-[11px] font-medium px-2.5 py-1 rounded-lg bg-gray-900 text-white disabled:opacity-40">
+                              {factBusy === h.company ? 'Vérification…' : 'Confirmer ce fait'}
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })()}
+                    {/* Résolution ambiguë : RIEN n'a été importé. Le dire ici, à
+                        côté du bouton, évite que l'absence de changement se lise
+                        comme un échec technique. */}
+                    {sigAmbigu[h.company] && (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-2">
+                        <p className="text-xs text-amber-700">⚠️ {sigAmbigu[h.company]}</p>
+                      </div>
+                    )}
                     <div className="flex items-center gap-2 flex-wrap">
                       <button onClick={() => copyIce(h)} className="text-xs font-medium text-gray-500 border border-gray-200 px-2.5 py-1 rounded-lg hover:bg-gray-50 transition-colors">{copied === h.company ? '✓ Copié' : 'Copier l\'accroche'}</button>
                       {h.sourceUrl && <a href={h.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-indigo-600 hover:underline">Source</a>}
-                      {!h.verified && <a href={`https://www.google.com/search?q=${encodeURIComponent(h.company + ' ' + (h.city || ''))}`} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-amber-600 hover:underline">Vérifier</a>}
+                      <a href={`https://www.google.com/search?q=${encodeURIComponent(h.company + ' ' + (h.city || ''))}`} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-gray-400 hover:underline">Recouper</a>
                       {sigImported.has(h.company) ? (
                         // Point de repère : une entreprise importée devient un COMPTE
                         // dans Pipeline → Comptes (pas dans « Entreprises sourcées »,
                         // qui liste les résultats de la recherche par critères).
                         <a href={`/pipeline?tab=comptes&q=${encodeURIComponent(h.company)}`} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto bg-emerald-50 text-emerald-600 hover:bg-emerald-100">✓ Dans Pipeline → voir le compte</a>
                       ) : (
-                        <button onClick={() => importSignal(h)} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto transition-opacity gradient-brand text-white hover:opacity-90">+ Importer</button>
+                        <button onClick={() => importSignal(h)} disabled={sigBusy === h.company} className="text-xs font-semibold px-3 py-1 rounded-lg ml-auto transition-opacity gradient-brand text-white hover:opacity-90 disabled:opacity-50">{sigBusy === h.company ? 'Vérification…' : '+ Importer'}</button>
                       )}
                     </div>
                   </div>

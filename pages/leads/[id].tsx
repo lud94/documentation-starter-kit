@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import type { LeadDetail, LeadStatus, Stage, Sequence } from '../../types/prospector'
 import { STAGE_META, STATUS_META } from '../../types/prospector'
-import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson, saveResearchNotes, verifyLeadCompany, enrichCompanyWebsite } from '../../lib/prospector/capabilities'
+import { getLeadDetail, enrichAll, setLeadStatus, setLeadStage, enrollLead, enrollLeadsInSequence, getSequences, getSequencesForLead, addLeadTag, removeLeadTag, refreshDossier, getLeadThread, addTask, deleteLead, updateLead, generateAccountSequence, researchPerson, saveResearchNotes, verifyLeadCompany, enrichCompanyWebsite, ambiguityLabel, PROVIDER_UNAVAILABLE } from '../../lib/prospector/capabilities'
 import AskExternalAI from '../../components/AskExternalAI'
 import type { ThreadMessage } from '../../lib/prospector/capabilities'
 import RedactionModal from '../../components/RedactionModal'
@@ -89,6 +89,28 @@ export default function LeadDetailPage() {
   const reload = () => { if (typeof id === 'string') { getLeadDetail(id).then(setD); loadLeadSeqs() } }
   useEffect(() => { reload() /* eslint-disable-next-line */ }, [id])
 
+// Une mutation confirmée depuis Jarvis doit être visible immédiatement
+// sur la fiche ouverte, sans refresh manuel.
+useEffect(() => {
+  const onJarvisLeadChange = () => {
+    if (typeof id === 'string') {
+      getLeadDetail(id).then(setD)
+    }
+  }
+
+  window.addEventListener(
+    'prospector:leads-changed',
+    onJarvisLeadChange,
+  )
+
+  return () => {
+    window.removeEventListener(
+      'prospector:leads-changed',
+      onJarvisLeadChange,
+    )
+  }
+}, [id])
+
   useEffect(() => { getSequences().then(setSequences) }, [])
   useEffect(() => { if (typeof id === 'string') getLeadThread(id).then(setThread) }, [id])
 
@@ -141,12 +163,35 @@ export default function LeadDetailPage() {
   const enrichCompany = async () => {
     if (typeof id !== 'string') return
     setCompanyBusy(true); setCompanyMsg(null)
-    await verifyLeadCompany(id)
+    const v = await verifyLeadCompany(id)
+
+    // ⚠️ AMBIGUÏTÉ : aucun champ n'a été écrit par `verifyLeadCompany`. On
+    // s'arrête ici — enchaîner sur l'agent web laisserait croire à une
+    // vérification réussie, et dépenserait des jetons sur une entreprise
+    // indéterminée.
+    // Panne fournisseur : on s'arrête AVANT l'agent web. Rien n'a été écrit, et
+    // on ne dépense pas de jetons sur une entreprise qu'on n'a pas pu vérifier.
+    if (v?.resolution === 'provider_error') {
+      setCompanyBusy(false)
+      setCompanyMsg(PROVIDER_UNAVAILABLE)
+      setTimeout(() => setCompanyMsg(null), 8000)
+      return
+    }
+
+    if (v?.ambiguous) {
+      setCompanyBusy(false)
+      setCompanyMsg(ambiguityLabel(lead?.company || '', v.candidates, "Aucun champ n'a été modifié."))
+      setTimeout(() => setCompanyMsg(null), 8000)
+      return
+    }
+
     const r = await enrichCompanyWebsite(id)
     setCompanyBusy(false)
     setCompanyMsg(r.mode === 'off'
       ? 'Agent web non configuré (Admin → Connexions → clé Anthropic).'
-      : (r.website || r.summary) ? 'Entreprise enrichie.' : 'Vérifiée sur data.gouv — rien de plus trouvé sur le web.')
+      : (r.website || r.summary) ? 'Entreprise enrichie.'
+      : v?.found ? 'Vérifiée sur data.gouv — rien de plus trouvé sur le web.'
+      : 'Entreprise non vérifiée sur data.gouv — rien de plus trouvé sur le web.')
     setTimeout(() => setCompanyMsg(null), 4000)
     reload()
   }
@@ -218,7 +263,7 @@ export default function LeadDetailPage() {
               <h1 className="text-xl font-bold text-gray-900">{lead.firstName} {lead.lastName}</h1>
               {d.premium && <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600">👑 Premium</span>}
               {d.openProfile && <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600">Open Profile</span>}
-              <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${BAND_STYLE[scoring.band]}`}>{scoring.band === 'HOT' ? 'Chaud 🔥' : scoring.band === 'WARM' ? 'Tiède' : 'Froid'}</span>
+              <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${BAND_STYLE[scoring.band]}`}>{scoring.band === 'HOT' ? 'Priorité IA : Forte 🔥' : scoring.band === 'WARM' ? 'Priorité IA : Moyenne' : 'Priorité IA : Faible'}</span>
               <span className="text-xs font-medium px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: stageMeta.color }}>{stageMeta.label}</span>
             </div>
             <p className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">

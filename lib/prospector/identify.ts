@@ -11,6 +11,7 @@
 import { getKey } from './keystore'
 import { reconcileByName } from './datagouv'
 import { callClaude, parseJson, cacheKey } from './llm'
+import type { TenantContext } from './tenant'
 
 export interface IdentifyInput { name?: string; title?: string; company?: string; url?: string }
 export interface IdentifyResult {
@@ -62,7 +63,7 @@ async function heuristicIdentify(input: IdentifyInput): Promise<IdentifyResult> 
   return { kind: 'company', company: companyName, confidence, mode: 'heuristic' }
 }
 
-export async function identifyLead(input: IdentifyInput): Promise<IdentifyResult> {
+export async function identifyLead(tenant: TenantContext, input: IdentifyInput): Promise<IdentifyResult> {
   const url = (input.url || '').toLowerCase()
   const name = (input.name || '').trim()
 
@@ -81,7 +82,7 @@ export async function identifyLead(input: IdentifyInput): Promise<IdentifyResult
 // proposition de valeur, cible/clients, actus. N'invente rien (champ vide sinon).
 export interface CompanyWeb { website?: string; summary?: string; sector?: string; effectif?: string; ca?: string; mode: string }
 
-export async function enrichCompanyWeb(company: string, city?: string, siren?: string): Promise<CompanyWeb> {
+export async function enrichCompanyWeb(tenant: TenantContext, company: string, city?: string, siren?: string): Promise<CompanyWeb> {
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return { mode: 'off' }
   const pappers = siren ? `Consulte aussi la fiche PUBLIQUE Pappers (https://www.pappers.fr/entreprise/${siren}) pour le chiffre d'affaires, l'effectif et les infos légales.` : ''
@@ -96,7 +97,7 @@ Réponds UNIQUEMENT en JSON: {"website","sector","summary","ca","effectif"}. sum
     // Cache 7 j par entreprise : réenrichir la même boîte ne coûte plus rien.
     // web_search limité à 3 usages (chaque recherche est facturée + gonfle l'entrée).
     const r = await callClaude({
-      task: 'extract', agent: 'Enrichissement web', system,
+      tenant, task: 'extract', agent: 'Enrichissement web', system,
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
       messages: [{ role: 'user', content: `Entreprise: ${company}${city ? ` (${city})` : ''}${siren ? ` · SIREN ${siren}` : ''}. Trouve le site, parcours-le, et renvoie le JSON demandé.` }],
       cache: cacheKey(['enrich', siren || company, city || '']),

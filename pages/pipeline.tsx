@@ -3,12 +3,13 @@ import Head from 'next/head'
 import Link from 'next/link'
 import type { Lead, Stage, LeadStatus } from '../types/prospector'
 import { STAGE_META, STATUS_META } from '../types/prospector'
-import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, isAccountLead, PERSONAS } from '../lib/prospector/capabilities'
+import { getLeads, enrichEmails, enrichAll, setLeadStatus, promoteDirigeant, getAccountDetail, addAccountContact, addDirigeantsAsContacts, verifyLeadCompany, enrichCompanyWebsite, deleteLead, flipToContact, ambiguityLabel, PROVIDER_UNAVAILABLE, PERSONAS , takeWriteRejections, rejectionLabel} from '../lib/prospector/capabilities'
 import { useRouter } from 'next/router'
 import type { AccountDetail } from '../lib/prospector/capabilities'
 import EnrichModal from '../components/EnrichModal'
 import AddToListModal from '../components/AddToListModal'
 import { ConfirmDialog } from '../components/Dialog'
+import { isAccountLead, projectAccounts, summarizeAccounts } from '../lib/prospector/leadKind'
 
 const STAGE_ORDER: Stage[] = ['to_invite', 'invited', 'connected', 'in_sequence', 'responded', 'meeting', 'closed']
 const STATUS_ORDER: LeadStatus[] = ['chaud', 'tiede', 'froid', 'converti', 'perdu']
@@ -128,7 +129,17 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
   const verify = async () => {
     if (!account) return
     setBusy(true); const r = await verifyLeadCompany(account.id); setBusy(false); setDetail(null); await loadDetail()
-    flash(r?.found ? 'Entreprise vérifiée (data.gouv).' : 'Entreprise introuvable sur data.gouv — précise le nom.')
+    // AMBIGU ≠ INTROUVABLE. Le message « introuvable » disait le contraire de la
+    // vérité : il n'y a pas zéro société, il y en a plusieurs. Aucun champ du
+    // compte n'a été modifié dans ce cas.
+    flash(
+      r?.found ? 'Entreprise vérifiée (data.gouv).'
+      : r?.ambiguous ? ambiguityLabel(account?.company || company, r.candidates, "Aucun champ n'a été modifié.")
+      // ⚠️ PANNE ≠ ABSENCE. Annoncer « introuvable » pendant une indisponibilité
+      // ferait corriger un nom qui était juste.
+      : r?.resolution === 'provider_error' ? PROVIDER_UNAVAILABLE
+      : 'Entreprise introuvable sur data.gouv — précise le nom.',
+    )
   }
   const getWebsite = async () => {
     if (!account) return
@@ -160,6 +171,11 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
               : <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">Non vérifiée</span>}
             {meta?.siren && <span className="text-[10px] text-gray-400 font-mono">SIREN {meta.siren}</span>}
             {contacts.length === 0 && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-50 text-amber-600">Compte seul · 0 contact</span>}
+            {/* Groupe porté par des contacts SANS fiche compte. L'entreprise est
+                bien connue — son nom est enregistré dans le contact — mais aucune
+                entité compte n'existe. Le dire ici évite que la carte se lise
+                comme une fiche compte créée. */}
+            {!account && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700">Entreprise liée — aucune fiche compte créée</span>}
           </div>
           <p className="text-xs text-gray-400 truncate mt-0.5">
             {[meta?.dirigeant && `Dirigeant : ${meta.dirigeant}`, meta?.city, meta?.effectif && `${meta.effectif} sal.`, meta?.website].filter(Boolean).join(' · ') || 'Infos entreprise à enrichir'}
@@ -279,19 +295,14 @@ function AccountCard({ company, account, contacts, onChanged }: { company: strin
 }
 
 function AccountsView({ leads, onChanged }: { leads: Lead[]; onChanged: () => void }) {
-  const groups = new Map<string, { account?: Lead; contacts: Lead[] }>()
-  for (const l of leads) {
-    const k = l.company || '—'
-    if (!groups.has(k)) groups.set(k, { contacts: [] })
-    const g = groups.get(k)!
-    if (isAccountLead(l)) g.account = l
-    else g.contacts.push(l)
-  }
-  const entries = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]))
-  if (entries.length === 0) return <p className="text-sm text-gray-400 text-center py-12">Aucun compte. Importe des entreprises depuis Sourcing.</p>
+  // Le regroupement vit dans `projectAccounts` (module pur) : c'est le MÊME
+  // calcul que celui du compteur d'en-tête, donc les deux ne peuvent plus se
+  // contredire.
+  const { groups } = projectAccounts(leads)
+  if (groups.length === 0) return <p className="text-sm text-gray-400 text-center py-12">Aucun compte. Importe des entreprises depuis Sourcing.</p>
   return (
     <div className="space-y-3">
-      {entries.map(([company, g]) => <AccountCard key={company} company={company} account={g.account} contacts={g.contacts} onChanged={onChanged} />)}
+      {groups.map((g) => <AccountCard key={g.company} company={g.company} account={g.account} contacts={g.contacts} onChanged={onChanged} />)}
     </div>
   )
 }
@@ -311,7 +322,14 @@ export default function PipelinePage() {
 
   const router = useRouter()
   // force=true → resynchronise avec le serveur (import via l'extension, etc.).
-  const refresh = (force = false) => getLeads(force).then((l) => { setLeads(l); setLoading(false) })
+  // Refus d'écriture : ils doivent être visibles. Un refus silencieux laisserait
+  // croire à un enregistrement réussi — exactement le défaut qu'on corrige.
+  const [writeRejected, setWriteRejected] = useState<string | null>(null)
+  const refresh = (force = false) => {
+    const r = takeWriteRejections()
+    setWriteRejected(r.length ? `${r.length} enregistrement(s) refusé(s) — ${rejectionLabel(r[0].reason)}. Rien n'a été écrasé.` : null)
+    return getLeads(force).then((l) => { setLeads(l); setLoading(false) })
+  }
   useEffect(() => { refresh() }, [])
   // Ouverture ciblée depuis une fiche contact : ?tab=comptes&q=<entreprise>.
   useEffect(() => {
@@ -327,6 +345,26 @@ export default function PipelinePage() {
     document.addEventListener('visibilitychange', onFocus)
     return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus) }
   }, [])
+
+// Une mutation confirmée depuis Jarvis doit être visible immédiatement
+// sans attendre un refresh manuel ou un changement d'onglet.
+useEffect(() => {
+  const onJarvisLeadChange = () => {
+    refresh(true)
+  }
+
+  window.addEventListener(
+    'prospector:leads-changed',
+    onJarvisLeadChange,
+  )
+
+  return () => {
+    window.removeEventListener(
+      'prospector:leads-changed',
+      onJarvisLeadChange,
+    )
+  }
+}, [])
 
   const toggle = (set: Set<string>, setter: (s: Set<string>) => void, v: string) => {
     const n = new Set(set); n.has(v) ? n.delete(v) : n.add(v); setter(n)
@@ -345,6 +383,10 @@ export default function PipelinePage() {
   })
   // La vue Contacts n'affiche QUE des personnes (les comptes seuls restent en vue Comptes).
   const contactLeads = filtered.filter((l) => !isAccountLead(l))
+  // Compteur de l'en-tête « Comptes » : dénombrement d'ENTITÉS, issu du même
+  // calcul pur que la vue elle-même. Il remplace un `new Set(company).size` qui
+  // dénombrait des noms d'entreprise sous l'étiquette « comptes ».
+  const accountsSummary = summarizeAccounts(projectAccounts(filtered))
   const byStage = (s: Stage) => contactLeads.filter((l) => l.stage === s)
   const hasFilter = query || statusF.size || stageF.size || personaF.size || enrichF !== 'all'
 
@@ -376,12 +418,18 @@ export default function PipelinePage() {
     <>
       <Head><title>Prospector · Pipeline & Leads</title></Head>
 
+      {writeRejected && (
+        <div className="card p-4 mb-4 border-l-4 border-red-500">
+          <p className="text-xs text-red-600 font-semibold">⚠️ {writeRejected}</p>
+        </div>
+      )}
+
       <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Pipeline &amp; Leads</h1>
           <p className="text-gray-400 text-sm mt-0.5">
             {loading ? 'Chargement…'
-              : mainView === 'comptes' ? `${new Set(filtered.map((l) => l.company)).size} comptes · ${contactLeads.length} contacts`
+              : mainView === 'comptes' ? accountsSummary
               : hasFilter ? `${contactLeads.length} contacts filtrés` : `${contactLeads.length} contacts dans votre base`}
           </p>
         </div>
