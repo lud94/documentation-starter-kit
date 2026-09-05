@@ -82,7 +82,10 @@ function typesDe(situations: Situation[]): string[] {
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('A. SPACE_EXPANSION — convergence exigée, jamais un signal seul', () => {
-  const FUND = ev('ev_fund', 'recent_funding', { occurredAt: '2026-05-01T00:00:00.000Z' })
+  // SIGNAL_TEMPORAL_WINDOW_V0_001 : la levee doit etre DANS la fenetre de 90 jours
+  // de `space-expansion` (83 jours avant NOW) — une levee de 114 jours est
+  // desormais legitimement exclue, et un test dedie le verifie plus bas.
+  const FUND = ev('ev_fund', 'recent_funding', { occurredAt: '2026-06-01T00:00:00.000Z' })
   const SITE = ev('ev_site', 'site_expansion', { occurredAt: '2026-06-15T00:00:00.000Z' })
   const HEAD = ev('ev_head', 'headcount_acceleration', { occurredAt: '2026-06-01T00:00:00.000Z' })
   const JOBS = ev('ev_jobs', 'hiring_volume_surge', { occurredAt: '2026-06-05T00:00:00.000Z' })
@@ -435,7 +438,7 @@ describe('D. Arithmétique calendaire — mois réels, jamais 30 jours', () => {
 describe('E. Architecture — deux verticaux, un seul kernel', () => {
   it('les MÊMES evidences sont lisibles par les deux packs, distinctement', () => {
     const partagees = [
-      ev('ev_fund', 'recent_funding', { occurredAt: '2026-05-01T00:00:00.000Z' }),
+      ev('ev_fund', 'recent_funding', { occurredAt: '2026-06-01T00:00:00.000Z' }),
       ev('ev_head', 'headcount_acceleration', { occurredAt: '2026-06-01T00:00:00.000Z' }),
       ev('ev_site', 'site_expansion', { occurredAt: '2026-06-15T00:00:00.000Z' }),
     ]
@@ -554,7 +557,7 @@ describe('F. Runner LENS-AWARE — une evidence inerte est un cas INVALIDE', () 
       businessContext: CONTEXTE_FABEL,
       targets: [{ accountId: COMPTE, relevance: 0.8 }],
       evidence: [
-        ev('ev_fund', 'recent_funding', { occurredAt: '2026-05-01T00:00:00.000Z' }),
+        ev('ev_fund', 'recent_funding', { occurredAt: '2026-06-01T00:00:00.000Z' }),
         ev('ev_site', 'site_expansion', { occurredAt: '2026-06-15T00:00:00.000Z' }),
       ],
     }

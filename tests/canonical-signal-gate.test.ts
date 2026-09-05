@@ -94,8 +94,14 @@ describe('classement — levée (FUNDING_ROUND)', () => {
     if (a.ok === false) throw new Error(a.reason)
     expect(a.signals).toEqual([evidence])
     expect(a.excluded).toEqual([])
+    // SIGNAL_TEMPORAL_WINDOW_V0_001 : le side-car temporel d'un ÉVÉNEMENT est
+    // sa date métier prouvée — jamais recopié sur l'Evidence (toEqual ci-dessus
+    // échouerait sur tout champ ajouté), jamais persisté (test 20).
+    expect(a.temporalAuthorityByEvidenceId).toEqual({
+      [evidence.id]: { basis: 'DATED_EVENT_DAY', referenceDay: JOUR_EVT },
+    })
     const b = await canonicalSignalGate([evidence], WS) // rejeu strictement identique
-    expect(b).toEqual(a) // 10 + 18
+    expect(b).toEqual(a) // 10 + 18 + side-car déterministe
   })
 
   it('2/15 — AUCUNE assertion (héritage non couvert) ⇒ MISSING/NO_SOURCE_ASSERTION, jamais « vieille evidence valide »', async () => {
@@ -246,6 +252,12 @@ describe('cardinalités — instantanés d’état et événements de direction'
     expect(r.signals).toEqual([e])
     const snapshots = [...g.__prospectorStore.keys()].filter((k: string) => k.startsWith(`${CANONICAL_STATE_SNAPSHOT_KIND}|${WS}|`))
     expect(snapshots.length).toBe(2)
+    // SIGNAL_TEMPORAL_WINDOW_V0_001 : l'autorité d'un ÉTAT est le jour
+    // d'observation MAXIMAL des assertions durables — jamais le minimum,
+    // jamais `observedAt`.
+    expect(r.temporalAuthorityByEvidenceId[e.id]).toEqual({
+      basis: 'EXTERNAL_STATE_OBSERVED_DAY', referenceDay: '2026-08-19',
+    })
   })
 
   it('12 — UN jour affirmé sans son instantané ⇒ MISSING/SNAPSHOT_DAY_UNANCHORED (échec fermé)', async () => {

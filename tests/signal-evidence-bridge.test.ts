@@ -1135,6 +1135,17 @@ describe('SIGNAL-EVIDENCE-BRIDGE-001 — bout-en-bout jusqu’au Decision Kernel
     return pont(SOURCES_E2E())
   }
 
+
+  // SIGNAL_TEMPORAL_WINDOW_V0_001 : un état externe (`sales_hiring`) soumis à
+  // une fenêtre déclarée exige son AUTORITÉ TEMPORELLE (en production : le
+  // side-car du gate canonique, dérivé des assertions immuables). Le test la
+  // fournit explicitement — jamais un repli silencieux sur `observedAt`.
+  const autoriteEtat = (evidence: readonly any[]) => Object.fromEntries(
+    evidence
+      .filter((e) => e.temporality === 'undated_state' && e.source?.provider === 'web_signal_search')
+      .map((e) => [e.id, { basis: 'EXTERNAL_STATE_OBSERVED_DAY', referenceDay: '2026-08-19' }]),
+  )
+
   it('SignalHit → KnownEvidenceEvent → orchestrator.evaluate() → Situation réelle', () => {
     const out = pontE2E()
     expect(out.evidence).toHaveLength(2)
@@ -1145,6 +1156,7 @@ describe('SIGNAL-EVIDENCE-BRIDGE-001 — bout-en-bout jusqu’au Decision Kernel
       tasks: { complete: true, openTaskLeadIds: [] },
       businessContext: TEST_BUSINESS_CONTEXT,
       externalEvidence: out.evidence,
+      temporalAuthorityByEvidenceId: autoriteEtat(out.evidence),
       relevanceFor: () => 0.8,
     })
 
@@ -1253,6 +1265,7 @@ describe('SIGNAL-EVIDENCE-BRIDGE-001 — bout-en-bout jusqu’au Decision Kernel
     const legitime = evaluate({
       leads: [compte], now: NOW, tasks: { complete: true, openTaskLeadIds: [] },
       businessContext: TEST_BUSINESS_CONTEXT, externalEvidence: legitimes,
+      temporalAuthorityByEvidenceId: autoriteEtat(legitimes),
       relevanceFor: () => 0.8,
     })
     expect(legitime.situations.find((s) => s.type === 'sales_scale_up')).toBeDefined()
@@ -1275,6 +1288,7 @@ describe('SIGNAL-EVIDENCE-BRIDGE-001 — bout-en-bout jusqu’au Decision Kernel
       leads: [compte], now: NOW, tasks: { complete: true, openTaskLeadIds: [] },
       businessContext: TEST_BUSINESS_CONTEXT,
       externalEvidence: [...legitimes, inferenceForgee] as any,
+      temporalAuthorityByEvidenceId: autoriteEtat(legitimes),
       relevanceFor: () => 0.8,
     })
 

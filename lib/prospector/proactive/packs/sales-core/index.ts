@@ -15,7 +15,10 @@ import {
 } from '../../ruleKit'
 
 export const SALES_CORE_ID = 'sales-core'
-export const SALES_CORE_VERSION = 'v0.1'
+// v0.2 — SIGNAL_TEMPORAL_WINDOW_V0_001 : fenêtres temporelles déclarées sur
+// `sales-scale-up` et `strong-signal-low-context`. Les fenêtres changent la
+// sémantique des règles : la provenance de version doit dire la vérité.
+export const SALES_CORE_VERSION = 'v0.2'
 
 export const MIN_EVIDENCE_CONFIDENCE = 0.6
 export const STRONG_EVIDENCE_CONFIDENCE = 0.75
@@ -215,11 +218,25 @@ export const SALES_CORE = defineRulePack({
     {
       ruleId: 'sales-scale-up',
       situationType: 'sales_scale_up',
+      // ── POLITIQUE TEMPORELLE V0 — PROVISOIRE, PAS UNE VÉRITÉ UNIVERSELLE.
+      // « recent_funding » reçoit ENFIN un contrat de fraîcheur : 90 jours,
+      // la borne finale des paliers historiques d'urgence, qui devient le sens
+      // V0 réel de « récent ». `sales_hiring` est un ÉTAT externe mutable : il
+      // doit être RÉ-OBSERVÉ — 30 jours est une politique opérationnelle V0, à
+      // confronter au Golden Dataset. La règle DÉCLARE ; le cœur APPLIQUE.
+      temporalPolicy: {
+        maxAgeDaysByEvidenceType: { recent_funding: 90, sales_hiring: 30 },
+      },
       detect: detectSalesScaleUp,
     },
     {
       ruleId: 'strong-signal-low-context',
       situationType: 'strong_signal_low_context',
+      // Même politique que `sales-scale-up` : un « signal fort » périmé n'est
+      // pas un signal fort à contexte faible — c'est un fait historique.
+      temporalPolicy: {
+        maxAgeDaysByEvidenceType: { recent_funding: 90, sales_hiring: 30 },
+      },
       detect: detectStrongSignalLowContext,
     },
     {

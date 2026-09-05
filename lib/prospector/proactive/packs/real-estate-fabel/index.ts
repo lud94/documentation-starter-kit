@@ -43,7 +43,9 @@ import {
 import { estDeclarationFiable } from './provenance'
 
 export const FABEL_PACK_ID = 'real-estate-fabel'
-export const FABEL_PACK_VERSION = 'v0.1'
+// v0.2 — SIGNAL_TEMPORAL_WINDOW_V0_001 : fenêtre temporelle déclarée sur la
+// règle `space-expansion` (seul producteur réel partagé : `recent_funding`).
+export const FABEL_PACK_VERSION = 'v0.2'
 
 /**
  * Délai avant échéance à partir duquel une fenêtre de revue devient utile.
@@ -403,6 +405,14 @@ export const REAL_ESTATE_FABEL = defineRulePack({
     {
       ruleId: 'space-expansion',
       situationType: 'space_expansion',
+      // ── POLITIQUE TEMPORELLE V0 — `recent_funding` UNIQUEMENT, car c'est le
+      // seul type partagé réellement PRODUIT aujourd'hui : sans fenêtre, une
+      // levée de 2021 pouvait co-fonder une expansion Fabel de 2026. AUCUNE
+      // fenêtre inventée pour les familles dormantes sans producteur — leur
+      // politique se déclarera quand elles seront réellement produites.
+      temporalPolicy: {
+        maxAgeDaysByEvidenceType: { recent_funding: 90 },
+      },
       detect: detectSpaceExpansion,
     },
     {

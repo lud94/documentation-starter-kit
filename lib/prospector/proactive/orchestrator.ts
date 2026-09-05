@@ -29,6 +29,7 @@ import { isEvidenceEvent } from './validators'
 import type {
   EvidenceEvent,
   Recommendation,
+  SignalTemporalAuthority,
   Situation,
 } from './types'
 import {
@@ -100,6 +101,14 @@ export interface ProactiveEvaluationInput {
    * une PORTE D'ENTRÉE, jamais une dérogation.
    */
   externalEvidence?: readonly EvidenceEvent[]
+
+  /**
+   * SIGNAL_TEMPORAL_WINDOW_V0_001 — autorité temporelle des Signaux externes,
+   * side-car du gate canonique, transmise TELLE QUELLE au kernel. Jamais
+   * fabriquée ici, jamais persistée. Absente ⇒ toute evidence externe non
+   * datée sous fenêtre déclarée échoue fermé pour la règle concernée.
+   */
+  temporalAuthorityByEvidenceId?: Readonly<Record<string, SignalTemporalAuthority>>
 }
 
 export interface ProactiveEvaluation {
@@ -274,6 +283,9 @@ export function evaluate(input: ProactiveEvaluationInput): ProactiveEvaluation {
     businessContext: input.businessContext,
     evidence,
     targets,
+    ...(input.temporalAuthorityByEvidenceId
+      ? { temporalAuthorityByEvidenceId: input.temporalAuthorityByEvidenceId }
+      : {}),
   })
 
   return { evidence, situations, recommendations }

@@ -14,11 +14,13 @@
 // ⚠️ DÉPLACEMENT SANS RÉÉCRITURE. Les corps sont ceux de `situationEngine.ts`,
 // à l'identique. Toute divergence de comportement serait un défaut, pas une
 // amélioration : les 158 tests existants sont l'oracle d'équivalence.
-import type {
-  AnticipatedHorizon,
-  DatedEventEvidence,
-  EvidenceEvent,
-  Situation,
+import {
+  EXTERNAL_SIGNAL_PROVIDER,
+  type AnticipatedHorizon,
+  type DatedEventEvidence,
+  type EvidenceEvent,
+  type SignalTemporalAuthority,
+  type Situation,
 } from './types'
 import type { SituationEvaluationContext } from './rulePack'
 
@@ -81,6 +83,19 @@ export function bestEvidenceByType(
           return b.confidence - a.confidence
         }
 
+        // ── SIGNAL_TEMPORAL_WINDOW_V0_001 : à confiance égale, DEUX ÉVÉNEMENTS
+        // DATÉS se départagent par leur DATE MÉTIER, jamais par `observedAt` —
+        // une re-adjudication d'aujourd'hui ne rajeunit pas un fait de 2021.
+        // Tout autre couple conserve l'ordre antérieur (observedAt) : pour un
+        // état non daté, l'entrée dans la projection reste le seul ordre connu.
+        if (a.temporality === 'dated_event' && b.temporality === 'dated_event') {
+          const ao = Date.parse((a as DatedEventEvidence).occurredAt)
+          const bo = Date.parse((b as DatedEventEvidence).occurredAt)
+          if (Number.isFinite(ao) && Number.isFinite(bo) && bo !== ao) {
+            return bo - ao
+          }
+        }
+
         return (
           Date.parse(b.observedAt) -
           Date.parse(a.observedAt)
@@ -133,6 +148,175 @@ export function aUneDateMetier(
   evidence: EvidenceEvent,
 ): evidence is DatedEventEvidence {
   return evidence.temporality === 'dated_event'
+}
+
+// ── SIGNAL_TEMPORAL_WINDOW_V0_001 — CLASSIFICATION TEMPORELLE DU CŒUR ───────
+//
+// Trois quantités STRICTEMENT distinctes, et ce module n'en fusionne aucune :
+//   validité du FAIT        → validateurs + gate canonique (ailleurs)
+//   fraîcheur du SIGNAL     → ces helpers (référence temporelle + fenêtre)
+//   urgence de la SITUATION → `freshnessScore`/`urgencyFromEvidence`, inchangés
+//
+// L'âge n'est JAMAIS converti en confiance, et une donnée absente ne produit
+// jamais une référence : INCONNU n'est pas récent.
+
+const JOUR_UTC = /^\d{4}-\d{2}-\d{2}$/
+
+/** Ce que le cœur SAIT du temps d'une evidence — jamais ce qu'il devine. */
+export type TemporalReference =
+  | { state: 'KNOWN'; granularity: 'DAY' | 'INSTANT'; ms: number }
+  | { state: 'UNKNOWN' }
+  | { state: 'INVALID_OR_FUTURE' }
+
+/** Minuit UTC du jour de `now` — la comparaison de JOURS se fait en jours. */
+function debutDeJourUtc(now: Date): number {
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+}
+
+/**
+ * RÉFÉRENCE TEMPORELLE D'UNE EVIDENCE — la seule horloge légitime, par nature :
+ *
+ *   ÉVÉNEMENT DATÉ          → `occurredAt` (la date métier, rien d'autre)
+ *   ÉTAT EXTERNE            → side-car du gate canonique
+ *                             (`EXTERNAL_STATE_OBSERVED_DAY`, histoire immuable)
+ *   ÉTAT INTERNE (CRM)      → `observedAt` — LÉGITIME ici, et seulement ici :
+ *                             `dataBridge` produit l'evidence À l'instant de
+ *                             l'observation CRM, les deux horloges coïncident.
+ *
+ * JAMAIS `sourcePublishedAt`, JAMAIS `acceptance.confirmedAt`, JAMAIS
+ * `retrievedAt` en aval, JAMAIS `observedAt` pour un fait externe — toutes ces
+ * horloges mesurent la découverte ou l'adjudication, pas le monde.
+ *
+ * État externe sans autorité (side-car absent) ⇒ UNKNOWN — il ne satisfera
+ * AUCUNE fenêtre déclarée. Le fait reste vrai ; il est temporellement muet.
+ */
+export function temporalReference(
+  evidence: EvidenceEvent,
+  now: Date,
+  authority?: SignalTemporalAuthority,
+): TemporalReference {
+  const nowMs = now.getTime()
+  if (!Number.isFinite(nowMs)) return { state: 'INVALID_OR_FUTURE' }
+
+  if (evidence.temporality === 'dated_event') {
+    const brut = (evidence as DatedEventEvidence).occurredAt
+    if (typeof brut !== 'string') return { state: 'INVALID_OR_FUTURE' }
+    const ms = Date.parse(brut)
+    if (!Number.isFinite(ms)) return { state: 'INVALID_OR_FUTURE' }
+    if (JOUR_UTC.test(brut)) {
+      // Jour métier : futur au sens des JOURS UTC, jamais des heures locales.
+      if (ms > debutDeJourUtc(now)) return { state: 'INVALID_OR_FUTURE' }
+      return { state: 'KNOWN', granularity: 'DAY', ms }
+    }
+    if (ms > nowMs) return { state: 'INVALID_OR_FUTURE' }
+    return { state: 'KNOWN', granularity: 'INSTANT', ms }
+  }
+
+  if (evidence.temporality !== 'undated_state') return { state: 'UNKNOWN' }
+
+  if (evidence.source?.provider === EXTERNAL_SIGNAL_PROVIDER) {
+    // ⚠️ AUCUN REPLI SUR `observedAt` : une adjudication d'aujourd'hui ne
+    // rajeunit pas une page observée en mars. L'autorité vient du gate.
+    if (!authority) return { state: 'UNKNOWN' }
+    if (authority.basis !== 'EXTERNAL_STATE_OBSERVED_DAY') {
+      return { state: 'INVALID_OR_FUTURE' } // autorité incohérente : refus
+    }
+    const jour = authority.referenceDay
+    if (typeof jour !== 'string' || !JOUR_UTC.test(jour)) {
+      return { state: 'INVALID_OR_FUTURE' }
+    }
+    const ms = Date.parse(jour)
+    if (!Number.isFinite(ms)) return { state: 'INVALID_OR_FUTURE' }
+    if (ms > debutDeJourUtc(now)) return { state: 'INVALID_OR_FUTURE' }
+    return { state: 'KNOWN', granularity: 'DAY', ms }
+  }
+
+  // Interne (CRM) : l'observation EST l'instantané — durée exacte écoulée.
+  const ms = Date.parse(evidence.observedAt)
+  if (!Number.isFinite(ms)) return { state: 'INVALID_OR_FUTURE' }
+  if (ms > nowMs) return { state: 'INVALID_OR_FUTURE' }
+  return { state: 'KNOWN', granularity: 'INSTANT', ms }
+}
+
+/**
+ * SIGNAL_TEMPORAL_WINDOW_V0_001_R1 — LECTURE D'UNE FENÊTRE DÉCLARÉE, FERMÉE.
+ *
+ * ABSENCE ≠ MALFORMATION, et les confondre est un échec OUVERT :
+ *
+ *   NONE     clé ABSENTE           → aucune fenêtre : comportement antérieur
+ *   VALID    nombre ENTIER ≥ 0     → appliquer `withinMaxAgeDays`
+ *   INVALID  clé PRÉSENTE, valeur  → FAIL CLOSED : l'evidence de ce type ne
+ *            illisible               doit JAMAIS atteindre `detect` sous cette
+ *                                    règle — une politique malformée ne peut
+ *                                    que RETIRER de l'éligibilité, jamais en
+ *                                    créer ni en élargir.
+ *
+ * ⚠️ AUCUNE COERCITION. `"90"` est INVALIDE — pas `Number("90")`. L'unité
+ * déclarée est le JOUR CALENDAIRE : la valeur doit être un entier sûr, non
+ * négatif et fini. NaN, ±Infinity, négatif, non-entier, non-nombre ⇒ INVALID.
+ */
+export type TemporalWindowLookup =
+  | { kind: 'NONE' }
+  | { kind: 'VALID'; maxAgeDays: number }
+  | { kind: 'INVALID' }
+
+export function temporalWindowLookup(
+  maxAgeDaysByEvidenceType: Readonly<Record<string, unknown>> | undefined,
+  evidenceType: string,
+): TemporalWindowLookup {
+  if (!maxAgeDaysByEvidenceType
+    || !Object.prototype.hasOwnProperty.call(maxAgeDaysByEvidenceType, evidenceType)) {
+    return { kind: 'NONE' }
+  }
+  const brut = maxAgeDaysByEvidenceType[evidenceType]
+  if (typeof brut !== 'number' || !Number.isSafeInteger(brut) || brut < 0) {
+    return { kind: 'INVALID' }
+  }
+  return { kind: 'VALID', maxAgeDays: brut }
+}
+
+/**
+ * LA FENÊTRE. `maxAgeDays = N` : utilisable jusqu'au jour d'âge N INCLUS,
+ * périmé à compter du jour UTC N+1 (granularité JOUR) ; durée exacte écoulée
+ * pour une référence instantanée (CRM). UNKNOWN, invalide ou futur ne
+ * satisfont JAMAIS une fenêtre déclarée — fail closed.
+ */
+export function withinMaxAgeDays(
+  reference: TemporalReference,
+  now: Date,
+  maxAgeDays: number,
+): boolean {
+  if (reference.state !== 'KNOWN') return false
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays < 0) return false
+
+  if (reference.granularity === 'DAY') {
+    const ageJours = Math.floor((debutDeJourUtc(now) - reference.ms) / DAY_MS)
+    return ageJours >= 0 && ageJours <= maxAgeDays
+  }
+  const ecoule = now.getTime() - reference.ms
+  return ecoule >= 0 && ecoule <= maxAgeDays * DAY_MS
+}
+
+/**
+ * L'INSTANT où la référence sort de la fenêtre — pour BORNER la validité d'une
+ * Situation persistée : filtrer à l'évaluation ne suffit pas, une Situation
+ * produite au jour 89 d'une fenêtre de 90 ne doit pas survivre 30 jours de TTL.
+ *
+ *   JOUR    → minuit UTC du jour d'âge N+1 (premier instant périmé)
+ *   INSTANT → référence + N jours exacts
+ *
+ * `null` si la référence n'est pas connue — l'appelant n'a alors rien à borner
+ * puisque cette evidence n'a pas pu satisfaire la fenêtre.
+ */
+export function freshnessDeadlineMs(
+  reference: TemporalReference,
+  maxAgeDays: number,
+): number | null {
+  if (reference.state !== 'KNOWN') return null
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays < 0) return null
+  return reference.granularity === 'DAY'
+    ? reference.ms + (maxAgeDays + 1) * DAY_MS
+    : reference.ms + maxAgeDays * DAY_MS
 }
 
 /**

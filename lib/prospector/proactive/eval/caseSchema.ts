@@ -27,7 +27,7 @@ import { LENS_REGISTRY } from '../lens/registry'
 import { PACK_REGISTRY } from '../packs/registry'
 import type { BusinessContextV0 } from '../lens/context'
 import type { KernelTarget } from '../decisionKernel'
-import type { EvidenceEvent } from '../types'
+import type { EvidenceEvent, SignalTemporalAuthority } from '../types'
 
 /** Version de contrat. Toute autre valeur est refusée — jamais « tolérée ». */
 export const EVAL_SCHEMA_VERSION = 'proactive-eval-v0.1'
@@ -51,6 +51,7 @@ const CLES_RACINE = [
   'businessContext',
   'targets',
   'evidence',
+  'temporalAuthorityByEvidenceId',
   '_comment',
 ] as const
 
@@ -60,6 +61,16 @@ export interface EvalCase {
   businessContext: BusinessContextV0
   targets: readonly KernelTarget[]
   evidence: readonly EvidenceEvent[]
+
+  /**
+   * SIGNAL_TEMPORAL_WINDOW_V0_001 — autorité temporelle DÉCLARÉE PAR LE CAS
+   * pour ses Signaux externes non datés (en production, c'est le side-car du
+   * gate canonique ; hors ligne, le cas la fournit EXPLICITEMENT). Absente
+   * pour une evidence externe non datée sous fenêtre déclarée ⇒ le moteur
+   * échoue fermé pour cette règle — le runner ne replie JAMAIS sur
+   * `observedAt` pendant que la production lit l'histoire immuable.
+   */
+  temporalAuthorityByEvidenceId?: Readonly<Record<string, SignalTemporalAuthority>>
 }
 
 export interface EvalError {
@@ -428,6 +439,37 @@ export function validateEvalCase(input: unknown): EvalCaseValidation {
     })
   }
 
+  // ── SIGNAL_TEMPORAL_WINDOW_V0_001 : autorité temporelle DÉCLARÉE ─────────
+  // Optionnelle ; mais si présente, elle est validée FERMÉE — une autorité
+  // malformée ne « disparaît » pas en silence pendant que le cas prétend
+  // couvrir la fraîcheur. L'ABSENCE reste légitime : le moteur échouera fermé
+  // pour les règles à fenêtre, et c'est un comportement qu'un cas doit pouvoir
+  // tester.
+  const autorite = c.temporalAuthorityByEvidenceId
+  if (autorite !== undefined) {
+    if (!autorite || typeof autorite !== 'object' || Array.isArray(autorite)) {
+      add(
+        'temporal_authority_invalid',
+        'temporalAuthorityByEvidenceId',
+        'Doit être un objet { evidenceId → { basis, referenceDay } }.',
+      )
+    } else {
+      for (const [id, v] of Object.entries(autorite as Record<string, any>)) {
+        const basisOk = v?.basis === 'DATED_EVENT_DAY' || v?.basis === 'EXTERNAL_STATE_OBSERVED_DAY'
+        const jourOk = typeof v?.referenceDay === 'string'
+          && /^\d{4}-\d{2}-\d{2}$/.test(v.referenceDay)
+          && Number.isFinite(Date.parse(v.referenceDay))
+        if (!basisOk || !jourOk) {
+          add(
+            'temporal_authority_invalid',
+            `temporalAuthorityByEvidenceId.${id}`,
+            'Attendu : { basis: DATED_EVENT_DAY | EXTERNAL_STATE_OBSERVED_DAY, referenceDay: YYYY-MM-DD }.',
+          )
+        }
+      }
+    }
+  }
+
   if (errors.length > 0) return { ok: false, errors }
 
   return {
@@ -443,6 +485,12 @@ export function validateEvalCase(input: unknown): EvalCaseValidation {
         eligibility: t.eligibility,
       })),
       evidence: c.evidence as EvidenceEvent[],
+      ...(autorite !== undefined
+        ? {
+            temporalAuthorityByEvidenceId:
+              autorite as Readonly<Record<string, SignalTemporalAuthority>>,
+          }
+        : {}),
     },
   }
 }

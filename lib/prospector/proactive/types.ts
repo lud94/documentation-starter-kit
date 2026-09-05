@@ -18,6 +18,22 @@ import type { AcquisitionFactV2 } from '../../../types/prospector'
  */
 export const EXTERNAL_SIGNAL_PROVIDER = 'web_signal_search'
 
+/**
+ * SIGNAL_TEMPORAL_WINDOW_V0_001 — AUTORITÉ TEMPORELLE D'UN SIGNAL EXTERNE.
+ *
+ * Side-car DE LECTURE produit par `canonicalSignalGate`, JAMAIS persisté et
+ * JAMAIS recopié sur l'Evidence : la projection est mutable, l'autorité vient
+ * de l'histoire immuable (occurredAt prouvé par l'identité canonique ; jour
+ * d'observation maximal prouvé par les assertions durables + instantanés).
+ *
+ * ⚠️ Déclaré ICI (module acyclique) pour que `rulePack`/`ruleKit` puissent le
+ * consommer sans importer le gate. Aucun repli : une evidence externe non
+ * datée SANS cette autorité ne satisfait AUCUNE politique d'âge déclarée.
+ */
+export type SignalTemporalAuthority =
+  | { basis: 'DATED_EVENT_DAY'; referenceDay: string }
+  | { basis: 'EXTERNAL_STATE_OBSERVED_DAY'; referenceDay: string }
+
 const INSTANT_STRICT =
   /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|[+-](\d{2}):(\d{2}))$/
 

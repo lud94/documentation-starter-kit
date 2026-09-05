@@ -35,7 +35,12 @@ import type { ContextValidation } from './lens/context'
 import { evaluateSituations } from './situationEngine'
 import { recommendationDecision } from './recommendationEngine'
 import type { EligibilityContext } from './eligibility'
-import type { EvidenceEvent, Recommendation, Situation } from './types'
+import type {
+  EvidenceEvent,
+  Recommendation,
+  SignalTemporalAuthority,
+  Situation,
+} from './types'
 
 /**
  * Cible d'évaluation COMPLÈTE — tout ce dont le kernel a besoin pour décider.
@@ -59,6 +64,15 @@ export interface KernelInput {
   businessContext: BusinessContextV0
   evidence: readonly EvidenceEvent[]
   targets: readonly KernelTarget[]
+
+  /**
+   * SIGNAL_TEMPORAL_WINDOW_V0_001 — autorité temporelle des Signaux externes
+   * (side-car du gate canonique en production ; fournie par le cas d'éval côté
+   * runner). MÊME chemin de décision des deux côtés : absente pour une
+   * evidence externe non datée sous fenêtre déclarée ⇒ fail closed pour cette
+   * règle — jamais un repli silencieux sur `observedAt`.
+   */
+  temporalAuthorityByEvidenceId?: Readonly<Record<string, SignalTemporalAuthority>>
 }
 
 export interface KernelOutput {
@@ -174,6 +188,9 @@ export function evaluateEvidence(input: KernelInput): KernelOutput {
         relevance: cible.relevance,
         lensId: lens.lensId,
         lensVersion: lens.lensVersion,
+        ...(input.temporalAuthorityByEvidenceId
+          ? { temporalAuthorityByEvidenceId: input.temporalAuthorityByEvidenceId }
+          : {}),
       },
       lens.rulePacks,
     )

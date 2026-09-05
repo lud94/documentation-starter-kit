@@ -18,9 +18,16 @@
 // le registre des packs. Les y laisser aurait produit le cycle
 // packs → situationEngine → registry → packs.
 import type { EvidenceEvent, Situation } from './types'
-import type { AnyRulePack, SituationEvaluationContext } from './rulePack'
+import type { AnyRulePack, SituationEvaluationContext, SituationRule } from './rulePack'
 import { PACK_REGISTRY, type RulePackId } from './packs/registry'
-import { validDateMs, validScore } from './ruleKit'
+import {
+  freshnessDeadlineMs,
+  temporalReference,
+  temporalWindowLookup,
+  validDateMs,
+  validScore,
+  withinMaxAgeDays,
+} from './ruleKit'
 
 export type { SituationEvaluationContext } from './rulePack'
 
@@ -31,7 +38,7 @@ export type { SituationEvaluationContext } from './rulePack'
  * c'est lui qui porte les règles. Cette constante reste exportée parce que du
  * code et des tests la référencent ; elle vaut la version de `sales-core`.
  */
-export const SITUATION_RULE_VERSION = 'v0.1'
+export const SITUATION_RULE_VERSION = 'v0.2'
 
 // Seuils réexportés depuis le pack qui les possède réellement.
 export {
@@ -161,8 +168,20 @@ export function evaluateSituations(
     const produced: Situation[] = []
 
     for (const rule of pack.rules) {
-      const s = rule.detect(usable, context)
-      if (s) produced.push(s)
+      // ── SIGNAL_TEMPORAL_WINDOW_V0_001 : LE CŒUR APPLIQUE LA FENÊTRE DE LA
+      // RÈGLE, AVANT `detect`. La règle déclare le nombre ; elle ne filtre
+      // jamais elle-même, et ne peut pas contourner sa propre déclaration —
+      // l'evidence hors fenêtre n'atteint tout simplement pas le détecteur.
+      // Une règle SANS politique voit l'entrée inchangée (comportement
+      // antérieur préservé à l'identique).
+      const admissible = admissibleForRule(usable, rule, context)
+      const s = rule.detect(admissible, context)
+      // ── BORNE DE VALIDITÉ PERSISTÉE. Filtrer à l'évaluation ne suffit pas :
+      // une Situation produite au jour 89 d'une fenêtre de 90 ne doit pas
+      // survivre 30 jours de TTL. Son `expiresAt` est ramené à la PLUS PROCHE
+      // échéance de fraîcheur parmi les contributeurs réellement cités —
+      // l'Eligibility existante la rejettera alors en `situation_expired`.
+      if (s) produced.push(clampToFreshnessDeadlines(s, admissible, rule, context))
     }
 
     // Le pack ne voit QUE ses propres situations.
@@ -171,4 +190,93 @@ export function evaluateSituations(
   }
 
   return situations
+}
+
+/**
+ * La fenêtre déclarée par la règle pour ce type — lecture FERMÉE (R1).
+ *
+ * ⚠️ ABSENCE ≠ MALFORMATION. Une clé absente conserve le comportement
+ * antérieur ; une clé présente mais illisible (`"90"`, NaN, Infinity, négatif,
+ * non-entier) rend INVALID, et l'evidence de ce type n'atteint JAMAIS
+ * `detect` sous cette règle. Représenter les deux par la même valeur ferait
+ * d'une faute de frappe une fenêtre INFINIE — un échec ouvert.
+ */
+function fenetreDeRegle(
+  rule: SituationRule<string, string>,
+  evidenceType: string,
+) {
+  return temporalWindowLookup(
+    rule.temporalPolicy?.maxAgeDaysByEvidenceType as
+      Readonly<Record<string, unknown>> | undefined,
+    evidenceType,
+  )
+}
+
+/**
+ * Les evidences temporellement ADMISSIBLES pour UNE règle.
+ *
+ * ⚠️ L'exclusion est PAR RÈGLE, jamais globale : le fait reste vrai, présent,
+ * consommable par toute règle qui ne déclare pas de fenêtre pour son type.
+ * L'âge n'invalide pas le fait — il retire seulement sa pertinence pour CETTE
+ * hypothèse commerciale.
+ */
+function admissibleForRule(
+  usable: readonly EvidenceEvent[],
+  rule: SituationRule<string, string>,
+  context: SituationEvaluationContext,
+): EvidenceEvent[] {
+  if (!rule.temporalPolicy) return [...usable]
+
+  return usable.filter((item) => {
+    const fenetre = fenetreDeRegle(rule, item.type)
+    if (fenetre.kind === 'NONE') return true
+    // ⚠️ POLITIQUE MALFORMÉE ⇒ FAIL CLOSED pour ce type sous cette règle. Une
+    // fenêtre illisible ne peut que RETIRER de l'éligibilité — jamais en créer.
+    if (fenetre.kind === 'INVALID') return false
+    const reference = temporalReference(
+      item,
+      context.now,
+      context.temporalAuthorityByEvidenceId?.[item.id],
+    )
+    return withinMaxAgeDays(reference, context.now, fenetre.maxAgeDays)
+  })
+}
+
+/**
+ * Ramène `Situation.expiresAt` à la PLUS PROCHE échéance de fraîcheur des
+ * contributeurs cités soumis à une fenêtre. `min` uniquement — jamais un
+ * report : la borne `anticipated.at` et le TTL réglementaire restent intacts
+ * quand ils sont plus proches. Aucune Evidence n'est mutée.
+ */
+function clampToFreshnessDeadlines(
+  situation: Situation,
+  admissible: readonly EvidenceEvent[],
+  rule: SituationRule<string, string>,
+  context: SituationEvaluationContext,
+): Situation {
+  if (!rule.temporalPolicy) return situation
+
+  const parId = new Map(admissible.map((item) => [item.id, item]))
+  let borneMs: number | null = null
+
+  for (const id of situation.evidenceIds) {
+    const item = parId.get(id)
+    if (!item) continue
+    const fenetre = fenetreDeRegle(rule, item.type)
+    // Sans fenêtre : aucun faux plafond. INVALID est INATTEIGNABLE ici — une
+    // evidence sous politique malformée n'a pas franchi `admissibleForRule`,
+    // donc ne peut pas être citée ; on n'invente pas d'échéance pour autant.
+    if (fenetre.kind !== 'VALID') continue
+    const echeance = freshnessDeadlineMs(
+      temporalReference(item, context.now, context.temporalAuthorityByEvidenceId?.[item.id]),
+      fenetre.maxAgeDays,
+    )
+    if (echeance === null) continue
+    if (borneMs === null || echeance < borneMs) borneMs = echeance
+  }
+
+  if (borneMs === null) return situation
+  const courantMs = validDateMs(situation.expiresAt ?? '')
+  if (courantMs !== null && courantMs <= borneMs) return situation
+  return { ...situation, expiresAt: new Date(borneMs).toISOString() }
 }

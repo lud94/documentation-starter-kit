@@ -366,6 +366,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       tasks: { complete: false },
       businessContext: contexte.context,
       externalEvidence,
+      // SIGNAL_TEMPORAL_WINDOW_V0_001 : l'autorité temporelle des Signaux
+      // vient du gate — l'histoire immuable — jamais des horloges de la route.
+      temporalAuthorityByEvidenceId: porte.temporalAuthorityByEvidenceId,
     })
 
     // ── DURABILITÉ AVANT ANNONCE ─────────────────────────────────────────

@@ -32,6 +32,12 @@ export function runEvalCase(evalCase: EvalCase): EvalOutput {
     businessContext: evalCase.businessContext,
     evidence: evalCase.evidence,
     targets: evalCase.targets,
+    // SIGNAL_TEMPORAL_WINDOW_V0_001 : même chemin que la production — l'autorité
+    // vient du CAS (comme du gate en prod). Absente ⇒ fail closed sous fenêtre,
+    // jamais un repli silencieux sur `observedAt`.
+    ...(evalCase.temporalAuthorityByEvidenceId
+      ? { temporalAuthorityByEvidenceId: evalCase.temporalAuthorityByEvidenceId }
+      : {}),
   })
 
   return {

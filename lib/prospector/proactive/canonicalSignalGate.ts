@@ -28,7 +28,10 @@
 import { createHash } from 'node:crypto'
 
 import { listItemsStrict } from '../../supabase/store'
-import { canonicalClaimKey, EXTERNAL_SIGNAL_PROVIDER, type EvidenceEvent } from './types'
+import {
+  canonicalClaimKey, EXTERNAL_SIGNAL_PROVIDER,
+  type EvidenceEvent, type SignalTemporalAuthority,
+} from './types'
 import type { KnownEvidenceEvent } from './catalog'
 import { externalEvidenceId } from './signalBridge'
 import {
@@ -70,6 +73,8 @@ export interface SignalExclusion {
   reason: SignalExclusionReason
 }
 
+export type { SignalTemporalAuthority } from './types'
+
 export type SignalGateResult =
   | {
       ok: true
@@ -77,6 +82,19 @@ export type SignalGateResult =
       signals: KnownEvidenceEvent[]
       /** Les externes refusées — typées, jamais avalées. */
       excluded: SignalExclusion[]
+      /**
+       * SIGNAL_TEMPORAL_WINDOW_V0_001 — side-car temporel DE LECTURE.
+       *
+       * Une entrée PAR SIGNAL EXTERNE FONDÉ, dérivée exclusivement de
+       * l'histoire immuable déjà vérifiée par ce gate : `occurredAt` pour un
+       * événement daté (l'identité canonique le prouve), et le jour
+       * d'observation MAXIMAL des assertions durables compatibles pour un état
+       * (chaque jour ayant son instantané canonique vérifié). Jamais
+       * `observedAt`, jamais `confirmedAt`, jamais `sourcePublishedAt`.
+       * JAMAIS PERSISTÉ, jamais recopié sur l'Evidence. Les internes (CRM)
+       * n'y figurent pas — leur horloge d'observation est légitime ailleurs.
+       */
+      temporalAuthorityByEvidenceId: Readonly<Record<string, SignalTemporalAuthority>>
     }
   | { ok: false; reason: 'STORE_UNAVAILABLE' | 'CANONICAL_HISTORY_INVALID' }
 
@@ -99,7 +117,12 @@ export function classifyExternalEvidence(
     events: readonly (CanonicalEvent | CanonicalExecutiveEvent)[]
     snapshots: readonly CanonicalStateSnapshot[]
   },
-): { state: 'CANONICALLY_GROUNDED'; assertionIds: string[]; anchorIds: string[] } | SignalExclusion {
+): {
+  state: 'CANONICALLY_GROUNDED'
+  assertionIds: string[]
+  anchorIds: string[]
+  temporal: SignalTemporalAuthority
+} | SignalExclusion {
   // ── 1. COHÉRENCE INTERNE DE LA PROJECTION — la clé se RECALCULE, jamais crue.
   const cle = canonicalClaimKey({
     type: e.type,
@@ -181,7 +204,13 @@ export function classifyExternalEvidence(
     if (ancre.canonicalClaimKey !== cle || ancre.accountId !== e.accountId) {
       return { evidenceId: e.id, state: 'CANONICAL_HISTORY_DIVERGENT', reason: 'ANCHOR_CLAIM_MISMATCH' }
     }
-    return { state: 'CANONICALLY_GROUNDED', assertionIds, anchorIds: [ancre.id] }
+    return {
+      state: 'CANONICALLY_GROUNDED', assertionIds, anchorIds: [ancre.id],
+      // Événement daté : l'autorité temporelle EST la date métier — prouvée
+      // par l'identité canonique recalculée ci-dessus, jamais une horloge
+      // d'adjudication ou de découverte.
+      temporal: { basis: 'DATED_EVENT_DAY', referenceDay: e.occurredAt },
+    }
   }
 
   if (typeCanonique === 'EXECUTIVE_APPOINTMENT' || typeCanonique === 'EXECUTIVE_DEPARTURE') {
@@ -241,7 +270,10 @@ export function classifyExternalEvidence(
         anchorsExec.add(autre.id)
       }
     }
-    return { state: 'CANONICALLY_GROUNDED', assertionIds, anchorIds: [...anchorsExec].sort() }
+    return {
+      state: 'CANONICALLY_GROUNDED', assertionIds, anchorIds: [...anchorsExec].sort(),
+      temporal: { basis: 'DATED_EVENT_DAY', referenceDay: e.occurredAt },
+    }
   }
 
   // HIRING_SNAPSHOT — état non daté : CHAQUE jour d'observation affirmé par
@@ -266,7 +298,15 @@ export function classifyExternalEvidence(
     }
     anchorIds.push(ancre.id)
   }
-  return { state: 'CANONICALLY_GROUNDED', assertionIds, anchorIds }
+  return {
+    state: 'CANONICALLY_GROUNDED', assertionIds, anchorIds,
+    // État observé : l'autorité est le jour d'observation MAXIMAL affirmé par
+    // les assertions durables compatibles — chaque jour vient d'être vérifié
+    // ancré par SON instantané canonique. `jours` est trié croissant : le
+    // dernier est le plus récent. Jamais `observedAt` (re-adjugeable), jamais
+    // `confirmedAt`, jamais `sourcePublishedAt`.
+    temporal: { basis: 'EXTERNAL_STATE_OBSERVED_DAY', referenceDay: jours[jours.length - 1] },
+  }
 }
 
 /**
@@ -318,11 +358,16 @@ export async function canonicalSignalGate(
   const registres = { assertions, events, snapshots }
   const signals: KnownEvidenceEvent[] = []
   const excluded: SignalExclusion[] = []
+  const temporalAuthorityByEvidenceId: Record<string, SignalTemporalAuthority> = {}
   for (const e of evidence) {
     if (!estExterne(e)) { signals.push(e); continue } // CRM/interne : hors périmètre, inchangé
     const verdict = classifyExternalEvidence(e, ws, registres)
-    if (verdict.state === 'CANONICALLY_GROUNDED') signals.push(e)
-    else excluded.push(verdict)
+    if (verdict.state === 'CANONICALLY_GROUNDED') {
+      signals.push(e)
+      temporalAuthorityByEvidenceId[e.id] = verdict.temporal
+    } else {
+      excluded.push(verdict)
+    }
   }
-  return { ok: true, signals, excluded }
+  return { ok: true, signals, excluded, temporalAuthorityByEvidenceId }
 }

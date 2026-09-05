@@ -13,7 +13,12 @@
 // dépôt, revu et testé. Aucun `eval`, aucun chargement distant, aucun code
 // utilisateur, aucun DSL. L'extensibilité est une propriété de compilation, pas
 // d'exécution — c'est précisément ce qui la rend auditable.
-import type { EvidenceEvent, PlayType, Situation } from './types'
+import type {
+  EvidenceEvent,
+  PlayType,
+  SignalTemporalAuthority,
+  Situation,
+} from './types'
 import type { HumanControl } from './motions'
 
 /**
@@ -33,6 +38,17 @@ export interface SituationEvaluationContext {
   /** Provenance, injectée par le moteur. Un pack ne les fabrique jamais. */
   lensId: string
   lensVersion: string
+
+  /**
+   * SIGNAL_TEMPORAL_WINDOW_V0_001 — autorité temporelle des Signaux EXTERNES,
+   * side-car produit par `canonicalSignalGate` depuis l'histoire IMMUABLE.
+   *
+   * ⚠️ Fail closed : une evidence externe non datée soumise à une politique
+   * d'âge déclarée et ABSENTE de cette carte ne satisfait jamais la politique.
+   * Les evidences internes (CRM) n'y figurent pas — leur `observedAt` EST
+   * l'instantané d'observation, `dataBridge` le garantit.
+   */
+  temporalAuthorityByEvidenceId?: Readonly<Record<string, SignalTemporalAuthority>>
 }
 
 /** Ce qu'une situation recommande de faire, côté métier. */
@@ -52,6 +68,25 @@ export interface RecommendationRule {
 export interface SituationRule<S extends string, E extends string> {
   ruleId: string
   situationType: S
+
+  /**
+   * SIGNAL_TEMPORAL_WINDOW_V0_001 — FENÊTRE MÉTIER DE LA RÈGLE, PAR TYPE.
+   *
+   * ⚠️ LA RÈGLE DÉCLARE LE NOMBRE ; LE CŒUR APPLIQUE LE FILTRE. Un pack
+   * n'implémente JAMAIS le filtrage d'âge lui-même : `evaluateSituations`
+   * retire les evidences hors fenêtre AVANT `detect`, et aucune règle ne peut
+   * s'en affranchir. Un type absent de la carte n'a AUCUNE fenêtre (fait
+   * historique librement consommable — comportement antérieur inchangé).
+   *
+   * `maxAgeDays = N` : utilisable jusqu'au jour d'âge N inclus, périmée à
+   * compter du jour UTC N+1. La borne appartient à la RÈGLE (le même type peut
+   * avoir des âges utiles différents selon l'hypothèse commerciale) — ce n'est
+   * pas une vérité du fait, seulement sa pertinence pour CETTE règle.
+   */
+  temporalPolicy?: {
+    maxAgeDaysByEvidenceType: Readonly<Partial<Record<E, number>>>
+  }
+
   detect(
     evidence: readonly EvidenceEvent<E>[],
     context: SituationEvaluationContext,
