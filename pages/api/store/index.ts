@@ -4,18 +4,31 @@ import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import { PROACTIVE_KIND_LIST } from '../../../lib/prospector/proactive/persistence'
 
 // JARVIS-PROACTIVE-01D — les quatre `kind` du Decision Model rejoignent la
-// whitelist, et RIEN D'AUTRE ne change ici. La liste est importée plutôt que
-// recopiée : deux listes finiraient par diverger, et une divergence ici
-// signifierait qu'un objet persistable côté serveur devient illisible côté
-// route, ou l'inverse.
+// whitelist DE LECTURE, et rien d'autre. La liste est importée plutôt que
+// recopiée : deux listes finiraient par diverger.
+//
+// SEC-004 — LECTURE ≠ ÉCRITURE CLIENT. La whitelist unique laissait un client
+// authentifié POSTer des `mission` forgées (contournant le contrat canonique)
+// et des `proactive_*` forgés (fabriquant Evidence/Situations/Recommendations
+// dans sa propre histoire décisionnelle). Deux listes désormais :
+//
+//   READ_KINDS   ce que l'UI peut LIRE ici — inclut mission et les kinds du
+//                Decision Model (affichage) ;
+//   WRITE_KINDS  ce que le client peut ÉCRIRE/SUPPRIMER ici — les objets
+//                d'usage UI uniquement. Les missions se créent par
+//                /api/missions (contrat canonique, create-only) ; les objets
+//                du Decision Model ne s'écrivent que par leurs producteurs
+//                serveur validés.
+//
+// ⚠️ AUCUN kind d'AUTORITÉ (approbation de mission, affectation de rôle…) ne
+// doit JAMAIS rejoindre WRITE_KINDS — ni, sauf besoin d'affichage prouvé,
+// READ_KINDS.
 //
 // Aucun assouplissement du cloisonnement : la route continue de résoudre le
 // tenant AVANT toute lecture, et `ws` reste `tenant.id` — jamais le corps de la
 // requête, jamais la query.
-const KINDS = [
-  'sequence', 'task', 'thread', 'list', 'mission', 'notification',
-  ...PROACTIVE_KIND_LIST,
-] // whitelist
+const WRITE_KINDS = ['sequence', 'task', 'thread', 'list', 'notification']
+const READ_KINDS = [...WRITE_KINDS, 'mission', ...PROACTIVE_KIND_LIST]
 
 const str = (v: any) => (Array.isArray(v) ? v[0] : v) || ''
 
@@ -28,9 +41,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const ws = tenant.id
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
   const kind = String((req.method === 'GET' ? str(req.query.kind) : body?.kind) || '')
-  if (!KINDS.includes(kind)) return res.status(400).json({ error: 'kind invalide' })
 
-  if (req.method === 'GET') return res.status(200).json({ items: await listItems(kind, ws) })
+  if (req.method === 'GET') {
+    if (!READ_KINDS.includes(kind)) return res.status(400).json({ error: 'kind invalide' })
+    return res.status(200).json({ items: await listItems(kind, ws) })
+  }
+
+  // ── MUTATIONS : whitelist d'ÉCRITURE seule. Un kind lisible mais non
+  // inscriptible est REFUSÉ explicitement — jamais accepté « parce que connu ».
+  if (!WRITE_KINDS.includes(kind)) {
+    return res.status(READ_KINDS.includes(kind) ? 403 : 400).json({ error: 'kind non modifiable par le client' })
+  }
 
   if (req.method === 'POST') {
     const items = Array.isArray(body?.items) ? body.items : body?.item ? [body.item] : []

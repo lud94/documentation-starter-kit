@@ -165,6 +165,10 @@ export async function runStep(tenant: TenantContext, step: MissionStep, mission:
     }
 
     default:
-      return { result: `Outil inconnu : ${step.tool}.`, context: ctx }
+      // SEC-004 — défense en profondeur : un outil inconnu est normalement
+      // arrêté AVANT (contrat canonique à la création, validateExecutableStep
+      // à l'exécution). S'il arrive quand même ici, on ÉCHOUE explicitement —
+      // jamais un « résultat » qui ferait avancer le curseur.
+      throw new Error('Outil de mission inconnu : exécution refusée.')
   }
 }

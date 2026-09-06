@@ -26,6 +26,7 @@ const listLeads = vi.fn()
 const upsertLeadChecked = vi.fn()
 const deleteLead = vi.fn()
 const claimItemIfField = vi.fn()
+const insertItemIfAbsent = vi.fn()
 const getWorkspaceById = vi.fn()
 const supabaseFrom = vi.fn()
 const supabaseConfigured = vi.fn()
@@ -36,6 +37,8 @@ vi.mock('../lib/supabase/store', () => ({
   deleteItem: (...a: any[]) => deleteItem(...a),
   getItem: (...a: any[]) => getItem(...a),
   claimItemIfField: (...a: any[]) => claimItemIfField(...a),
+  insertItemIfAbsent: (...a: any[]) => insertItemIfAbsent(...a),
+  getItemStrict: async () => ({ ok: true, value: null }),
 }))
 vi.mock('../lib/supabase/leads', () => ({
   listLeads: (...a: any[]) => listLeads(...a),
@@ -76,6 +79,9 @@ vi.mock('../lib/prospector/jarvisAgent', () => ({
 }))
 vi.mock('../lib/prospector/missionTools', () => ({
   runStep: vi.fn(async () => ({ result: 'ok', context: {} })),
+  // SEC-004 — le contrat canonique importe les bornes dures depuis ce module.
+  MAX_COMPANIES: 50,
+  MAX_ENRICH: 10,
 }))
 
 import leadsHandler from '../pages/api/leads/index'
@@ -218,10 +224,17 @@ describe('B/C/E — l\'espace du client vient de sa session signée, uniquement'
     await storeHandler(req('GET', cookies, hostile, { kind: 'sequence', ...hostile }), res2)
     expect(listItems).toHaveBeenCalledWith('sequence', 'ws_fabel')
 
-    upsertItem.mockClear()
+    // SEC-004 — la création de mission est désormais CANONIQUE (contrat
+    // serveur) et CREATE-ONLY (`insertItemIfAbsent`) : la propriété testée —
+    // l'espace vient de la session, jamais du corps — reste la même, à
+    // travers le nouveau chemin.
+    insertItemIfAbsent.mockClear().mockResolvedValue(true)
     const res3 = mockRes()
-    await missionsHandler(req('POST', cookies, { mission: { id: 'm1' }, ...hostile }), res3)
-    expect(upsertItem).toHaveBeenCalledWith('mission', 'm1', expect.anything(), 'ws_fabel')
+    await missionsHandler(req('POST', cookies, {
+      mission: { id: 'm1', steps: [{ tool: 'source_companies', params: {} }] },
+      ...hostile,
+    }), res3)
+    expect(insertItemIfAbsent).toHaveBeenCalledWith('mission', 'm1', expect.anything(), 'ws_fabel')
   })
 })
 

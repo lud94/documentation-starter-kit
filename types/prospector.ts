@@ -613,6 +613,12 @@ export interface Mission {
   log: { at: number; text: string }[]
   cursor: number                  // index de l'étape courante
   createdAt: number
+  // SEC-004_R2 — identité d'INSTANCE d'autorité, générée par le SERVEUR à la
+  // création canonique (opaque, immuable pour la vie de la ligne). Optionnelle
+  // au niveau du type PARTAGÉ uniquement pour les missions héritées déjà
+  // persistées ; toute mission canonique neuve en reçoit une. Ce n'est ni un
+  // identifiant IAM, ni une identité métier, ni un compteur de révision.
+  authorityInstanceId?: string
 }
 
 export type StepCondition = 'always' | 'if_connected' | 'if_no_response' | 'if_responded'
