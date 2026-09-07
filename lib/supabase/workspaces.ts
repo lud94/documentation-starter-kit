@@ -63,6 +63,56 @@ export async function getWorkspaceById(id: string): Promise<Workspace | null> {
   return data ? rowToWs(data) : null
 }
 
+// ── JS-020 — LECTURE STRICTE DE LA POLITIQUE D'ESPACE (AUTORITÉ). ───────────
+// `rowToWs` matérialise un blob absent en DEFAULT_PERMISSIONS (tout-vrai) :
+// acceptable pour les projections UI héritées, INTERDIT pour une décision
+// d'autorité — une route qui l'utiliserait ne peut pas distinguer « politique
+// explicite » de « politique jamais posée ». Cet accesseur lit le blob BRUT,
+// sans défaut : CONFIGURED ≠ NOT_CONFIGURED ≠ INVALID ≠ UNAVAILABLE, et seul
+// un `externalAI === true` EXPLICITE dans un blob CONFIGURED permet côté
+// autorité. Le repli hérité de `rowToWs` n'est PAS retiré : /api/auth/me et
+// les projections UI le consomment encore, à l'identique.
+export type StrictWorkspacePermissionsRead =
+  | { ok: true; state: 'CONFIGURED'; permissions: WorkspacePermissions }
+  | { ok: true; state: 'NOT_CONFIGURED' }
+  | { ok: true; state: 'INVALID' }
+  | { ok: false; state: 'UNAVAILABLE' }
+
+function blobPermissionsValide(p: unknown): p is WorkspacePermissions {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return false
+  for (const v of Object.values(p as Record<string, unknown>)) {
+    if (typeof v !== 'boolean') return false
+  }
+  return true
+}
+
+export async function getWorkspacePermissionsStrict(id: string): Promise<StrictWorkspacePermissionsRead> {
+  if (typeof id !== 'string' || !id.trim()) return { ok: false, state: 'UNAVAILABLE' }
+  const sb = supabase()
+  try {
+    let brut: unknown
+    let ligne = false
+    if (!sb) {
+      const w = mem.find((x) => x.id === id)
+      // ⚠️ Repli mémoire : les espaces créés par `createWorkspace` portent déjà
+      // un blob ; un espace sans blob est réellement non configuré.
+      ligne = !!w
+      brut = w ? (w as any).permissions : undefined
+    } else {
+      const { data, error } = await sb.from(TABLE).select('permissions').eq('id', id).single()
+      if (error) return { ok: false, state: 'UNAVAILABLE' }
+      ligne = !!data
+      brut = data ? (data as any).permissions : undefined
+    }
+    if (!ligne) return { ok: true, state: 'NOT_CONFIGURED' }
+    if (brut === null || brut === undefined) return { ok: true, state: 'NOT_CONFIGURED' }
+    if (!blobPermissionsValide(brut)) return { ok: true, state: 'INVALID' }
+    return { ok: true, state: 'CONFIGURED', permissions: brut }
+  } catch {
+    return { ok: false, state: 'UNAVAILABLE' }
+  }
+}
+
 export async function listWorkspaces(): Promise<Workspace[]> {
   const sb = supabase()
   if (!sb) return [...mem]

@@ -78,6 +78,17 @@ vi.mock('../lib/supabase/store', () => ({
   upsertItem: (...a: any[]) => (upsertItem as any)(...a),
   deleteItem: (...a: any[]) => (deleteItem as any)(...a),
   claimItemIfField: (...a: any[]) => (claimItemIfField as any)(...a),
+  // JS-020 — les routes Mission résolvent un RoleKind affecté par requête :
+  // chaque tenant du scénario affecte SON utilisateur (user@<ws>.fr), et lui
+  // seul — la frontière testée reste le cloisonnement, pas l'affectation.
+  getItemStrict: async (kind: string, id: string, ws: string) =>
+    kind === 'workspace_role_assignment'
+      ? { ok: true, value: {
+          schemaVersion: 'role-assignment-v0.1', revisionId: 'r-test',
+          updatedAt: '2026-09-06T00:00:00.000Z',
+          assignments: { [`user@${ws}.fr`]: 'SDR_BDR' },
+        } }
+      : { ok: true, value: null },
 }))
 vi.mock('../lib/supabase/leads', () => ({
   listLeads: (...a: any[]) => (listLeads as any)(...a),
@@ -87,6 +98,13 @@ vi.mock('../lib/supabase/leads', () => ({
 vi.mock('../lib/supabase/workspaces', () => ({
   getWorkspaceById: (...a: any[]) => (getWorkspaceById as any)(...a),
   listWorkspaces: async () => Object.values(WORKSPACES),
+  // JS-020 — lecture STRICTE de la politique : dérivée du même tableau de
+  // tenants, sans repli tout-vrai.
+  getWorkspacePermissionsStrict: async (id: string) => {
+    const w = WORKSPACES[id]
+    if (!w) return { ok: true, state: 'NOT_CONFIGURED' }
+    return { ok: true, state: 'CONFIGURED', permissions: w.permissions }
+  },
 }))
 vi.mock('../lib/prospector/keystore', () => ({
   hydrateKeystore: async () => {},

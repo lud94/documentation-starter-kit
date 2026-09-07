@@ -38,7 +38,15 @@ vi.mock('../lib/supabase/store', () => ({
   getItem: (...a: any[]) => getItem(...a),
   claimItemIfField: (...a: any[]) => claimItemIfField(...a),
   insertItemIfAbsent: (...a: any[]) => insertItemIfAbsent(...a),
-  getItemStrict: async () => ({ ok: true, value: null }),
+  // JS-020 — les routes Mission exigent un RoleKind affecté : le double rend
+  // un document d'affectation valide pour l'acteur des sessions de ce test.
+  getItemStrict: async (kind: string) => kind === 'workspace_role_assignment'
+    ? { ok: true, value: {
+        schemaVersion: 'role-assignment-v0.1', revisionId: 'r-test',
+        updatedAt: '2026-09-06T00:00:00.000Z',
+        assignments: { 'client@fabel.fr': 'SDR_BDR', 'admin@smart.ai': 'SDR_BDR' },
+      } }
+    : { ok: true, value: null },
 }))
 vi.mock('../lib/supabase/leads', () => ({
   listLeads: (...a: any[]) => listLeads(...a),

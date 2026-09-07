@@ -10,6 +10,15 @@ import {
   validateExecutableStep,
 } from '../../../lib/prospector/missionContract'
 import { consumeApproval } from '../../../lib/prospector/missionApprovals'
+import { resolveSalesRole } from '../../../lib/prospector/authz/roleAssignmentStore'
+import {
+  actionRequiresExternalAI,
+  evaluatePermission,
+  INTRINSIC_ADMIN_WORKSPACE_POLICY,
+  isActionRef,
+} from '../../../lib/prospector/authz/permissionVerdict'
+import { ADMIN_TENANT_ID } from '../../../lib/prospector/tenant'
+import { getWorkspacePermissionsStrict } from '../../../lib/supabase/workspaces'
 import { MISSION_TOOL_META } from '../../../types/prospector'
 import type { Mission } from '../../../types/prospector'
 import { logSafeError, PUBLIC_ERROR } from '../../../lib/observability/safeError'
@@ -43,9 +52,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const id = String(body?.id || '')
   const approvalId = typeof body?.approvalId === 'string' ? body.approvalId : ''
 
+  // ── JS-020 R1-2 : UN SEUL instantané de rôle par requête, et la porte
+  // mission:read AVANT toute révélation de contenu. Une mission TERMINALE
+  // (done/cancelled) était rendue avant le verdict : un acteur au rôle révoqué
+  // récupérait par /run ce que GET /api/missions lui refuse. La porte de
+  // lecture précède désormais le chargement ; la révocation prend effet à la
+  // requête suivante (instantané strict par requête, jamais de cache).
+  const role = await resolveSalesRole(ws, acteur.actorId)
+  const verdictLecture = evaluatePermission({ role, action: 'mission:read' })
+  if (verdictLecture.state !== 'ALLOWED') {
+    return res.status(403).json({
+      error: 'forbidden', state: verdictLecture.state, reason: (verdictLecture as any).reason,
+    })
+  }
+
   const missions = await listItems<Mission>('mission', ws)
   const mission = missions.find((m) => m.id === id)
   if (!mission) return res.status(404).json({ error: 'Mission introuvable.' })
+  // Retour terminal : atteignable UNIQUEMENT après la porte mission:read.
   if (mission.status === 'done' || mission.status === 'cancelled') return res.status(200).json({ mission })
 
   const step = mission.steps[mission.cursor]
@@ -70,8 +94,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(422).json({ mission, error: 'step_not_executable' })
   }
 
+  // ── JS-020 : LE VERDICT DE PERMISSION PRÉCÈDE TOUTE CONSOMMATION (§11). ──
+  // L'ORDRE EST LA SÉCURITÉ : rôle et politique d'espace sont évalués depuis
+  // l'état serveur COURANT, AVANT consumeApproval. Un rôle révoqué ou une
+  // politique retirée APRÈS l'accord refuse l'exécution SANS brûler l'accord
+  // SEC-004 encore valide. L'approbation est NÉCESSAIRE où elle est exigée,
+  // jamais SUFFISANTE.
+  const actionRef = `mission:${step.tool}`
+  const besoinPolitique = isActionRef(actionRef) && actionRequiresExternalAI(actionRef)
+  const verdict = evaluatePermission({
+    // MÊME instantané de rôle que la porte de lecture — un seul par requête.
+    role,
+    action: actionRef,
+    // R1-1 — l'espace PROPRE de l'admin (identifiant, jamais le genre) porte
+    // l'autorisation externalAI intrinsèque ; tout autre espace répond de sa
+    // politique STRICTEMENT persistée.
+    workspacePolicy: besoinPolitique
+      ? (ws === ADMIN_TENANT_ID ? INTRINSIC_ADMIN_WORKSPACE_POLICY : await getWorkspacePermissionsStrict(ws))
+      : undefined,
+    missionScope: { ok: true }, // l'étape courante a passé validateExecutableStep
+    needsApproval: canonicalNeedsApproval(step.tool, step.needsApproval),
+  })
+  if (verdict.state === 'BLOCKED' || verdict.state === 'SALES_ROLE_UNASSIGNED') {
+    // R1.1 — REFUS DE PERMISSION ⇒ ZÉRO mutation d'autorité. Un acteur refusé
+    // (capacité, politique d'espace, affectation) ne fait RIEN avancer ni
+    // changer : ni statut, ni curseur, ni journal, ni persistance. La mission
+    // reste EXACTEMENT dans l'état chargé. (La pause d'attente d'approbation,
+    // elle, reste : c'est l'exécutant AUTORISÉ qui entre en attente légitime.)
+    return res.status(403).json({
+      mission, error: 'forbidden', state: verdict.state, reason: (verdict as any).reason,
+    })
+  }
+
   // ── APPROBATION CANONIQUE — recalculée serveur, le client ne peut que durcir.
-  if (canonicalNeedsApproval(step.tool, step.needsApproval)) {
+  if (verdict.state === 'APPROVAL_REQUIRED') {
     if (!approvalId) {
       // Pas d'approbation présentée : on rend la main. `approve: true` ne
       // change RIEN — cette clé n'est plus lue.

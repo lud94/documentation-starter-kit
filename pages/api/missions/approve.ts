@@ -20,6 +20,15 @@ import {
   validateExecutableStep,
 } from '../../../lib/prospector/missionContract'
 import { grantApproval } from '../../../lib/prospector/missionApprovals'
+import { resolveSalesRole } from '../../../lib/prospector/authz/roleAssignmentStore'
+import {
+  actionRequiresExternalAI,
+  evaluatePermission,
+  INTRINSIC_ADMIN_WORKSPACE_POLICY,
+  isActionRef,
+} from '../../../lib/prospector/authz/permissionVerdict'
+import { ADMIN_TENANT_ID } from '../../../lib/prospector/tenant'
+import { getWorkspacePermissionsStrict } from '../../../lib/supabase/workspaces'
 import type { Mission } from '../../../types/prospector'
 import { logSafeError, PUBLIC_ERROR } from '../../../lib/observability/safeError'
 
@@ -36,6 +45,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!missionId || !stepId) return res.status(400).json({ error: 'missionId et stepId requis' })
 
   try {
+    // ── JS-020 R1-3 : LA CAPACITÉ DE CYCLE DE VIE mission:approve EST UNE
+    // AUTORITÉ RÉELLE, évaluée EN PREMIER — avant même de charger la mission.
+    // Un acteur non affecté ou interdit du cycle de vie n'utilise pas /approve
+    // comme oracle (existence de mission, état paused, identifiant d'étape) :
+    // il reçoit le refus d'autorité, et rien d'autre. UN SEUL instantané de
+    // rôle par requête, réutilisé par la porte OUTIL plus bas.
+    const role = await resolveSalesRole(ws, acteur.actorId)
+    const verdictCycle = evaluatePermission({ role, action: 'mission:approve' })
+    if (verdictCycle.state !== 'ALLOWED') {
+      return res.status(403).json({
+        error: 'forbidden', state: verdictCycle.state, reason: (verdictCycle as any).reason,
+      })
+    }
     const missions = await listItems<Mission>('mission', ws)
     const mission = missions.find((m) => m.id === missionId)
     if (!mission) return res.status(404).json({ error: 'Mission introuvable.' })
@@ -55,6 +77,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     if (!canonicalNeedsApproval(step.tool, step.needsApproval)) {
       return res.status(409).json({ error: 'step_does_not_require_approval' })
+    }
+
+    // ── JS-020 : AUCUN ACCORD SANS AUTORITÉ (§12). Seul un verdict
+    // APPROVAL_REQUIRED — rôle affecté, capacité présente, politique d'espace
+    // satisfaite — peut créer ou rejouer un accord. Un acteur non affecté,
+    // interdit de capacité ou sous politique refusée n'obtient RIEN.
+    const actionRef = `mission:${step.tool}`
+    const besoinPolitique = isActionRef(actionRef) && actionRequiresExternalAI(actionRef)
+    // La porte OUTIL ne REMPLACE pas mission:approve : l'autorité d'accord est
+    // l'INTERSECTION des deux (cycle de vie ∩ capacité d'outil ∩ politique).
+    const verdict = evaluatePermission({
+      role, // même instantané que la porte de cycle de vie
+      action: actionRef,
+      // R1-1 — même règle que /run : identifiant d'espace admin ⇒ intrinsèque.
+      workspacePolicy: besoinPolitique
+        ? (ws === ADMIN_TENANT_ID ? INTRINSIC_ADMIN_WORKSPACE_POLICY : await getWorkspacePermissionsStrict(ws))
+        : undefined,
+      missionScope: { ok: true },
+      needsApproval: true, // l'étape courante exige l'approbation (vérifié ci-dessus)
+    })
+    if (verdict.state !== 'APPROVAL_REQUIRED') {
+      return res.status(403).json({
+        error: 'forbidden', state: verdict.state, reason: (verdict as any).reason,
+      })
     }
 
     const grant = await grantApproval({

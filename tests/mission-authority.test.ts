@@ -15,6 +15,7 @@ const etat = vi.hoisted(() => ({
   runStepImpl: async () => ({ result: 'exécuté (double de test)', context: {} }),
   insertFails: false,
   readOverride: null as null | { ok: false } | { ok: true; value: any },
+  workspacePolicy: { ok: true, state: 'CONFIGURED', permissions: { externalAI: true } } as any,
 }))
 
 const cle = (kind: string, ws: string, id: string) => `${kind}|${ws}|${id}`
@@ -23,6 +24,12 @@ vi.mock('../lib/prospector/tenant', async (orig) => ({
   ...(await orig<typeof import('../lib/prospector/tenant')>()),
   resolveTenantFromRequest: async () => etat.session?.tenant ?? null,
   resolveActorFromRequest: async () => etat.session,
+}))
+
+// JS-020 — la politique d'espace stricte est doublée : externalAI explicite
+// permis par défaut dans ces suites (l'outil forgé est enrich_companies).
+vi.mock('../lib/supabase/workspaces', () => ({
+  getWorkspacePermissionsStrict: async () => etat.workspacePolicy,
 }))
 
 vi.mock('../lib/prospector/keystore', () => ({
@@ -130,6 +137,11 @@ function liaison(step: any, sur: Partial<Record<string, string>> = {}) {
   }
 }
 
+const ROLE_DOC = (assignments: Record<string, string>) => ({
+  schemaVersion: 'role-assignment-v0.1', revisionId: 'r-test',
+  updatedAt: '2026-09-06T00:00:00.000Z', assignments,
+})
+
 beforeEach(() => {
   etat.session = { tenant: { id: 'ws_a', kind: 'client' }, actorId: 'alice@a.fr' }
   etat.store.clear()
@@ -138,6 +150,13 @@ beforeEach(() => {
   etat.runStepImpl = async () => ({ result: 'exécuté (double de test)', context: {} })
   etat.insertFails = false
   etat.readOverride = null
+  etat.workspacePolicy = { ok: true, state: 'CONFIGURED', permissions: { externalAI: true } }
+  // JS-020 — les routes Mission exigent un rôle affecté ; ces suites testent
+  // l'autorité SEC-004 en aval, donc les acteurs de test sont affectés.
+  etat.store.set(cle('workspace_role_assignment', 'ws_a', 'active'),
+    ROLE_DOC({ 'alice@a.fr': 'SDR_BDR', 'bob@a.fr': 'SDR_BDR' }))
+  etat.store.set(cle('workspace_role_assignment', 'ws_b', 'active'),
+    ROLE_DOC({ 'alice@a.fr': 'SDR_BDR' }))
 })
 
 describe('MA-01/02/03/04/28 — canonicalisation serveur', () => {

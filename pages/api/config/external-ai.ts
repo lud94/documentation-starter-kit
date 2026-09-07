@@ -1,8 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { resolveTenantFromRequest, ADMIN_TENANT_ID } from '../../../lib/prospector/tenant'
-import { getWorkspaceById } from '../../../lib/supabase/workspaces'
-import { DEFAULT_PERMISSIONS } from '../../../types/prospector'
+import { getWorkspacePermissionsStrict } from '../../../lib/supabase/workspaces'
 
 // Politique d'usage des IA externes (Claude/ChatGPT/Perplexity depuis la fiche).
 // - allowed : autorisé pour cet espace (permission workspace)
@@ -36,14 +35,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // client voit alors exactement ce que ce client voit, ce qui est la seule
   // lecture cohérente d'une permission posée « pour cet espace ».
   //
-  // Base indisponible ⇒ refus. Une permission non vérifiable n'autorise rien :
-  // le trafic concerné part chez un tiers.
-  try {
-    const ws = await getWorkspaceById(tenant.id)
-    if (!ws) return res.status(403).json({ error: 'forbidden' })
-    const perms = ws.permissions || DEFAULT_PERMISSIONS
-    return res.status(200).json({ allowed: perms.externalAI !== false, maskPii })
-  } catch {
-    return res.status(503).json({ error: 'policy_unavailable' })
-  }
+  // ── JS-020 — LECTURE STRICTE, AUCUN DÉFAUT PERMISSIF. ─────────────────────
+  // Seul un blob CONFIGURÉ portant `externalAI === true` EXPLICITE autorise.
+  // false ⇒ refusé ; blob ABSENT ⇒ refusé (l'absence n'est pas une décision) ;
+  // blob invalide ⇒ refusé ; magasin muet ⇒ 503. `externalAI !== false` — le
+  // repli qui transformait « jamais configuré » en « tout permis » — a disparu
+  // de cette décision d'autorité.
+  const politique = await getWorkspacePermissionsStrict(tenant.id)
+  if (politique.ok === false) return res.status(503).json({ error: 'policy_unavailable' })
+  const allowed = politique.state === 'CONFIGURED' && politique.permissions.externalAI === true
+  return res.status(200).json({ allowed, maskPii })
 }
