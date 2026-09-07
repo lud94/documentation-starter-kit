@@ -43,6 +43,10 @@ export const ACTION_REFS = Object.freeze([
   'read:leads',
   'read:lists',
   'read:sequences',
+  'monitoring:read',
+  'monitoring:create',
+  'monitoring:stop',
+  'monitoring:run',
 ] as const)
 export type ActionRef = typeof ACTION_REFS[number]
 
@@ -62,6 +66,16 @@ const MISSION_LIFECYCLE_ACTIONS = Object.freeze([
   'mission:read', 'mission:create', 'mission:delete', 'mission:approve',
 ] as const)
 const READ_ACTIONS = Object.freeze(['read:leads', 'read:lists', 'read:sequences'] as const)
+/**
+ * JS-013 — Monitoring de COMPTE (motion ACCOUNT, JS-011) : AM/KAM = PRIMARY,
+ * AE et Head of Sales = SECONDARY ⇒ les quatre actions. SDR_BDR = ACCOUNT
+ * NOT_APPLICABLE ⇒ AUCUNE action AccountMonitor — ce qui ne signifie JAMAIS
+ * « SDR ne monitorera rien » : le futur monitoring de PROSPECTS appartient à
+ * la motion ACQUIRE, hors JS-013.
+ */
+const MONITORING_ACTIONS = Object.freeze([
+  'monitoring:read', 'monitoring:create', 'monitoring:stop', 'monitoring:run',
+] as const)
 
 /**
  * POLITIQUE RÔLE × ACTION — AUTORITÉ, donc ICI et pas dans les RoleCards.
@@ -74,9 +88,9 @@ const READ_ACTIONS = Object.freeze(['read:leads', 'read:lists', 'read:sequences'
  */
 export const ROLE_ACTION_POLICY: Readonly<Record<RoleKind, readonly ActionRef[]>> = Object.freeze({
   SDR_BDR: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS]),
-  ACCOUNT_EXECUTIVE: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS]),
-  ACCOUNT_MANAGER_KAM: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS]),
-  HEAD_OF_SALES: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS]),
+  ACCOUNT_EXECUTIVE: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS, ...MONITORING_ACTIONS]),
+  ACCOUNT_MANAGER_KAM: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS, ...MONITORING_ACTIONS]),
+  HEAD_OF_SALES: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS, ...MONITORING_ACTIONS]),
 })
 
 /**

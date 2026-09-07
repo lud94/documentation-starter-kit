@@ -265,8 +265,12 @@ describe('PC-10/11 — admin d’infrastructure ≠ rôle Sales', () => {
 
 describe('PC-12…PC-17 — politique rôle × action et périmètre', () => {
   it('PC-12/13 — SDR_BDR et ACCOUNT_EXECUTIVE : cycle de vie + six outils + lectures', () => {
+    // JS-013 a étendu le registre avec monitoring:* (SDR exclu par gel) — la
+    // propriété PC-12/13 d'origine porte sur les 13 actions mission+lecture ;
+    // la matrice monitoring est verrouillée par tests/account-monitoring.
+    const ACTIONS_JS020 = ACTION_REFS.filter((a) => !a.startsWith('monitoring:'))
     for (const roleKind of ['SDR_BDR', 'ACCOUNT_EXECUTIVE'] as const) {
-      for (const action of ACTION_REFS) {
+      for (const action of ACTIONS_JS020) {
         const v = evaluatePermission({ role: ASSIGNED(roleKind), action, workspacePolicy: etat.workspacePolicy })
         expect(v.state, `${roleKind} ${action}`).toBe('ALLOWED')
       }
