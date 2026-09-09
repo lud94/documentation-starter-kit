@@ -24,9 +24,26 @@ export function forbiddenClaimsFromReferentiel(ref: { forbidden: readonly string
 }
 
 /**
+ * R3 (DEC-114) — SÉLECTION EXPLICITE DU RESEARCH USED / SHOWN.
+ * La sélection appartient à l'AMONT (raisonnement domaine / Final NBA futur) —
+ * jamais à cette couche, jamais au Message Engine, jamais au modèle. Cette
+ * fonction ne choisit RIEN : elle PRÉSERVE la sélection fournie, verbatim.
+ */
+export interface ResearchSelectionV0 {
+  /** Research Used EXPLICITE — sélection amont, jamais « les N premiers ». */
+  readonly usableEvidenceRefs: readonly string[]
+  /** Research Shown EXPLICITE — sous-ensemble exposable au prospect. */
+  readonly showableEvidenceRefs: readonly string[]
+}
+
+/**
  * Dérive les contraintes de claims — PURE, déterministe :
- *   - montrable = évidence éligible, tronquée à min(researchShownBudget,
- *     evidenceBudget) — Shown ⊆ Used PAR CONSTRUCTION ; budget 0 ⇒ [] ;
+ *   - Used et Shown sont la SÉLECTION EXPLICITE amont, préservée verbatim —
+ *     AUCUN slice, AUCUN tri, AUCUN « premiers N », AUCUN classement ; les
+ *     budgets ne sont que des PLAFONDS, vérifiés par la validation du
+ *     contexte ;
+ *   - une sélection violant plafond ou sous-ensemble n'est PAS tronquée ici :
+ *     le contrat produit échoue validateMessageReadyContext (fail closed) ;
  *   - toute évidence portant une incertitude vivante rejoint
  *     `uncertainAssertionRefs` : sa formulation certaine est interdite ;
  *   - `maxAssertions` = assertionBudget (0 ⇒ 0 : aucune assertion octroyée) ;
@@ -39,9 +56,8 @@ export function forbiddenClaimsFromReferentiel(ref: { forbidden: readonly string
 export function deriveClaimConstraints(
   evidence: readonly CommunicationEvidenceItemV0[],
   budgets: MessagingBudgetsV0,
+  selection: ResearchSelectionV0,
 ): ClaimConstraintsV0 {
-  const octroiMontrable = Math.max(0, Math.min(budgets.researchShownBudget, budgets.evidenceBudget))
-  const showable = evidence.slice(0, octroiMontrable).map((e) => e.evidenceRef)
   // R4-C4 — CONTRE-SIGNAL ≠ INCERTITUDE. Seule une VRAIE incertitude non vide
   // interdit la formulation certaine ; une ref ne portant QUE des
   // contre-signaux n'entre PAS ici — ses contre-signaux restent préservés,
@@ -60,7 +76,8 @@ export function deriveClaimConstraints(
     if (Object.keys(contrainte).length > 0) epistemicByRef[e.evidenceRef] = Object.freeze(contrainte)
   }
   return Object.freeze({
-    showableEvidenceRefs: Object.freeze(showable),
+    usableEvidenceRefs: Object.freeze([...selection.usableEvidenceRefs]),
+    showableEvidenceRefs: Object.freeze([...selection.showableEvidenceRefs]),
     uncertainAssertionRefs: Object.freeze(uncertain),
     maxAssertions: budgets.assertionBudget,
     epistemicByRef: Object.freeze(epistemicByRef),

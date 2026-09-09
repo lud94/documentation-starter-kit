@@ -25,6 +25,10 @@ import type { EvidenceStrengthV0, SignalTemporalAuthority } from '../proactive/t
 // Import RUNTIME borné et AUTORISÉ : le validateur canonique de jour calendaire
 // RÉEL appartient déjà au module de types acyclique — jamais dupliqué ici.
 import { jourReel } from '../proactive/types'
+// B2A (JS015-B2-EPISTEMIC-EQUALITY-001) : égalité SÉMANTIQUE explicite des
+// faits épistémiques — l'ordre d'insertion des propriétés n'est plus signifiant.
+// L'import inverse dans epistemicEquality est TYPE-ONLY : aucun cycle runtime.
+import { memeEpistemique } from './epistemicEquality'
 
 // ── VOCABULAIRES V0 — FERMÉS (B0, ne pas étendre sans gel) ──────────────────
 
@@ -106,6 +110,14 @@ export interface EpistemicConstraintV0 {
  * `forbiddenClaims` reste STRUCTURELLEMENT SÉPARÉ (jamais fusionné ici).
  */
 export interface ClaimConstraintsV0 {
+  /**
+   * R3 (DEC-114) — RESEARCH USED EXPLICITE : l'ensemble d'évidence que l'AMONT
+   * a sélectionné comme consommable par le Message Engine. `evidenceBudget`
+   * n'est qu'un PLAFOND de cardinalité — il ne choisit JAMAIS l'évidence par
+   * position, tri ou rang. Invariant gelé :
+   *   Shown ⊆ Used ⊆ CommunicationEvidence.
+   */
+  readonly usableEvidenceRefs: readonly string[]
   readonly showableEvidenceRefs: readonly string[]
   /** Assertions dont la formulation certaine est INTERDITE (incertitude vivante). */
   readonly uncertainAssertionRefs: readonly string[]
@@ -216,9 +228,6 @@ const temporelCanonique = (v: unknown): v is SignalTemporalAuthority =>
 
 const refsContreSignauxValides = (v: unknown): v is readonly string[] =>
   Array.isArray(v) && v.every((r) => texteNonVide(r))
-
-/** Égalité de VALEUR des faits épistémiques (objets canoniques plats/tableaux). */
-const memeValeur = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 /** R2-C1 — ZÉRO est un budget légitime : entier ≥ 0 ; négatif/non-entier restent invalides. */
 const entierNonNegatif = (v: unknown): v is number =>
   typeof v === 'number' && Number.isInteger(v) && v >= 0
@@ -311,12 +320,38 @@ export function validateMessageReadyContext(input: unknown): ContextValidation {
   // Contraintes de claims : Shown ⊆ Used STRUCTUREL — toute ref montrable
   // absente de communicationEvidence est une incohérence, donc un refus.
   const cc = c.claimConstraints as ClaimConstraintsV0 | undefined
-  if (!cc || !Array.isArray(cc.showableEvidenceRefs) || !Array.isArray(cc.uncertainAssertionRefs)
+  if (!cc || !Array.isArray(cc.usableEvidenceRefs)
+    || !Array.isArray(cc.showableEvidenceRefs) || !Array.isArray(cc.uncertainAssertionRefs)
     || !entierNonNegatif(cc.maxAssertions)
     || typeof cc.epistemicByRef !== 'object' || cc.epistemicByRef === null || Array.isArray(cc.epistemicByRef)) {
     reasons.push('CLAIM_CONSTRAINT_INCONSISTENT')
   } else if (evidence !== null) {
     const refsUtilisables = new Set((evidence as CommunicationEvidenceItemV0[]).map((e) => e?.evidenceRef))
+    // ── R3 (DEC-114) — RESEARCH USED EXPLICITE, jamais réparé par l'ordre. ──
+    // Chaque ref utilisable : chaîne non vide, UNIQUE, présente dans
+    // communicationEvidence (Used ⊆ CommunicationEvidence). Et chaque ref
+    // montrable appartient au Used EXPLICITE (Shown ⊆ Used). Toute violation
+    // FERME — aucune position de tableau ne peut requalifier une sélection.
+    const usedExplicite = new Set<string>()
+    for (const r of cc.usableEvidenceRefs) {
+      if (!texteNonVide(r) || !refsUtilisables.has(r) || usedExplicite.has(r)) {
+        reasons.push('CLAIM_CONSTRAINT_INCONSISTENT')
+        break
+      }
+      usedExplicite.add(r)
+    }
+    // R3a — le montrable EXPLICITE est lui aussi strict : chaîne non vide,
+    // UNIQUE (un doublon = sélection amont malformée — REFUSÉE, jamais
+    // dédupliquée ni normalisée en silence), et ∈ Used explicite (donc ∈
+    // communicationEvidence par transitivité, re-vérifié en défense).
+    const shownExplicite = new Set<string>()
+    for (const r of cc.showableEvidenceRefs) {
+      if (!texteNonVide(r) || !usedExplicite.has(r) || shownExplicite.has(r)) {
+        reasons.push('CLAIM_CONSTRAINT_INCONSISTENT')
+        break
+      }
+      shownExplicite.add(r)
+    }
     if (cc.showableEvidenceRefs.some((r) => !refsUtilisables.has(r))) {
       reasons.push('CLAIM_CONSTRAINT_INCONSISTENT')
     }
@@ -355,10 +390,13 @@ export function validateMessageReadyContext(input: unknown): ContextValidation {
         break
       }
     }
-    // ── Micro-patch : COHÉRENCE DE LIGNÉE évidence ↔ epistemicByRef. ────────
+    // ── COHÉRENCE DE LIGNÉE évidence ↔ epistemicByRef. ──────────────────────
     // epistemicByRef est une PRÉSERVATION DÉRIVÉE : aucun fait épistémique ne
     // peut y être inventé, aucun fait porté par l'évidence ne peut en
-    // disparaître ni y différer. Égalité de VALEUR — zéro interprétation,
+    // disparaître ni y différer. Égalité SÉMANTIQUE explicite (B2A) : force
+    // par `kind`, autorité temporelle par `basis`+`referenceDay`, incertitude
+    // par chaîne, contre-signaux par ENSEMBLE de refs — jamais par
+    // sérialisation dépendante de l'ordre des propriétés. Zéro interprétation,
     // zéro seuil, zéro score. Les contre-signaux restent des contre-signaux.
     if (evidence !== null) {
       const CHAMPS = ['uncertainty', 'temporalAuthority', 'counterSignalRefs', 'strength'] as const
@@ -369,17 +407,19 @@ export function validateMessageReadyContext(input: unknown): ContextValidation {
           reasons.push('CLAIM_CONSTRAINT_INCONSISTENT'); break
         }
         if (entree === undefined) continue
-        let incoherent = false
-        for (const ch of CHAMPS) {
-          if (!memeValeur((item as any)?.[ch], (entree as any)?.[ch])) { incoherent = true; break }
+        if (!memeEpistemique(item as any, entree as any)) {
+          reasons.push('CLAIM_CONSTRAINT_INCONSISTENT'); break
         }
-        if (incoherent) { reasons.push('CLAIM_CONSTRAINT_INCONSISTENT'); break }
       }
     }
     if (b) {
       // R2-C1 — cohérence des octrois nuls : Shown=0 ⇒ AUCUNE ref montrable ;
       // le montrable respecte AUSSI le budget d'évidence consommable ; et
       // maxAssertions ne dépasse jamais l'assertionBudget (0 ⇒ 0).
+      // R3 — evidenceBudget est un PLAFOND du Used explicite (0 ⇒ Used vide).
+      if (cc.usableEvidenceRefs.length > b.evidenceBudget) {
+        reasons.push('CLAIM_CONSTRAINT_INCONSISTENT')
+      }
       if (cc.showableEvidenceRefs.length > b.researchShownBudget) {
         reasons.push('CLAIM_CONSTRAINT_INCONSISTENT')
       }
@@ -412,11 +452,21 @@ export function validateMessageReadyContext(input: unknown): ContextValidation {
   // inférence : aucune valeur manquante n'est devinée, les optionnels
   // malformés n'atteignent pas la sortie.
   const v = c as MessageReadyContextV0
+  // B2A (JS015-B2-CANONICAL-DEEP-COPY-001) : les petits objets fermés `strength`
+  // et `temporalAuthority` sont RE-PROJETÉS champ par champ dans des objets
+  // NEUFS gelés — le contexte marqué ne retient AUCUNE référence imbriquée
+  // possédée par l'appelant : une mutation post-validation chez l'appelant ne
+  // peut plus altérer le canonique. Projection explicite des formes fermées,
+  // jamais un deep-clone générique.
+  const projetForce = (s: EvidenceStrengthV0): EvidenceStrengthV0 =>
+    Object.freeze({ kind: s.kind }) as EvidenceStrengthV0
+  const projetTemporel = (t: SignalTemporalAuthority): SignalTemporalAuthority =>
+    Object.freeze({ basis: t.basis, referenceDay: t.referenceDay }) as SignalTemporalAuthority
   const projetEpistemique = (e: EpistemicConstraintV0): EpistemicConstraintV0 => Object.freeze({
     ...(e.uncertainty !== undefined ? { uncertainty: e.uncertainty } : {}),
-    ...(e.temporalAuthority !== undefined ? { temporalAuthority: e.temporalAuthority } : {}),
+    ...(e.temporalAuthority !== undefined ? { temporalAuthority: projetTemporel(e.temporalAuthority) } : {}),
     ...(e.counterSignalRefs !== undefined ? { counterSignalRefs: Object.freeze([...e.counterSignalRefs]) } : {}),
-    ...(e.strength !== undefined ? { strength: e.strength } : {}),
+    ...(e.strength !== undefined ? { strength: projetForce(e.strength) } : {}),
   })
   const epistemicByRef: Record<string, EpistemicConstraintV0> = {}
   for (const [r, e] of Object.entries(v.claimConstraints.epistemicByRef)) {
@@ -444,6 +494,7 @@ export function validateMessageReadyContext(input: unknown): ContextValidation {
       researchShownBudget: v.budgets.researchShownBudget,
     }),
     claimConstraints: Object.freeze({
+      usableEvidenceRefs: Object.freeze([...v.claimConstraints.usableEvidenceRefs]),
       showableEvidenceRefs: Object.freeze([...v.claimConstraints.showableEvidenceRefs]),
       uncertainAssertionRefs: Object.freeze([...v.claimConstraints.uncertainAssertionRefs]),
       maxAssertions: v.claimConstraints.maxAssertions,
@@ -454,8 +505,8 @@ export function validateMessageReadyContext(input: unknown): ContextValidation {
       evidenceRef: item.evidenceRef,
       statement: item.statement,
       provenance: Object.freeze({ sourceRef: item.provenance.sourceRef, observedAt: item.provenance.observedAt }),
-      ...(item.strength !== undefined ? { strength: item.strength } : {}),
-      ...(item.temporalAuthority !== undefined ? { temporalAuthority: item.temporalAuthority } : {}),
+      ...(item.strength !== undefined ? { strength: projetForce(item.strength) } : {}),
+      ...(item.temporalAuthority !== undefined ? { temporalAuthority: projetTemporel(item.temporalAuthority) } : {}),
       ...(item.uncertainty !== undefined ? { uncertainty: item.uncertainty } : {}),
       ...(item.counterSignalRefs !== undefined ? { counterSignalRefs: Object.freeze([...item.counterSignalRefs]) } : {}),
     }))),

@@ -66,6 +66,7 @@ function contexteValide(over: Partial<MessageReadyContextV0> = {}): MessageReady
     channel: 'email',
     budgets: { assertionBudget: 3, evidenceBudget: 2, researchShownBudget: 1 },
     claimConstraints: {
+      usableEvidenceRefs: ['ev_1', 'ev_2'],
       showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 3, epistemicByRef: {},
     },
     forbiddenClaims: { terms: ['copilote IA'] },
@@ -136,12 +137,12 @@ describe('budgets ZÉRO légitimes ; négatif/non-entier fermés', () => {
   it('assertionBudget = 0 valide, impose maxAssertions = 0', () => {
     const ok = validateMessageReadyContext(zeroCtx(
       { assertionBudget: 0, evidenceBudget: 2, researchShownBudget: 1 },
-      { showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 0, epistemicByRef: {} },
+      { usableEvidenceRefs: ['ev_1', 'ev_2'], showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 0, epistemicByRef: {} },
     ))
     expect(ok.ok).toBe(true)
     const ko = validateMessageReadyContext(zeroCtx(
       { assertionBudget: 0, evidenceBudget: 2, researchShownBudget: 1 },
-      { showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 1, epistemicByRef: {} },
+      { usableEvidenceRefs: ['ev_1', 'ev_2'], showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 1, epistemicByRef: {} },
     ))
     expect(ko.ok).toBe(false)
   })
@@ -149,16 +150,16 @@ describe('budgets ZÉRO légitimes ; négatif/non-entier fermés', () => {
   it('evidenceBudget = 0 et researchShownBudget = 0 valides, zéro octroi', () => {
     const ok = validateMessageReadyContext(zeroCtx(
       { assertionBudget: 0, evidenceBudget: 0, researchShownBudget: 0 },
-      { showableEvidenceRefs: [], uncertainAssertionRefs: [], maxAssertions: 0, epistemicByRef: {} },
+      { usableEvidenceRefs: [], showableEvidenceRefs: [], uncertainAssertionRefs: [], maxAssertions: 0, epistemicByRef: {} },
     ))
     expect(ok.ok).toBe(true)
-    const cc0 = deriveClaimConstraints([EV(1), EV(2)] as any, { assertionBudget: 3, evidenceBudget: 0, researchShownBudget: 0 })
+    const cc0 = deriveClaimConstraints([EV(1), EV(2)] as any, { assertionBudget: 3, evidenceBudget: 0, researchShownBudget: 0 }, { usableEvidenceRefs: [], showableEvidenceRefs: [] })
     expect(cc0.showableEvidenceRefs).toEqual([])
-    const ccShown0 = deriveClaimConstraints([EV(1)] as any, { assertionBudget: 2, evidenceBudget: 2, researchShownBudget: 0 })
+    const ccShown0 = deriveClaimConstraints([EV(1)] as any, { assertionBudget: 2, evidenceBudget: 2, researchShownBudget: 0 }, { usableEvidenceRefs: ['ev_1'], showableEvidenceRefs: [] })
     expect(ccShown0.showableEvidenceRefs).toEqual([])
     const ko = validateMessageReadyContext(zeroCtx(
       { assertionBudget: 2, evidenceBudget: 2, researchShownBudget: 0 },
-      { showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 2, epistemicByRef: {} },
+      { usableEvidenceRefs: ['ev_1', 'ev_2'], showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 2, epistemicByRef: {} },
     ))
     expect(ko.ok).toBe(false)
   })
@@ -192,13 +193,13 @@ describe('R4-C2 — types épistémiques CANONIQUES, préservés exactement', ()
     }])
     expect(proj.ok).toBe(true)
     expect((proj as any).items[0].strength).toEqual({ kind: 'EXTERNAL_CONFIRMED_CANONICAL' })
-    const cc = deriveClaimConstraints(evidenceRiche as any, budgets)
+    const cc = deriveClaimConstraints(evidenceRiche as any, budgets, { usableEvidenceRefs: ['ev_1', 'ev_2', 'ev_3'], showableEvidenceRefs: ['ev_1', 'ev_2'] })
     expect(cc.epistemicByRef.ev_2.strength).toEqual({ kind: 'INTERNAL_RECORD' })
     expect(cc.epistemicByRef.ev_3.strength).toEqual({ kind: 'EXTERNAL_CONFIRMED_CANONICAL' })
   })
 
   it('11/12 — DATED_EVENT_DAY et EXTERNAL_STATE_OBSERVED_DAY survivent EXACTEMENT (même valeur)', () => {
-    const cc = deriveClaimConstraints(evidenceRiche as any, budgets)
+    const cc = deriveClaimConstraints(evidenceRiche as any, budgets, { usableEvidenceRefs: ['ev_1', 'ev_2', 'ev_3'], showableEvidenceRefs: ['ev_1', 'ev_2'] })
     expect(cc.epistemicByRef.ev_1.temporalAuthority).toEqual({ basis: 'DATED_EVENT_DAY', referenceDay: '2026-01-10' })
     expect(cc.epistemicByRef.ev_1.temporalAuthority).toBe((evidenceRiche[0] as any).temporalAuthority)
     expect(cc.epistemicByRef.ev_3.temporalAuthority).toEqual({ basis: 'EXTERNAL_STATE_OBSERVED_DAY', referenceDay: '2026-08-13' })
@@ -238,7 +239,7 @@ describe('R4-C4/C5 — CONTRE-SIGNAL ≠ INCERTITUDE, validation stricte', () =>
   const budgets = { assertionBudget: 3, evidenceBudget: 3, researchShownBudget: 1 }
 
   it('19/20/21 — la dérivation : incertitude ⇒ uncertain ; contre-signal seul ⇏ uncertain mais PRÉSERVÉ', () => {
-    const cc = deriveClaimConstraints(evidenceMixte as any, budgets)
+    const cc = deriveClaimConstraints(evidenceMixte as any, budgets, { usableEvidenceRefs: ['ev_1', 'ev_2', 'ev_3'], showableEvidenceRefs: ['ev_1'] })
     expect(cc.uncertainAssertionRefs).toEqual(['ev_1'])                       // 19
     expect(cc.uncertainAssertionRefs).not.toContain('ev_2')                   // 20
     expect(cc.epistemicByRef.ev_2.counterSignalRefs).toEqual(['ev_contra'])   // 21 — identifiable COMME contre-signal
@@ -247,12 +248,13 @@ describe('R4-C4/C5 — CONTRE-SIGNAL ≠ INCERTITUDE, validation stricte', () =>
 
   it('22/23 — ref fantôme et ref « incertaine » sans incertitude réelle ⇒ rejet', () => {
     const fantome = validateMessageReadyContext(contexteValide({
-      claimConstraints: { showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: ['ev_fantome'], maxAssertions: 3, epistemicByRef: {} },
+      claimConstraints: { usableEvidenceRefs: ['ev_1', 'ev_2'], showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: ['ev_fantome'], maxAssertions: 3, epistemicByRef: {} },
     }))
     expect(fantome.ok).toBe(false)
     expect((fantome as any).reasons).toContain('CLAIM_CONSTRAINT_INCONSISTENT')
     const sansPayload = validateMessageReadyContext(contexteValide({
       claimConstraints: {
+        usableEvidenceRefs: ['ev_1', 'ev_2'],
         showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: ['ev_2'], maxAssertions: 3,
         epistemicByRef: { ev_2: { counterSignalRefs: ['ev_contra'] } }, // pas d'uncertainty
       },
@@ -264,6 +266,7 @@ describe('R4-C4/C5 — CONTRE-SIGNAL ≠ INCERTITUDE, validation stricte', () =>
   it('24 — incertitude portée par epistemicByRef mais OMISE de uncertainAssertionRefs ⇒ rejet', () => {
     const omise = validateMessageReadyContext(contexteValide({
       claimConstraints: {
+        usableEvidenceRefs: ['ev_1', 'ev_2'],
         showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 3,
         epistemicByRef: { ev_2: { uncertainty: 'incertitude vivante' } },
       },
@@ -275,6 +278,7 @@ describe('R4-C4/C5 — CONTRE-SIGNAL ≠ INCERTITUDE, validation stricte', () =>
     const coherente = validateMessageReadyContext(contexteValide({
       communicationEvidence: [EV(1), { ...EV(2), uncertainty: 'incertitude vivante' }],
       claimConstraints: {
+        usableEvidenceRefs: ['ev_1', 'ev_2'],
         showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: ['ev_2'], maxAssertions: 3,
         epistemicByRef: { ev_2: { uncertainty: 'incertitude vivante' } },
       },
@@ -323,11 +327,11 @@ describe('évidence, provenance, Shown ⊆ Used', () => {
 
   it('Research Shown ne peut PAS excéder l’éligible Research Used', () => {
     const horsUsed = validateMessageReadyContext(contexteValide({
-      claimConstraints: { showableEvidenceRefs: ['ev_inconnu'], uncertainAssertionRefs: [], maxAssertions: 3, epistemicByRef: {} },
+      claimConstraints: { usableEvidenceRefs: ['ev_1', 'ev_2'], showableEvidenceRefs: ['ev_inconnu'], uncertainAssertionRefs: [], maxAssertions: 3, epistemicByRef: {} },
     }))
     expect(horsUsed.ok).toBe(false)
     const tropMontre = validateMessageReadyContext(contexteValide({
-      claimConstraints: { showableEvidenceRefs: ['ev_1', 'ev_2'], uncertainAssertionRefs: [], maxAssertions: 3, epistemicByRef: {} },
+      claimConstraints: { usableEvidenceRefs: ['ev_1', 'ev_2'], showableEvidenceRefs: ['ev_1', 'ev_2'], uncertainAssertionRefs: [], maxAssertions: 3, epistemicByRef: {} },
     }))
     expect(tropMontre.ok).toBe(false)
   })
@@ -411,7 +415,8 @@ describe('R4-C1 — mécaniques anonymes ≠ Goldens nommés ; SQUAD non-activat
         evidenceBudget: cas.usableEvidenceRefs.length,
         researchShownBudget: cas.showableEvidenceRefs.length,
       }
-      const cc = deriveClaimConstraints(evidence as any, budgets)
+      const cc = deriveClaimConstraints(evidence as any, budgets,
+        { usableEvidenceRefs: cas.usableEvidenceRefs, showableEvidenceRefs: cas.showableEvidenceRefs })
       expect(cc.showableEvidenceRefs, cas.caseId).toEqual(cas.showableEvidenceRefs)
       expect(cc.uncertainAssertionRefs, cas.caseId).toEqual(cas.uncertainRefs) // contre-signal seul EXCLU
       const base = contexteValide({
@@ -497,13 +502,14 @@ describe('micro-patch — gardes runtime des types épistémiques canoniques', (
   const avecEvidence = (item: any, cc?: any) => contexteValide({
     communicationEvidence: [item],
     budgets: { assertionBudget: 3, evidenceBudget: 1, researchShownBudget: 1 },
-    claimConstraints: cc ?? { showableEvidenceRefs: [item.evidenceRef], uncertainAssertionRefs: [], maxAssertions: 3, epistemicByRef: {} },
+    claimConstraints: cc ?? { usableEvidenceRefs: [item.evidenceRef], showableEvidenceRefs: [item.evidenceRef], uncertainAssertionRefs: [], maxAssertions: 3, epistemicByRef: {} },
   })
 
   it('1/2/3 — les trois forces canoniques passent (lignée cohérente)', () => {
     for (const kind of ['EXTERNAL_CONFIRMED_CANONICAL', 'INTERNAL_RECORD', 'INTERNAL_CORROBORATED_RECORD'] as const) {
       const item = { ...EV(1), strength: { kind } }
       const r = validateMessageReadyContext(avecEvidence(item, {
+        usableEvidenceRefs: ['ev_1'],
         showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 3,
         epistemicByRef: { ev_1: { strength: { kind } } },
       }))
@@ -524,6 +530,7 @@ describe('micro-patch — gardes runtime des types épistémiques canoniques', (
       const temporalAuthority = { basis, referenceDay: '2026-08-13' }
       const item = { ...EV(1), temporalAuthority }
       const r = validateMessageReadyContext(avecEvidence(item, {
+        usableEvidenceRefs: ['ev_1'],
         showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 3,
         epistemicByRef: { ev_1: { temporalAuthority } },
       }))
@@ -570,7 +577,7 @@ describe('micro-patch — gardes runtime des types épistémiques canoniques', (
       { ev_1: { counterSignalRefs: [''] } },
     ]) {
       const r = validateMessageReadyContext(contexteValide({
-        claimConstraints: { showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 3, epistemicByRef: epistemicByRef as any },
+        claimConstraints: { usableEvidenceRefs: ['ev_1', 'ev_2'], showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: [], maxAssertions: 3, epistemicByRef: epistemicByRef as any },
       }))
       expect(r.ok, JSON.stringify(epistemicByRef)).toBe(false)
       expect((r as any).reasons).toContain('CLAIM_CONSTRAINT_INCONSISTENT')
@@ -587,6 +594,7 @@ describe('micro-patch — cohérence de lignée évidence ↔ epistemicByRef', (
     communicationEvidence: [item],
     budgets: { assertionBudget: 3, evidenceBudget: 1, researchShownBudget: 1 },
     claimConstraints: {
+      usableEvidenceRefs: ['ev_1'],
       showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: uncertain, maxAssertions: 3,
       epistemicByRef: entree === undefined ? {} : { ev_1: entree },
     },
@@ -620,7 +628,7 @@ describe('micro-patch — cohérence de lignée évidence ↔ epistemicByRef', (
       { ...EV(1), uncertainty: 'signal unique', temporalAuthority: T1, strength: S1 },
       { ...EV(2), counterSignalRefs: ['ev_contra'] },
     ]
-    const cc = deriveClaimConstraints(evidence as any, { assertionBudget: 3, evidenceBudget: 2, researchShownBudget: 1 })
+    const cc = deriveClaimConstraints(evidence as any, { assertionBudget: 3, evidenceBudget: 2, researchShownBudget: 1 }, { usableEvidenceRefs: ['ev_1', 'ev_2'], showableEvidenceRefs: ['ev_1'] })
     expect(cc.uncertainAssertionRefs).toEqual(['ev_1'])          // 27
     expect(cc.uncertainAssertionRefs).not.toContain('ev_2')      // 26
     const r = validateMessageReadyContext(contexteValide({
@@ -652,6 +660,7 @@ describe('micro-patch — projection canonique de sortie (aucun champ parasite)'
       communicationEvidence: [{ ...EV(1), rawScrape: { html: '<div>' }, uncertainty: 'source unique' }] as any,
       budgets: { assertionBudget: 3, evidenceBudget: 1, researchShownBudget: 1 },
       claimConstraints: {
+        usableEvidenceRefs: ['ev_1'],
         showableEvidenceRefs: ['ev_1'], uncertainAssertionRefs: ['ev_1'], maxAssertions: 3,
         epistemicByRef: { ev_1: { uncertainty: 'source unique', internalScore: 0.93 } as any },
       },
