@@ -15,8 +15,8 @@
 // serveur COURANT.
 //
 // ── CE QUE CE MODULE NE FAIT PAS ────────────────────────────────────────────
-// Pas d'IAM générale, pas de graphe de permissions, pas de DSL. Pas d'action
-// de messagerie (JS-015 reste à figer par l'utilisateur) — le registre est
+// Pas d'IAM générale, pas de graphe de permissions, pas de DSL. Aucune action
+// d'ENVOI de message (messaging:send : contrat futur séparé) — le registre est
 // FERMÉ et une action inconnue échoue CAPABILITY_FORBIDDEN. Le vocabulaire de
 // contrôle du moteur proactif (motions.ts) reste un domaine SÉPARÉ : aucun
 // mapping MissionTool → capacité proactive n'est déduit par convention ici ;
@@ -28,7 +28,11 @@ import type { RoleKind } from '../proactive/roles/roleCard'
 import type { WorkspacePermissions } from '../../../types/prospector'
 import type { RoleResolution } from './roleAssignment'
 
-// ── REGISTRE D'ACTIONS V0 — FERMÉ. Aucune action messaging/send. ────────────
+// ── REGISTRE D'ACTIONS V0 — FERMÉ. ──────────────────────────────────────────
+// B2B-1 (JS-015) : `messaging:prepare` = GÉNÉRATION DE BROUILLON uniquement —
+// aucun effet d'envoi, aucune écriture CRM, aucun contact prospect. Toute
+// action d'ENVOI (`messaging:send`) reste ABSENTE du registre : elle recevra
+// son propre contrat d'autorité/approbation. Génération ≠ Envoi.
 export const ACTION_REFS = Object.freeze([
   'mission:read',
   'mission:create',
@@ -47,6 +51,7 @@ export const ACTION_REFS = Object.freeze([
   'monitoring:create',
   'monitoring:stop',
   'monitoring:run',
+  'messaging:prepare',
 ] as const)
 export type ActionRef = typeof ACTION_REFS[number]
 
@@ -76,6 +81,15 @@ const READ_ACTIONS = Object.freeze(['read:leads', 'read:lists', 'read:sequences'
 const MONITORING_ACTIONS = Object.freeze([
   'monitoring:read', 'monitoring:create', 'monitoring:stop', 'monitoring:run',
 ] as const)
+/**
+ * B2B-1 (JS-015) — `messaging:prepare` : la surface produit initiale est la
+ * charge ACQUIRE / Lead / RedactionModal ⇒ SDR_BDR et ACCOUNT_EXECUTIVE
+ * uniquement. AM/KAM et Head of Sales : CAPABILITY_FORBIDDEN — on ne
+ * pré-autorise PAS de futures charges messaging compte/managériales avant que
+ * leurs chemins gouvernés existent ; extension par décision de politique
+ * EXPLICITE seulement.
+ */
+const MESSAGING_PREPARE_ACTIONS = Object.freeze(['messaging:prepare'] as const)
 
 /**
  * POLITIQUE RÔLE × ACTION — AUTORITÉ, donc ICI et pas dans les RoleCards.
@@ -87,20 +101,23 @@ const MONITORING_ACTIONS = Object.freeze([
  * Toute paire rôle/action ABSENTE de cette table est CAPABILITY_FORBIDDEN.
  */
 export const ROLE_ACTION_POLICY: Readonly<Record<RoleKind, readonly ActionRef[]>> = Object.freeze({
-  SDR_BDR: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS]),
-  ACCOUNT_EXECUTIVE: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS, ...MONITORING_ACTIONS]),
+  SDR_BDR: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS, ...MESSAGING_PREPARE_ACTIONS]),
+  ACCOUNT_EXECUTIVE: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS, ...MONITORING_ACTIONS, ...MESSAGING_PREPARE_ACTIONS]),
   ACCOUNT_MANAGER_KAM: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS, ...MONITORING_ACTIONS]),
   HEAD_OF_SALES: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS, ...MONITORING_ACTIONS]),
 })
 
 /**
- * La SEULE politique d'espace stricte consommée par JS-020 V0 : externalAI,
- * et UNIQUEMENT pour l'action qui invoque réellement une IA externe.
- * (l'enrichissement web → Claude/web.) Les autres drapeaux hérités (messaging,
- * leads, sequences, validate) restent des indices UI — pas de l'autorité.
+ * La SEULE politique d'espace stricte consommée par JS-020 : externalAI, et
+ * UNIQUEMENT pour les actions qui invoquent réellement une IA externe —
+ * l'enrichissement web (Claude/web) et, depuis B2B-1, la génération de
+ * brouillon `messaging:prepare` (rédacteur contraint B2A via la passerelle
+ * gouvernée). Les autres drapeaux hérités (messaging, leads, sequences,
+ * validate) restent des indices UI — JAMAIS de l'autorité d'exécution : le
+ * drapeau hérité `messaging` n'autorise NI ne bloque `messaging:prepare`.
  */
 export function actionRequiresExternalAI(action: ActionRef): boolean {
-  return action === 'mission:enrich_companies'
+  return action === 'mission:enrich_companies' || action === 'messaging:prepare'
 }
 
 /**

@@ -82,7 +82,10 @@ import {
 import { resolveSalesRole } from '../lib/prospector/authz/roleAssignmentStore'
 import {
   ACTION_REFS,
+  buildAllowedActions,
   evaluatePermission,
+  INTRINSIC_ADMIN_WORKSPACE_POLICY,
+  isActionRef,
   ROLE_ACTION_POLICY,
 } from '../lib/prospector/authz/permissionVerdict'
 import { MISSION_APPROVAL_KIND } from '../lib/prospector/missionApprovals'
@@ -291,12 +294,94 @@ describe('PC-12…PC-17 — politique rôle × action et périmètre', () => {
     }
   })
 
-  it('PC-16 — action INCONNUE ⇒ CAPABILITY_FORBIDDEN (registre fermé, aucune action messaging)', () => {
-    for (const inconnue of ['messaging:send', 'send_email', 'mission:exfiltrate', '', 'linkedin_send']) {
+  it('PC-16 — action INCONNUE ⇒ CAPABILITY_FORBIDDEN (registre fermé, aucune action d\u2019ENVOI)', () => {
+    for (const inconnue of ['messaging:send', 'messaging:reply', 'messaging:generate', 'send_email', 'mission:exfiltrate', '', 'linkedin_send']) {
       expect(evaluatePermission({ role: ASSIGNED('SDR_BDR'), action: inconnue }))
         .toMatchObject({ state: 'BLOCKED', reason: 'CAPABILITY_FORBIDDEN' })
     }
-    expect((ACTION_REFS as readonly string[]).some((a) => a.startsWith('messaging') || a.includes('send'))).toBe(false)
+    // B2B-1 : EXACTEMENT une action messaging (prepare) ; aucune action d'envoi.
+    expect((ACTION_REFS as readonly string[]).filter((a) => a.startsWith('messaging'))).toEqual(['messaging:prepare'])
+    expect((ACTION_REFS as readonly string[]).some((a) => a.includes('send'))).toBe(false)
+  })
+
+  describe('B2B-1 — messaging:prepare : autorité de GÉNÉRATION, jamais d\u2019envoi', () => {
+    const POLICY = (permissions: any) => ({ ok: true, state: 'CONFIGURED', permissions }) as any
+    const EXT_ON = POLICY({ externalAI: true, messaging: false, leads: false, sequences: false, validate: false })
+    const EXT_OFF = POLICY({ externalAI: false, messaging: false, leads: false, sequences: false, validate: false })
+
+    it('A/B/P — registre : messaging:prepare admis ; send/reply/generate refusés ; aucun send', () => {
+      expect(isActionRef('messaging:prepare')).toBe(true)
+      for (const refuse of ['messaging:send', 'messaging:reply', 'messaging:generate']) {
+        expect(isActionRef(refuse), refuse).toBe(false)
+      }
+      expect((ACTION_REFS as readonly string[]).includes('messaging:send')).toBe(false)
+    })
+
+    it('C/D — SDR_BDR et ACCOUNT_EXECUTIVE + externalAI=true ⇒ ALLOWED (sans approbation intrinsèque)', () => {
+      for (const roleKind of ['SDR_BDR', 'ACCOUNT_EXECUTIVE'] as const) {
+        const v = evaluatePermission({ role: ASSIGNED(roleKind), action: 'messaging:prepare', workspacePolicy: EXT_ON })
+        expect(v.state, roleKind).toBe('ALLOWED')
+      }
+    })
+
+    it('E/F — AM/KAM et HEAD_OF_SALES ⇒ CAPABILITY_FORBIDDEN (pas de pré-autorisation)', () => {
+      for (const roleKind of ['ACCOUNT_MANAGER_KAM', 'HEAD_OF_SALES'] as const) {
+        expect(evaluatePermission({ role: ASSIGNED(roleKind), action: 'messaging:prepare', workspacePolicy: EXT_ON }), roleKind)
+          .toMatchObject({ state: 'BLOCKED', reason: 'CAPABILITY_FORBIDDEN' })
+        expect(ROLE_ACTION_POLICY[roleKind].includes('messaging:prepare' as any), roleKind).toBe(false)
+      }
+    })
+
+    it('G/I/J/K/H — politique d\u2019espace STRICTE : seul externalAI=true explicite passe', () => {
+      const sdr = ASSIGNED('SDR_BDR')
+      expect(evaluatePermission({ role: sdr, action: 'messaging:prepare', workspacePolicy: EXT_OFF }))
+        .toMatchObject({ state: 'BLOCKED', reason: 'WORKSPACE_POLICY_DENIED' })                       // G
+      expect(evaluatePermission({ role: sdr, action: 'messaging:prepare', workspacePolicy: { ok: true, state: 'NOT_CONFIGURED' } as any }))
+        .toMatchObject({ state: 'BLOCKED', reason: 'WORKSPACE_POLICY_DENIED' })                       // I
+      expect(evaluatePermission({ role: sdr, action: 'messaging:prepare', workspacePolicy: { ok: true, state: 'INVALID' } as any }))
+        .toMatchObject({ state: 'BLOCKED', reason: 'WORKSPACE_POLICY_DENIED' })                       // J
+      expect(evaluatePermission({ role: sdr, action: 'messaging:prepare', workspacePolicy: { ok: false, state: 'UNAVAILABLE' } as any }))
+        .toMatchObject({ state: 'BLOCKED', reason: 'WORKSPACE_POLICY_UNAVAILABLE' })                  // K
+      expect(evaluatePermission({ role: ASSIGNED('ACCOUNT_EXECUTIVE'), action: 'messaging:prepare' }))
+        .toMatchObject({ state: 'BLOCKED', reason: 'WORKSPACE_POLICY_UNAVAILABLE' })                  // H
+    })
+
+    it('L — la politique intrinsèque de l\u2019espace admin (externalAI=true, indices hérités à false) reste compatible', () => {
+      const v = evaluatePermission({ role: ASSIGNED('SDR_BDR'), action: 'messaging:prepare', workspacePolicy: INTRINSIC_ADMIN_WORKSPACE_POLICY })
+      expect(v.state).toBe('ALLOWED')
+      expect((INTRINSIC_ADMIN_WORKSPACE_POLICY as any).permissions.messaging).toBe(false)
+    })
+
+    it('M/N — le drapeau hérité messaging n\u2019est JAMAIS une autorité : ni permission, ni blocage', () => {
+      // M — messaging=true n'autorise PAS quand externalAI=false.
+      expect(evaluatePermission({ role: ASSIGNED('SDR_BDR'), action: 'messaging:prepare',
+        workspacePolicy: POLICY({ externalAI: false, messaging: true, leads: true, sequences: true, validate: true }) }))
+        .toMatchObject({ state: 'BLOCKED', reason: 'WORKSPACE_POLICY_DENIED' })
+      // N — messaging=false ne bloque PAS quand externalAI=true et rôle/action passent.
+      expect(evaluatePermission({ role: ASSIGNED('ACCOUNT_EXECUTIVE'), action: 'messaging:prepare',
+        workspacePolicy: POLICY({ externalAI: true, messaging: false, leads: false, sequences: false, validate: false }) }).state)
+        .toBe('ALLOWED')
+    })
+
+    it('O — buildAllowedActions projette EXACTEMENT une entrée messaging:prepare, alignée sur le verdict', () => {
+      const projSdr = buildAllowedActions(ASSIGNED('SDR_BDR'), EXT_ON)
+      const entrees = projSdr.filter((a) => a.action === 'messaging:prepare')
+      expect(entrees.length).toBe(1)
+      expect(entrees[0].state).toBe('ALLOWED')
+      const projSdrOff = buildAllowedActions(ASSIGNED('SDR_BDR'), EXT_OFF)
+      expect(projSdrOff.find((a) => a.action === 'messaging:prepare'))
+        .toMatchObject({ state: 'BLOCKED', reason: 'WORKSPACE_POLICY_DENIED' })
+      const projKam = buildAllowedActions(ASSIGNED('ACCOUNT_MANAGER_KAM'), EXT_ON)
+      expect(projKam.find((a) => a.action === 'messaging:prepare'))
+        .toMatchObject({ state: 'BLOCKED', reason: 'CAPABILITY_FORBIDDEN' })
+    })
+
+    it('approbation : messaging:prepare n\u2019exige PAS intrinsèquement SEC-004 (needsApproval non codé en dur)', () => {
+      // L'exigence d'approbation reste un INTRANT canonique de l'appelant —
+      // le verdict la respecte quand elle est fournie, sans la fabriquer.
+      const v = evaluatePermission({ role: ASSIGNED('SDR_BDR'), action: 'messaging:prepare', workspacePolicy: EXT_ON, needsApproval: true })
+      expect(v).toMatchObject({ state: 'APPROVAL_REQUIRED' })
+    })
   })
 
   it('PC-17 — resourceScope est EXACTEMENT ALL_WORKSPACE sur tout verdict et toute projection', async () => {
