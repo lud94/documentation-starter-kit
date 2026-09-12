@@ -82,6 +82,7 @@ import {
 import { resolveSalesRole } from '../lib/prospector/authz/roleAssignmentStore'
 import {
   ACTION_REFS,
+  actionRequiresExternalAI,
   buildAllowedActions,
   evaluatePermission,
   INTRINSIC_ADMIN_WORKSPACE_POLICY,
@@ -746,5 +747,63 @@ describe('PC-30/31 — frontières du magasin et de la lecture', () => {
         expect(src.includes(interdit), `${rel} mentionne « ${interdit} »`).toBe(false)
       }
     }
+  })
+})
+
+// ── PFV0-2A — read:accounts : autorité de LECTURE produit générique ─────────
+describe('PFV0-2A — read:accounts', () => {
+  it('RA-1 — registre : read:accounts admis ; aucune action accounts:write/delete', () => {
+    expect(isActionRef('read:accounts')).toBe(true)
+    for (const refuse of ['accounts:write', 'accounts:delete', 'attention:read', 'today:read']) {
+      expect(isActionRef(refuse), refuse).toBe(false)
+    }
+  })
+
+  it('RA-2 — les QUATRE rôles Sales canoniques sont autorisés', () => {
+    for (const roleKind of ['SDR_BDR', 'ACCOUNT_EXECUTIVE', 'ACCOUNT_MANAGER_KAM', 'HEAD_OF_SALES'] as const) {
+      const v = evaluatePermission({ role: ASSIGNED(roleKind), action: 'read:accounts' })
+      expect(v.state, roleKind).toBe('ALLOWED')
+      expect(ROLE_ACTION_POLICY[roleKind].includes('read:accounts' as any), roleKind).toBe(true)
+    }
+  })
+
+  it('RA-3 — rôle inconnu/invalide/indisponible/non affecté ⇒ fail closed', () => {
+    expect(evaluatePermission({ role: { state: 'UNASSIGNED' } as any, action: 'read:accounts' }).state)
+      .toBe('SALES_ROLE_UNASSIGNED')
+    expect(evaluatePermission({ role: { state: 'INVALID' } as any, action: 'read:accounts' }))
+      .toMatchObject({ state: 'BLOCKED', reason: 'ROLE_ASSIGNMENT_INVALID' })
+    expect(evaluatePermission({ role: { state: 'UNAVAILABLE' } as any, action: 'read:accounts' }))
+      .toMatchObject({ state: 'BLOCKED', reason: 'ROLE_ASSIGNMENT_UNAVAILABLE' })
+  })
+
+  it('RA-4 — lecture pure : aucune exigence externalAI, aucune politique d’espace requise', () => {
+    expect(actionRequiresExternalAI('read:accounts')).toBe(false)
+    // Sans workspacePolicy fournie : ALLOWED quand même (l'action ne l'exige pas).
+    expect(evaluatePermission({ role: ASSIGNED('HEAD_OF_SALES'), action: 'read:accounts' }).state).toBe('ALLOWED')
+  })
+
+  it('RA-5 — les drapeaux d’espace hérités (messaging/leads) ne sont JAMAIS l’autorité', () => {
+    // Tous les drapeaux hérités à false : read:accounts reste ALLOWED — la
+    // politique d'espace n'entre pas dans cette autorité de lecture.
+    const policy = { ok: true, state: 'CONFIGURED', permissions: { messaging: false, leads: false, sequences: false, validate: false, externalAI: false } } as any
+    expect(evaluatePermission({ role: ASSIGNED('SDR_BDR'), action: 'read:accounts', workspacePolicy: policy }).state).toBe('ALLOWED')
+  })
+
+  it('RA-6 — read:accounts n’accorde JAMAIS écriture/envoi/run', () => {
+    // L'autorité est UNE action : détenir read:accounts ne change aucun autre
+    // verdict. AM/KAM reste CAPABILITY_FORBIDDEN sur les outils ACQUIRE et sur
+    // messaging:prepare ; SDR reste interdit de monitoring:run.
+    expect(evaluatePermission({ role: ASSIGNED('ACCOUNT_MANAGER_KAM'), action: 'messaging:prepare', workspacePolicy: INTRINSIC_ADMIN_WORKSPACE_POLICY }))
+      .toMatchObject({ state: 'BLOCKED', reason: 'CAPABILITY_FORBIDDEN' })
+    expect(evaluatePermission({ role: ASSIGNED('SDR_BDR'), action: 'monitoring:run' }))
+      .toMatchObject({ state: 'BLOCKED', reason: 'CAPABILITY_FORBIDDEN' })
+    // Et le registre ne contient AUCUNE action d'écriture de comptes.
+    expect((ACTION_REFS as readonly string[]).filter((a) => a.startsWith('accounts'))).toEqual([])
+  })
+
+  it('RA-7 — buildAllowedActions projette read:accounts ALLOWED pour un rôle affecté', () => {
+    const actions = buildAllowedActions(ASSIGNED('ACCOUNT_EXECUTIVE'), INTRINSIC_ADMIN_WORKSPACE_POLICY)
+    const ra = actions.find((a: any) => a.action === 'read:accounts')
+    expect(ra?.state).toBe('ALLOWED')
   })
 })

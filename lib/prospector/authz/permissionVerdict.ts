@@ -52,6 +52,7 @@ export const ACTION_REFS = Object.freeze([
   'monitoring:stop',
   'monitoring:run',
   'messaging:prepare',
+  'read:accounts',
 ] as const)
 export type ActionRef = typeof ACTION_REFS[number]
 
@@ -92,6 +93,18 @@ const MONITORING_ACTIONS = Object.freeze([
 const MESSAGING_PREPARE_ACTIONS = Object.freeze(['messaging:prepare'] as const)
 
 /**
+ * PFV0-2A — `read:accounts` : L'UNIQUE autorité de lecture produit générique
+ * (projection Today + Company Workspace). LECTURE SEULE — n'autorise AUCUNE
+ * écriture, AUCUN run de monitoring, AUCUN message, AUCUN envoi, AUCUNE
+ * exécution de mission, AUCUN appel IA externe, AUCUNE mutation CRM. La
+ * nouvelle couche produit ne s'appuie NI sur `read:leads` (héritage) NI sur
+ * `monitoring:read` pour ouvrir un Company Workspace. Ouverte aux quatre
+ * rôles Sales canoniques : lire l'intelligence de compte de son espace est la
+ * charge commune des quatre motions.
+ */
+const PRODUCT_READ_ACTIONS = Object.freeze(['read:accounts'] as const)
+
+/**
  * POLITIQUE RÔLE × ACTION — AUTORITÉ, donc ICI et pas dans les RoleCards.
  *
  * Les six MissionTools actuels sont la charge ACQUIRE/Prospector d'aujourd'hui.
@@ -101,10 +114,10 @@ const MESSAGING_PREPARE_ACTIONS = Object.freeze(['messaging:prepare'] as const)
  * Toute paire rôle/action ABSENTE de cette table est CAPABILITY_FORBIDDEN.
  */
 export const ROLE_ACTION_POLICY: Readonly<Record<RoleKind, readonly ActionRef[]>> = Object.freeze({
-  SDR_BDR: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS, ...MESSAGING_PREPARE_ACTIONS]),
-  ACCOUNT_EXECUTIVE: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS, ...MONITORING_ACTIONS, ...MESSAGING_PREPARE_ACTIONS]),
-  ACCOUNT_MANAGER_KAM: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS, ...MONITORING_ACTIONS]),
-  HEAD_OF_SALES: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS, ...MONITORING_ACTIONS]),
+  SDR_BDR: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS, ...PRODUCT_READ_ACTIONS, ...MESSAGING_PREPARE_ACTIONS]),
+  ACCOUNT_EXECUTIVE: Object.freeze([...MISSION_LIFECYCLE_ACTIONS, ...MISSION_TOOL_ACTIONS, ...READ_ACTIONS, ...PRODUCT_READ_ACTIONS, ...MONITORING_ACTIONS, ...MESSAGING_PREPARE_ACTIONS]),
+  ACCOUNT_MANAGER_KAM: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS, ...PRODUCT_READ_ACTIONS, ...MONITORING_ACTIONS]),
+  HEAD_OF_SALES: Object.freeze<readonly ActionRef[]>(['mission:read', ...READ_ACTIONS, ...PRODUCT_READ_ACTIONS, ...MONITORING_ACTIONS]),
 })
 
 /**
