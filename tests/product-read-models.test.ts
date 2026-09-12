@@ -64,6 +64,7 @@ function monitoringInput(over: Partial<MonitoringCandidateInputV0['run']> = {}):
       ...over,
     },
     accountRef: ACCOUNT,
+    whatChanged: 'Changement matériel observé sur le compte (résolu amont).',
   }
 }
 
@@ -153,7 +154,7 @@ describe('PFV0-1 — FIX BORNÉ : whatChanged canonique, admission explicite', (
     const affectations = code.match(/(?<!readonly )whatChanged:\s*[^\n,]+/g) ?? []
     expect(affectations.length).toBeGreaterThan(0)
     for (const a of affectations) {
-      expect(/^whatChanged:\s*(input\.whatChanged|'MATERIAL_CHANGE_FOUND')\s*$/.test(a.trim().replace(/,$/, ''))).toBe(true)
+      expect(/^whatChanged:\s*input\.whatChanged\s*$/.test(a.trim().replace(/,$/, ''))).toBe(true)
     }
   })
 
@@ -186,6 +187,64 @@ describe('PFV0-1 — FIX BORNÉ : whatChanged canonique, admission explicite', (
     expect(repli[0].observedAt).toBe('2026-09-01T10:00:00.000Z')
     const code = sources.attention.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
     expect(/lastViewedAt|freshness|maxAge|thresholdMs/i.test(code)).toBe(false)
+  })
+})
+
+describe('PFV0-1.1 — DURCISSEMENT : identité, whatChanged monitoring, route canonique', () => {
+  it('1.1-A — même changeRef porté par DEUX Situations différentes ⇒ deux itemRefs distincts', () => {
+    const out = project({
+      qualifyingSituationChanges: [
+        qualifyingChange({ id: 'sit_001' }, { changeRef: 'chg_shared' }),
+        qualifyingChange({ id: 'sit_002' }, { changeRef: 'chg_shared', whatChanged: 'Même changement, autre interprétation.' }),
+      ],
+    })
+    expect(out).toHaveLength(2)
+    expect(out[0].itemRef).not.toBe(out[1].itemRef)
+  })
+
+  it('1.1-B — même Situation + même changeRef ⇒ itemRef stable et déterministe', () => {
+    const a = project({ qualifyingSituationChanges: [qualifyingChange()] })[0]
+    const b = project({ qualifyingSituationChanges: [qualifyingChange()] })[0]
+    expect(a.itemRef).toBe(b.itemRef)
+  })
+
+  it('1.1-C — même Situation + changeRef différent ⇒ itemRefs distincts', () => {
+    const a = project({ qualifyingSituationChanges: [qualifyingChange({}, { changeRef: 'chg_A' })] })[0]
+    const b = project({ qualifyingSituationChanges: [qualifyingChange({}, { changeRef: 'chg_B' })] })[0]
+    expect(a.itemRef).not.toBe(b.itemRef)
+  })
+
+  it('1.1-D — permutation des entrées ⇒ ensemble de sortie identique (identité incluse)', () => {
+    const q1 = qualifyingChange({ id: 'sit_001' }, { changeRef: 'chg_shared' })
+    const q2 = qualifyingChange({ id: 'sit_002' }, { changeRef: 'chg_shared' })
+    const a = project({ qualifyingSituationChanges: [q1, q2], monitoring: [monitoringInput()] })
+    const b = project({ qualifyingSituationChanges: [q2, q1], monitoring: [monitoringInput()] })
+    expect(a).toEqual(b)
+  })
+
+  it('1.1-E — monitoring MATERIAL_CHANGE_FOUND : whatChanged fourni préservé EXACTEMENT', () => {
+    const out = project({ monitoring: [{ ...monitoringInput(), whatChanged: 'Changement source-backed précis.' }] })
+    expect(out[0].whatChanged).toBe('Changement source-backed précis.')
+  })
+
+  it('1.1-F — businessAssessment n’est JAMAIS affecté à whatChanged (garde structurelle)', () => {
+    const out = project({ monitoring: [monitoringInput()] })
+    expect(out[0].whatChanged).not.toBe('MATERIAL_CHANGE_FOUND')
+    expect(out[0].domainAssessment).toBe('MATERIAL_CHANGE_FOUND')
+    const code = sources.attention.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')
+    expect(/whatChanged:\s*(input\.run\.businessAssessment|'MATERIAL_CHANGE_FOUND')/.test(code)).toBe(false)
+  })
+
+  it('1.1-G — verdicts non matériels ⇒ zéro candidat, inchangé même avec whatChanged fourni', () => {
+    for (const verdict of ['NO_MATERIAL_CHANGE', 'NEEDS_REVIEW', 'NOT_EVALUATED'] as const) {
+      expect(project({ monitoring: [monitoringInput({ businessAssessment: verdict })] })).toHaveLength(0)
+    }
+  })
+
+  it('1.1-H — route canonique : accountHrefFor ⇒ /companies/<accountId encodé>', () => {
+    expect(accountHrefFor(ACCOUNT)).toBe(`/companies/${encodeURIComponent(ACCOUNT)}`)
+    const out = project({ qualifyingSituationChanges: [qualifyingChange()] })
+    expect(out[0].accountHref).toBe(`/companies/${ACCOUNT}`)
   })
 })
 

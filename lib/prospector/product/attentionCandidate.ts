@@ -95,13 +95,23 @@ export interface AttentionCandidateV0 {
   readonly accountHref: string
 }
 
-/** Lien de navigation dérivé — pur, déterministe, aucune route implémentée ici. */
+/**
+ * Lien de navigation dérivé — pur, déterministe, aucune route implémentée ici.
+ * Route produit CANONIQUE du Company Workspace : /companies/[accountId].
+ */
 export function accountHrefFor(organizationRef: string): string {
-  return `/company/${encodeURIComponent(organizationRef)}`
+  return `/companies/${encodeURIComponent(organizationRef)}`
 }
 
-function deterministicItemRef(kind: AttentionCandidateKindV0, sourceRef: string): string {
-  const charge = `attention-candidate:v1:${kind}\n${sourceRef}`
+/**
+ * Identité déterministe du candidat — composants d'identité JOINTS par `\n`.
+ * Voie situation : kind + situationRef + changeRef — le MÊME changement
+ * canonique peut légitimement soutenir PLUSIEURS Situations : ce sont des
+ * interprétations DISTINCTES, jamais fusionnées sous un même itemRef.
+ * Voie monitoring : kind + runId (identité de run déjà unique).
+ */
+function deterministicItemRef(kind: AttentionCandidateKindV0, identityParts: readonly string[]): string {
+  const charge = `attention-candidate:v1:${kind}\n${identityParts.join('\n')}`
   return `att_${createHash('sha256').update(charge, 'utf8').digest('hex').slice(0, 32)}`
 }
 
@@ -163,6 +173,14 @@ export interface MonitoringCandidateInputV0 {
    * lead legacy.
    */
   readonly accountRef: string
+  /**
+   * CE QUI A CHANGÉ — factuel, adossé aux sources, RÉSOLU EN AMONT par la
+   * projection serveur de confiance (PFV0-2+), PRÉSERVÉ VERBATIM ici.
+   * `businessAssessment` est la PORTE D'ADMISSION, jamais cette description :
+   * si l'amont ne peut pas résoudre un changement factuel, il ne construit
+   * PAS cette entrée. Jamais dérivé du verdict, d'un rationale ou d'un LLM.
+   */
+  readonly whatChanged: string
   readonly organizationName?: string
   readonly uncertainties?: readonly string[]
   readonly counterSignalRefs?: readonly string[]
@@ -226,7 +244,7 @@ function candidateFromQualifyingChange(
   // une synthèse dérivée du type.
   return Object.freeze({
     schemaVersion: ATTENTION_CANDIDATE_SCHEMA_VERSION,
-    itemRef: deterministicItemRef('NEW_OR_UPDATED_SITUATION', input.changeRef),
+    itemRef: deterministicItemRef('NEW_OR_UPDATED_SITUATION', [s.id, input.changeRef]),
     kind: 'NEW_OR_UPDATED_SITUATION' as const,
     organizationRef: s.accountId,
     ...(input.organizationName !== undefined ? { organizationName: input.organizationName } : {}),
@@ -252,12 +270,12 @@ function candidateFromMonitoring(input: MonitoringCandidateInputV0): AttentionCa
   if (input.run.businessAssessment !== 'MATERIAL_CHANGE_FOUND') return undefined
   return Object.freeze({
     schemaVersion: ATTENTION_CANDIDATE_SCHEMA_VERSION,
-    itemRef: deterministicItemRef('MONITORING_MATERIAL_CHANGE', input.run.runId),
+    itemRef: deterministicItemRef('MONITORING_MATERIAL_CHANGE', [input.run.runId]),
     kind: 'MONITORING_MATERIAL_CHANGE' as const,
     organizationRef: input.accountRef,
     ...(input.organizationName !== undefined ? { organizationName: input.organizationName } : {}),
     sourceRef: input.run.runId,
-    whatChanged: 'MATERIAL_CHANGE_FOUND',
+    whatChanged: input.whatChanged,
     domainAssessment: input.run.businessAssessment,
     evidenceRefs: frozenList(input.run.canonicalRefsMaterial),
     uncertainties: frozenList(input.uncertainties),
