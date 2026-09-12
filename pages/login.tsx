@@ -7,6 +7,11 @@ const inp = 'w-full px-3 py-2 rounded-xl text-sm text-gray-800 bg-gray-50 border
 export default function LoginPage() {
   const router = useRouter()
   const [setup, setSetup] = useState<boolean | null>(null)
+  // Le portail proposait « Créez votre compte » dès que `setup=false`. Le setup
+  // public étant fermé hors développement local (SEC-AUTH-0), il faut savoir si
+  // l'opération est seulement POSSIBLE — sinon l'interface invite à une action
+  // que le serveur refusera.
+  const [setupAllowed, setSetupAllowed] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -15,11 +20,16 @@ export default function LoginPage() {
   const [forgot, setForgot] = useState(false)
   const [resetToken, setResetToken] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
-  const [resetLink, setResetLink] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => { fetch('/api/auth/status').then((r) => r.json()).then((d) => setSetup(!!d.setup)).catch(() => setSetup(true)) }, [])
+  // En cas d'échec : on suppose l'application initialisée et le setup fermé —
+  // le repli le plus fermé, jamais l'invitation à créer un compte.
+  useEffect(() => {
+    fetch('/api/auth/status').then((r) => r.json())
+      .then((d) => { setSetup(!!d.setup); setSetupAllowed(!!d.setupAllowed) })
+      .catch(() => { setSetup(true); setSetupAllowed(false) })
+  }, [])
   useEffect(() => { if (router.isReady) { const t = router.query.reset; if (typeof t === 'string' && t) setResetToken(t) } }, [router.isReady, router.query.reset])
 
   const dest = () => { const f = router.query.from; return typeof f === 'string' && f.startsWith('/') ? f : '/actions' }
@@ -47,13 +57,14 @@ export default function LoginPage() {
   }
 
   const requestReset = async () => {
-    setError(null); setInfo(null); setResetLink(null)
+    setError(null); setInfo(null)
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) return setError('Renseigne ton email.')
     setBusy(true)
     try {
-      const d = await fetch('/api/auth/reset-request', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: email.trim() }) }).then((r) => r.json())
+      // La réponse est volontairement uniforme et ne contient ni lien ni jeton :
+      // il n'y a plus rien à en extraire, et l'interface n'essaie plus.
+      await fetch('/api/auth/reset-request', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: email.trim() }) })
       setInfo('Si cet email existe, un lien de réinitialisation a été envoyé.')
-      if (d.noEmailProvider && d.link) setResetLink(d.link)
     } finally { setBusy(false) }
   }
 
@@ -70,7 +81,10 @@ export default function LoginPage() {
     } catch (e: any) { setError(e.message || 'Erreur') } finally { setBusy(false) }
   }
 
-  const isSetup = setup === false
+  const isSetup = setup === false && setupAllowed
+  // Application non initialisée ET setup fermé : on le dit, sans proposer de
+  // formulaire ni de champ de bootstrap dans le navigateur.
+  const blocked = setup === false && !setupAllowed
   const subtitle = resetToken ? 'Nouveau mot de passe' : forgot ? 'Réinitialiser le mot de passe' : isSetup ? 'Créez votre compte' : 'Connexion à la plateforme'
 
   return (
@@ -84,8 +98,12 @@ export default function LoginPage() {
             <p className="text-sm text-gray-400">{subtitle}</p>
           </div>
 
-          {/* 1) Réinitialisation via lien */}
-          {resetToken ? (
+          {/* 0) Non initialisée, et le setup public n'existe pas ici */}
+          {blocked ? (
+            <div className="card p-6">
+              <p className="text-sm text-gray-600">Application non initialisée. Contactez l'administrateur.</p>
+            </div>
+          ) : resetToken ? (
             <div className="card p-6">
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Nouveau mot de passe</label>
               <input type="password" value={password} autoFocus onChange={(e) => setPassword(e.target.value)} className={inp} placeholder="••••••••" />
@@ -101,7 +119,6 @@ export default function LoginPage() {
               <input type="email" value={email} autoFocus onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && requestReset()} className={inp} placeholder="vous@smart-ai.com" />
               {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
               {info && <p className="text-xs text-emerald-600 mb-3">{info}</p>}
-              {resetLink && <p className="text-[11px] text-gray-500 mb-3 break-all">Aucun email configuré — lien direct : <a href={resetLink} className="text-indigo-600 underline">réinitialiser</a></p>}
               <button onClick={requestReset} disabled={busy} className="w-full gradient-brand text-white text-sm font-semibold py-2.5 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 mb-2">{busy ? '…' : 'Envoyer le lien'}</button>
               <button onClick={() => { setForgot(false); setInfo(null); setError(null) }} className="w-full text-xs text-gray-400 hover:text-gray-600">← Retour à la connexion</button>
             </div>

@@ -1,0 +1,58 @@
+{
+  "_comment": [
+    "FIXTURE TECHNIQUE — SMOKE TEST. CE N'EST PAS DU GOLDEN DATASET.",
+    "Elle n'a AUCUNE valeur de verite metier : elle ne dit pas ce qu'un commercial",
+    "DEVRAIT faire. Elle prouve seulement que la chaine Evidence -> sales-core ->",
+    "Situation -> Recommendation s'execute de bout en bout, hors ligne et sans DB.",
+    "Le Golden Dataset viendra de GOLDEN-MIGRATE-001 et vivra ailleurs.",
+    "Ne jamais mesurer une quelconque qualite de moteur sur ce fichier."
+  ],
+  "schemaVersion": "proactive-eval-v0.1",
+  "now": "2026-03-01T10:00:00.000Z",
+  "businessContext": {
+    "contextId": "smoke-sales",
+    "contextVersion": "v0.1",
+    "role": "sales_rep",
+    "scope": { "mode": "workspace" },
+    "authorizedMotions": {
+      "prepare_outreach": "allowed",
+      "contact_prospect": "allowed",
+      "enrich_data": "allowed",
+      "schedule_reminder": "allowed"
+    },
+    "lensId": "sales-default",
+    "lensVersion": "v0.1"
+  },
+  "targets": [
+    {
+      "accountId": "acc_smoke_1",
+      "relevance": 0.8
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev_smoke_funding",
+      "accountId": "acc_smoke_1",
+      "type": "recent_funding",
+      "scope": "account",
+      "temporality": "dated_event",
+      "occurredAt": "2026-02-01T00:00:00.000Z",
+      "observedAt": "2026-02-02T00:00:00.000Z",
+      "assertionType": "fact",
+      "confidence": 0.9,
+      "source": { "provider": "smoke-fixture" }
+    },
+    {
+      "id": "ev_smoke_hiring",
+      "accountId": "acc_smoke_1",
+      "type": "sales_hiring",
+      "scope": "account",
+      "temporality": "dated_event",
+      "occurredAt": "2026-02-10T00:00:00.000Z",
+      "observedAt": "2026-02-11T00:00:00.000Z",
+      "assertionType": "fact",
+      "confidence": 0.85,
+      "source": { "provider": "smoke-fixture" }
+    }
+  ]
+}

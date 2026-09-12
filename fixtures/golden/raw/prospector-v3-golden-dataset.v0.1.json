@@ -1,0 +1,1251 @@
+{
+  "schemaVersion": "prospector-v3-golden-dataset/0.1",
+  "datasetVersion": "0.1",
+  "asOf": "2026-08-07",
+  "caseCount": 40,
+  "groundTruthSemantics": "expected Prospector behavior given evidence available as-of; not hidden certainty of a real-estate project",
+  "cases": [
+    {
+      "caseId": "GD-001",
+      "account": {
+        "name": "Gradium",
+        "lensFitExpected": "PENDING"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "RESEARCH_ONLY",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Recent funding / geo expansion",
+      "whyThisCaseMatters": "Funding + geo expansion exists, but no proof of Paris capacity pressure; tests geographic relevance.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Do not infer Paris office need from US expansion.",
+      "evidence": [
+        {
+          "id": "GD-001-ev1",
+          "summary": "$100M seed total; Paris-based",
+          "eventDate": "2026-07-09",
+          "sourceUrl": "https://techcrunch.com/2026/07/09/paris-based-ai-voice-startup-gradium-raises-100m-seed-backed-by-nvidia/"
+        },
+        {
+          "id": "GD-001-ev2",
+          "summary": "Opening Bay Area office",
+          "eventDate": "2026-07-09",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-002",
+      "account": {
+        "name": "Lucis",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "RESEARCH_ONLY",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Recent funding",
+      "whyThisCaseMatters": "Funding and strategic expansion but no direct team-growth evidence in source.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Funding alone must not create active hypothesis.",
+      "evidence": [
+        {
+          "id": "GD-002-ev1",
+          "summary": "$20M Series A",
+          "eventDate": "2026-05-26",
+          "sourceUrl": "https://www.startup.eu/investments/lucis-20-m-series-a-05-2026"
+        },
+        {
+          "id": "GD-002-ev2",
+          "summary": "Plans European expansion",
+          "eventDate": "2026-05-26",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-003",
+      "account": {
+        "name": "Prelude",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "ACTIVE_CANDIDATE",
+        "confidence": "MEDIUM",
+        "priority": "MEDIUM",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Funding + hiring",
+      "whyThisCaseMatters": "Two convergent growth families; should test active expansion logic.",
+      "verificationStatus": "VERIFIED_2_SOURCES",
+      "notes": "Exact Fabel employee-size fit still to verify.",
+      "evidence": [
+        {
+          "id": "GD-003-ev1",
+          "summary": "$20M Series A",
+          "eventDate": "2026-05-20",
+          "sourceUrl": "https://www.startup.eu/investments/prelude-20-m-series-a-05-2026"
+        },
+        {
+          "id": "GD-003-ev2",
+          "summary": "Hiring across engineering, telco partnerships and customer success",
+          "eventDate": "2026-05-20",
+          "sourceUrl": "https://www.eu-startups.com/2026/05/paris-based-prelude-raises-e17-2-million-series-a-to-scale-its-onboarding-and-trust-infrastructure-platform/"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-004",
+      "account": {
+        "name": "Linc",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "ACTIVE_CANDIDATE",
+        "confidence": "MEDIUM",
+        "priority": "MEDIUM",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Funding + hiring",
+      "whyThisCaseMatters": "Recent funding plus explicit hiring plan.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Good early-stage expansion fixture.",
+      "evidence": [
+        {
+          "id": "GD-004-ev1",
+          "summary": "€8.5M seed",
+          "eventDate": "2026-06-23",
+          "sourceUrl": "https://www.startup.eu/investments/linc-8-5-m-seed-06-2026"
+        },
+        {
+          "id": "GD-004-ev2",
+          "summary": "Plans to hire senior payroll specialists",
+          "eventDate": "2026-06-23",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-005",
+      "account": {
+        "name": "NP Company",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "ACTIVE_CANDIDATE",
+        "confidence": "MEDIUM",
+        "priority": "MEDIUM",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Funding + team growth",
+      "whyThisCaseMatters": "Explicit team expansion after funding.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Paris-based deeptech; size verification later.",
+      "evidence": [
+        {
+          "id": "GD-005-ev1",
+          "summary": "€6M pre-seed",
+          "eventDate": "2026-06-02",
+          "sourceUrl": "https://www.startup.eu/investments/np-company-np-co-6-m-pre-seed-06-2026"
+        },
+        {
+          "id": "GD-005-ev2",
+          "summary": "Funding to expand research team",
+          "eventDate": "2026-06-02",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-006",
+      "account": {
+        "name": "Davis",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "RESEARCH_ONLY",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Recent funding",
+      "whyThisCaseMatters": "Tests that funding alone does not produce an active expansion hypothesis.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Real-estate startup but that does not itself imply office need.",
+      "evidence": [
+        {
+          "id": "GD-006-ev1",
+          "summary": "$5.5M pre-seed",
+          "eventDate": "2026-05-06",
+          "sourceUrl": "https://www.startup.eu/investments/davis-5-5-m-pre-seed-05-2026"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-007",
+      "account": {
+        "name": "Finovox",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "ACTIVE_CANDIDATE",
+        "confidence": "MEDIUM",
+        "priority": "MEDIUM",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Funding + hiring",
+      "whyThisCaseMatters": "Clear funding + hiring convergence.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Strong Fabel-style expansion candidate.",
+      "evidence": [
+        {
+          "id": "GD-007-ev1",
+          "summary": "€8.2M Series A",
+          "eventDate": "2026-06-08",
+          "sourceUrl": "https://www.startup.eu/investments/finovox-8-2-m-series-a-06-2026"
+        },
+        {
+          "id": "GD-007-ev2",
+          "summary": "Plans to hire 15 people in 2026",
+          "eventDate": "2026-06-08",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-008",
+      "account": {
+        "name": "Omniscient",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "ACTIVE_CANDIDATE",
+        "confidence": "MEDIUM",
+        "priority": "MEDIUM",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Funding + hiring",
+      "whyThisCaseMatters": "Two families; tests early-stage expansion.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Need current headcount before pilot ranking.",
+      "evidence": [
+        {
+          "id": "GD-008-ev1",
+          "summary": "€3.5M pre-seed",
+          "eventDate": "2026-04-02",
+          "sourceUrl": "https://www.eu-startups.com/2026/04/paris-based-omniscient-raises-e3-5-million-to-bring-ai-powered-decision-intelligence-to-the-c-suite/"
+        },
+        {
+          "id": "GD-008-ev2",
+          "summary": "Funding intended for key engineering hires",
+          "eventDate": "2026-04-02",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-009",
+      "account": {
+        "name": "Generare",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "ACTIVE_CANDIDATE",
+        "confidence": "MEDIUM",
+        "priority": "MEDIUM",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Funding + grow team",
+      "whyThisCaseMatters": "Convergent expansion evidence.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Biotech; Lens sector fit to be reviewed.",
+      "evidence": [
+        {
+          "id": "GD-009-ev1",
+          "summary": "€20M Series A",
+          "eventDate": "2026-04-02",
+          "sourceUrl": "https://www.eu-startups.com/2026/04/paris-based-generare-raises-e20-million-to-generate-novel-molecular-data-for-drug-development-from-microbial-genomes/"
+        },
+        {
+          "id": "GD-009-ev2",
+          "summary": "Plans to grow team and scale platform",
+          "eventDate": "2026-04-02",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-010",
+      "account": {
+        "name": "Mio",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "ACTIVE_CANDIDATE",
+        "confidence": "MEDIUM",
+        "priority": "MEDIUM",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Funding + hiring",
+      "whyThisCaseMatters": "Very fresh expansion candidate.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Early-stage; likely small, target-size threshold pending.",
+      "evidence": [
+        {
+          "id": "GD-010-ev1",
+          "summary": "€1.9M pre-seed",
+          "eventDate": "2026-07-15",
+          "sourceUrl": "https://www.eu-startups.com/2026/07/paris-based-mio-emerges-from-stealth-with-e1-9-million-in-funding-to-build-an-ai-colleague-that-lives-inside-slack/"
+        },
+        {
+          "id": "GD-010-ev2",
+          "summary": "Plans to expand engineering team",
+          "eventDate": "2026-07-15",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-011",
+      "account": {
+        "name": "Alice & Bob",
+        "lensFitExpected": "EDGE"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "ACTIVE_CANDIDATE",
+        "confidence": "HIGH",
+        "priority": "HIGH",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Funding + massive hiring",
+      "whyThisCaseMatters": "Strong convergence but may exceed Fabel target size; tests FIT vs signal strength.",
+      "verificationStatus": "VERIFIED_OFFICIAL_AGG",
+      "notes": "Strong signal should not override Lens fit.",
+      "evidence": [
+        {
+          "id": "GD-011-ev1",
+          "summary": "€100M investment round",
+          "eventDate": "2025-01-28",
+          "sourceUrl": "https://apps.eurofound.europa.eu/restructuring-events/detail/202339"
+        },
+        {
+          "id": "GD-011-ev2",
+          "summary": "120 planned hires; workforce expected to double",
+          "eventDate": "2025-01-28",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-012",
+      "account": {
+        "name": "Mistral AI",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Relocation + hiring",
+      "whyThisCaseMatters": "Obvious expansion but deliberately out of Fabel size scope.",
+      "verificationStatus": "VERIFIED_OFFICIAL_AGG",
+      "notes": "Critical control: strong signal ≠ target account.",
+      "evidence": [
+        {
+          "id": "GD-012-ev1",
+          "summary": "HQ relocation to larger six-storey Paris building",
+          "eventDate": "2025-10-17",
+          "sourceUrl": "https://apps.eurofound.europa.eu/restructuring-events/detail/203533"
+        },
+        {
+          "id": "GD-012-ev2",
+          "summary": "~100 new roles; capacity from ~400 toward up to 1,000",
+          "eventDate": "2025-10-17",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-013",
+      "account": {
+        "name": "Dust",
+        "lensFitExpected": "PENDING"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "RESEARCH_ONLY",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Recent funding",
+      "whyThisCaseMatters": "Funding-only control for a well-known Paris startup.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Do not infer office pressure from funding.",
+      "evidence": [
+        {
+          "id": "GD-013-ev1",
+          "summary": "$40M Series B",
+          "eventDate": "2026-05-18",
+          "sourceUrl": "https://www.startup.eu/investments/dust-40-m-series-b-05-2026"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-014",
+      "account": {
+        "name": "Qevlar",
+        "lensFitExpected": "LIKELY"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "ACTIVE_CANDIDATE",
+        "confidence": "MEDIUM",
+        "priority": "MEDIUM",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Funding + workforce plan",
+      "whyThisCaseMatters": "Convergent growth fixture, but event age should be scored by policy.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "May be WARM/COLD depending exact event date at run time.",
+      "evidence": [
+        {
+          "id": "GD-014-ev1",
+          "summary": "$14M funding",
+          "eventDate": "2025-04-01",
+          "sourceUrl": "https://www.businessinsider.com/pitch-decks-ai-startups-qevlar-honeyhive-solve-intelligence-delos-vcs-2025-4"
+        },
+        {
+          "id": "GD-014-ev2",
+          "summary": "Reported plan to double workforce",
+          "eventDate": "2025-04-01",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-015",
+      "account": {
+        "name": "Qonto",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "STALE_OR_OUT_OF_LENS",
+        "sensitive": false
+      },
+      "caseFamily": "Funding / scale",
+      "whyThisCaseMatters": "Tests that spectacular funding does not overwhelm hard Lens size fit.",
+      "verificationStatus": "VERIFIED_2_SOURCES",
+      "notes": "Out-of-lens control.",
+      "evidence": [
+        {
+          "id": "GD-015-ev1",
+          "summary": "€486M Series D",
+          "eventDate": "2025-03-21",
+          "sourceUrl": "https://qonto.com/fr/blog/tendances/nouveautes/levee-de-fonds-record-nos-projets"
+        },
+        {
+          "id": "GD-015-ev2",
+          "summary": "~1,600 employees reported",
+          "eventDate": "2025-07-03",
+          "sourceUrl": "https://www.lemonde.fr/economie/article/2025/07/03/la-fintech-francaise-qonto-veut-devenir-une-banque-a-part-entiere_6617469_3234.html"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-016",
+      "account": {
+        "name": "Back Market",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "NO_ACTIVE_HYPOTHESIS",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "FRESH",
+        "sensitive": false
+      },
+      "caseFamily": "Leadership change",
+      "whyThisCaseMatters": "Tests that governance change/growth language alone does not create real-estate hypothesis.",
+      "verificationStatus": "VERIFIED_PRIMARY",
+      "notes": "Useful negative/control case.",
+      "evidence": [
+        {
+          "id": "GD-016-ev1",
+          "summary": "New CEO effective 1 Sep 2026",
+          "eventDate": "2026-09-01",
+          "sourceUrl": "https://www.backmarket.fr/fr-fr/c/press-release/back-market-leadership-transition-clement-petit-ceo"
+        },
+        {
+          "id": "GD-016-ev2",
+          "summary": "Company describes next growth phase",
+          "eventDate": "2026-06-08",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-017",
+      "account": {
+        "name": "Swan",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "FLEX_REMOVE_WINDOW",
+        "behavior": "RESOLVED_CONTEXT",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "RESOLVED",
+        "sensitive": false
+      },
+      "caseFamily": "Resolved office move",
+      "whyThisCaseMatters": "Real office evidence but likely outside Lens; resolved event should not remain active forever.",
+      "verificationStatus": "VERIFIED_PROVIDER_CASE",
+      "notes": "Exact move date not stated in crawled page.",
+      "evidence": [
+        {
+          "id": "GD-017-ev1",
+          "summary": "Moved into 1,665m² Paris office",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": "https://www.deskeo.com/en/"
+        },
+        {
+          "id": "GD-017-ev2",
+          "summary": "Workspace designed for 120 employees",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-018",
+      "account": {
+        "name": "Doctrine",
+        "lensFitExpected": "EDGE"
+      },
+      "expected": {
+        "primaryHypothesis": "FLEX_REMOVE_WINDOW",
+        "behavior": "RESOLVED_CONTEXT",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "RESOLVED",
+        "sensitive": false
+      },
+      "caseFamily": "Resolved relocation",
+      "whyThisCaseMatters": "Tests resolved episode + address tenure without inventing contract dates.",
+      "verificationStatus": "VERIFIED_PROVIDER_CASE",
+      "notes": "No exact contract end inferred.",
+      "evidence": [
+        {
+          "id": "GD-018-ev1",
+          "summary": "Second relocation with Deskeo; new 1,300m² office",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": "https://www.deskeo.com/en/"
+        },
+        {
+          "id": "GD-018-ev2",
+          "summary": "Prior premises occupied ~3 years",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-019",
+      "account": {
+        "name": "Epsor",
+        "lensFitExpected": "EDGE"
+      },
+      "expected": {
+        "primaryHypothesis": "FLEX_REMOVE_WINDOW",
+        "behavior": "RESOLVED_CONTEXT",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "RESOLVED",
+        "sensitive": false
+      },
+      "caseFamily": "Resolved relocation",
+      "whyThisCaseMatters": "Tests that long relationship duration is not contract duration.",
+      "verificationStatus": "VERIFIED_PROVIDER_CASE",
+      "notes": "Useful tenure/relationship ambiguity case.",
+      "evidence": [
+        {
+          "id": "GD-019-ev1",
+          "summary": "New space at 66 rue de Rome",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": "https://www.deskeo.com/en/"
+        },
+        {
+          "id": "GD-019-ev2",
+          "summary": "Deskeo relationship described as 6 years",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-020",
+      "account": {
+        "name": "PlayPlay",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "RESOLVED_CONTEXT",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "RESOLVED",
+        "sensitive": false
+      },
+      "caseFamily": "Resolved office move",
+      "whyThisCaseMatters": "A confirmed move is historical context, not automatically a fresh opportunity.",
+      "verificationStatus": "VERIFIED_PROVIDER_CASE",
+      "notes": "Current business-change signals still needed.",
+      "evidence": [
+        {
+          "id": "GD-020-ev1",
+          "summary": "New headquarters in Paris 1st",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": "https://www.deskeo.com/en/"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-021",
+      "account": {
+        "name": "Figma",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "RESOLVED",
+        "sensitive": false
+      },
+      "caseFamily": "Resolved expansion move",
+      "whyThisCaseMatters": "Strong real-estate evidence but foreign/large-company control.",
+      "verificationStatus": "VERIFIED_PROVIDER_CASE",
+      "notes": "Tests Lens filtering.",
+      "evidence": [
+        {
+          "id": "GD-021-ev1",
+          "summary": "Moved to larger Boulevard Haussmann workspace",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": "https://www.deskeo.com/en/"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-022",
+      "account": {
+        "name": "SumUp",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "FLEX_REMOVE_WINDOW",
+        "behavior": "NO_ACTIVE_HYPOTHESIS",
+        "confidence": "MEDIUM",
+        "priority": "LOW",
+        "temporalClass": "RESOLVED",
+        "sensitive": false
+      },
+      "caseFamily": "Office redesign",
+      "whyThisCaseMatters": "Tenure alone must not create a remove window when current project has already been handled.",
+      "verificationStatus": "VERIFIED_PROVIDER_CASE",
+      "notes": "Resolved/context-only.",
+      "evidence": [
+        {
+          "id": "GD-022-ev1",
+          "summary": "Redesigned offices after six years in same premises",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": "https://www.deskeo.com/en/"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-023",
+      "account": {
+        "name": "Sorare",
+        "lensFitExpected": "EDGE"
+      },
+      "expected": {
+        "primaryHypothesis": "FLEX_REMOVE_WINDOW",
+        "behavior": "STALE_CONTEXT",
+        "confidence": "MEDIUM",
+        "priority": "LOW",
+        "temporalClass": "STALE",
+        "sensitive": false
+      },
+      "caseFamily": "Historical office occupancy",
+      "whyThisCaseMatters": "Tests stale real-estate context and episode closure.",
+      "verificationStatus": "VERIFIED_PROVIDER_CASE",
+      "notes": "Old occupancy must not remain active.",
+      "evidence": [
+        {
+          "id": "GD-023-ev1",
+          "summary": "Former occupant of current Casa Deskeo building",
+          "eventDate": "2024",
+          "sourceUrl": "https://www.deskeo.com/en/blog/community/casa-deskeo/"
+        },
+        {
+          "id": "GD-023-ev2",
+          "summary": "Building later became Deskeo HQ",
+          "eventDate": "2024",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-024",
+      "account": {
+        "name": "Diptyque",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "UNKNOWN",
+        "sensitive": false
+      },
+      "caseFamily": "Office expansion",
+      "whyThisCaseMatters": "Strong real-estate event but not target startup/scaleup lens.",
+      "verificationStatus": "VERIFIED_PROVIDER_CASE",
+      "notes": "Control for fit.",
+      "evidence": [
+        {
+          "id": "GD-024-ev1",
+          "summary": "Expanded Paris offices with Deskeo",
+          "eventDate": "UNKNOWN",
+          "sourceUrl": "https://www.deskeo.com/en/"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-025",
+      "account": {
+        "name": "Ÿnsect",
+        "lensFitExpected": "EDGE"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_CONTRACTION",
+        "behavior": "REVIEW_ONLY",
+        "confidence": "HIGH",
+        "priority": "MEDIUM",
+        "temporalClass": "FRESH_OR_RECENT",
+        "sensitive": true
+      },
+      "caseFamily": "Mass layoffs / financial pressure",
+      "whyThisCaseMatters": "Sensitive strong contraction case; attention may rise but outbound must require review.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Office need still unknown.",
+      "evidence": [
+        {
+          "id": "GD-025-ev1",
+          "summary": "111 layoffs out of 194 reported",
+          "eventDate": "2025-07-02",
+          "sourceUrl": "https://sifted.eu/articles/ynsect-bridge-round-mass-layoffs"
+        },
+        {
+          "id": "GD-025-ev2",
+          "summary": "Financial difficulties / factory pause",
+          "eventDate": "2025-07-02",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-026",
+      "account": {
+        "name": "Carbios",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_CONTRACTION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "STALE_OR_RECENT",
+        "sensitive": true
+      },
+      "caseFamily": "Restructuring / cost cutting",
+      "whyThisCaseMatters": "Strong contraction evidence but geographic/segment Lens mismatch.",
+      "verificationStatus": "VERIFIED_PRIMARY",
+      "notes": "Sensitive control.",
+      "evidence": [
+        {
+          "id": "GD-026-ev1",
+          "summary": "Reorganisation may eliminate ~40% of positions",
+          "eventDate": "2025-01-28",
+          "sourceUrl": "https://www.carbios.com/en/project-to-reorganize-and-reduce-its-workforce/"
+        },
+        {
+          "id": "GD-026-ev2",
+          "summary": "Explicit operating-cost reduction",
+          "eventDate": "2025-01-28",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-027",
+      "account": {
+        "name": "Pernod Ricard",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_CONTRACTION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "RECENT",
+        "sensitive": true
+      },
+      "caseFamily": "Paris HQ restructuring",
+      "whyThisCaseMatters": "Strong Paris contraction but obviously not Fabel startup target.",
+      "verificationStatus": "VERIFIED_OFFICIAL_AGG",
+      "notes": "Signal strength must not override FIT.",
+      "evidence": [
+        {
+          "id": "GD-027-ev1",
+          "summary": "140 jobs cut at Paris HQ (~17% local workforce)",
+          "eventDate": "2025-06-15",
+          "sourceUrl": "https://apps.eurofound.europa.eu/restructuring-events/detail/203158"
+        },
+        {
+          "id": "GD-027-ev2",
+          "summary": "Cost-saving program",
+          "eventDate": "2025-06-15",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-028",
+      "account": {
+        "name": "Ubisoft",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_CONTRACTION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "FRESH",
+        "sensitive": true
+      },
+      "caseFamily": "Paris HQ restructuring",
+      "whyThisCaseMatters": "Strong sensitive contraction but large corporate control.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Human review required for any outreach.",
+      "evidence": [
+        {
+          "id": "GD-028-ev1",
+          "summary": "Proposed voluntary cuts up to 200 at France location",
+          "eventDate": "2026",
+          "sourceUrl": "https://www.gamesradar.com/games/assassins-creed-studio-ubisoft-returns-with-more-bad-news-proposing-voluntary-layoffs-that-could-cut-up-to-200-people-at-its-france-location/"
+        },
+        {
+          "id": "GD-028-ev2",
+          "summary": "Major organizational overhaul",
+          "eventDate": "2026",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-029",
+      "account": {
+        "name": "Le Point",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_CONTRACTION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "RECENT",
+        "sensitive": true
+      },
+      "caseFamily": "Paris restructuring",
+      "whyThisCaseMatters": "Strong contraction evidence outside sector/lens.",
+      "verificationStatus": "VERIFIED_OFFICIAL_AGG",
+      "notes": "Useful fit-control.",
+      "evidence": [
+        {
+          "id": "GD-029-ev1",
+          "summary": "58 planned job cuts in Paris",
+          "eventDate": "2025-04-23",
+          "sourceUrl": "https://apps.eurofound.europa.eu/restructuring-events/detail/202660"
+        },
+        {
+          "id": "GD-029-ev2",
+          "summary": "Losses and new economic model",
+          "eventDate": "2025",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-030",
+      "account": {
+        "name": "Renault",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_CONTRACTION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "MEDIUM",
+        "priority": "LOW",
+        "temporalClass": "RECENT",
+        "sensitive": true
+      },
+      "caseFamily": "Cost reduction",
+      "whyThisCaseMatters": "Tests corporate restructuring signal outside target.",
+      "verificationStatus": "VERIFIED_REUTERS_SYNDICATION",
+      "notes": "Do not treat media report as exact local office need.",
+      "evidence": [
+        {
+          "id": "GD-030-ev1",
+          "summary": "Cost cuts confirmed; reports discussed up to 3,000 support roles",
+          "eventDate": "2025-10",
+          "sourceUrl": "https://www.investing.com/news/stock-market-news/factboxeuropean-companies-cut-jobs-in-response-to-slowing-economy-4291923"
+        },
+        {
+          "id": "GD-030-ev2",
+          "summary": "HQ/suburb and global scope",
+          "eventDate": "2025-10",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-031",
+      "account": {
+        "name": "Air France",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_CONTRACTION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "RECENT",
+        "sensitive": true
+      },
+      "caseFamily": "Internal restructuring",
+      "whyThisCaseMatters": "Strong contraction outside target and different site dynamics.",
+      "verificationStatus": "VERIFIED_OFFICIAL_AGG",
+      "notes": "Fit/control.",
+      "evidence": [
+        {
+          "id": "GD-031-ev1",
+          "summary": "404 ground-staff positions planned",
+          "eventDate": "2025-10-14",
+          "sourceUrl": "https://apps.eurofound.europa.eu/restructuring-events/detail/203484"
+        },
+        {
+          "id": "GD-031-ev2",
+          "summary": "Orly particularly affected",
+          "eventDate": "2025-10-14",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-032",
+      "account": {
+        "name": "Fast Retailing France",
+        "lensFitExpected": "FAIL"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_CONTRACTION",
+        "behavior": "OUT_OF_LENS",
+        "confidence": "HIGH",
+        "priority": "LOW",
+        "temporalClass": "RECENT",
+        "sensitive": true
+      },
+      "caseFamily": "Closures",
+      "whyThisCaseMatters": "Extreme contraction but retail network case; should not contaminate Fabel Lens.",
+      "verificationStatus": "VERIFIED_OFFICIAL_AGG",
+      "notes": "Out-of-lens negative.",
+      "evidence": [
+        {
+          "id": "GD-032-ev1",
+          "summary": "Closure program around 500 redundancies",
+          "eventDate": "2025-07-02",
+          "sourceUrl": "https://apps.eurofound.europa.eu/restructuring-events/detail/203043"
+        },
+        {
+          "id": "GD-032-ev2",
+          "summary": "All Princesse tam tam / Comptoir des Cotonniers shops closing",
+          "eventDate": "2025",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-033",
+      "account": {
+        "name": "Sweep",
+        "lensFitExpected": "PENDING"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "STALE_CONTEXT",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "STALE",
+        "sensitive": false
+      },
+      "caseFamily": "Old expansion/funding context",
+      "whyThisCaseMatters": "Tests stale positive context: old buzz must not create current urgency.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Requires current evidence to reactivate.",
+      "evidence": [
+        {
+          "id": "GD-033-ev1",
+          "summary": "Paris startup highlighted as growing / expanding US",
+          "eventDate": "2024-10-14",
+          "sourceUrl": "https://www.wired.com/story/the-hottest-startups-in-paris-in-2024"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-034",
+      "account": {
+        "name": "Spore.Bio",
+        "lensFitExpected": "PENDING"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "STALE_CONTEXT",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "STALE",
+        "sensitive": false
+      },
+      "caseFamily": "Old startup momentum",
+      "whyThisCaseMatters": "Stale control.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "No current signal in this corpus.",
+      "evidence": [
+        {
+          "id": "GD-034-ev1",
+          "summary": "Highlighted in Paris startup ecosystem",
+          "eventDate": "2024-10-14",
+          "sourceUrl": "https://www.wired.com/story/the-hottest-startups-in-paris-in-2024"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-035",
+      "account": {
+        "name": "NcodiN",
+        "lensFitExpected": "PENDING"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "STALE_CONTEXT",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "STALE",
+        "sensitive": false
+      },
+      "caseFamily": "Old startup momentum",
+      "whyThisCaseMatters": "Stale control.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "No current signal in this corpus.",
+      "evidence": [
+        {
+          "id": "GD-035-ev1",
+          "summary": "Highlighted in Paris startup ecosystem",
+          "eventDate": "2024-10-14",
+          "sourceUrl": "https://www.wired.com/story/the-hottest-startups-in-paris-in-2024"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-036",
+      "account": {
+        "name": "Astran",
+        "lensFitExpected": "PENDING"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "STALE_CONTEXT",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "STALE",
+        "sensitive": false
+      },
+      "caseFamily": "Old funding / traction",
+      "whyThisCaseMatters": "Stale funding/control; must not remain fresh in 2026.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Good no-hindsight/freshness case.",
+      "evidence": [
+        {
+          "id": "GD-036-ev1",
+          "summary": "Reported $5M raised and enterprise customers",
+          "eventDate": "2024-10-14",
+          "sourceUrl": "https://www.wired.com/story/the-hottest-startups-in-paris-in-2024"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-037",
+      "account": {
+        "name": "Delos",
+        "lensFitExpected": "PENDING"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "STALE_CONTEXT",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "STALE",
+        "sensitive": false
+      },
+      "caseFamily": "Old funding",
+      "whyThisCaseMatters": "Older single-signal control.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Funding alone + aging event.",
+      "evidence": [
+        {
+          "id": "GD-037-ev1",
+          "summary": "$2.5M funding reported",
+          "eventDate": "2025-04",
+          "sourceUrl": "https://www.businessinsider.com/pitch-decks-ai-startups-qevlar-honeyhive-solve-intelligence-delos-vcs-2025-4"
+        },
+        {
+          "id": "GD-037-ev2",
+          "summary": "Growth/Europe expansion described",
+          "eventDate": "2025-04",
+          "sourceUrl": null
+        }
+      ]
+    },
+    {
+      "caseId": "GD-038",
+      "account": {
+        "name": "H Company",
+        "lensFitExpected": "FAIL_OR_EDGE"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "STALE_OR_OUT_OF_LENS",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "STALE",
+        "sensitive": false
+      },
+      "caseFamily": "Old large funding",
+      "whyThisCaseMatters": "Tests stale spectacular funding and probable size mismatch.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "No fresh office signal.",
+      "evidence": [
+        {
+          "id": "GD-038-ev1",
+          "summary": "$220M investment reported",
+          "eventDate": "2024-10-14",
+          "sourceUrl": "https://www.wired.com/story/the-hottest-startups-in-paris-in-2024"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-039",
+      "account": {
+        "name": "Amo",
+        "lensFitExpected": "PENDING"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "STALE_CONTEXT",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "STALE",
+        "sensitive": false
+      },
+      "caseFamily": "Old startup momentum",
+      "whyThisCaseMatters": "Pure stale/control account.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "No current evidence in corpus.",
+      "evidence": [
+        {
+          "id": "GD-039-ev1",
+          "summary": "Highlighted as Paris startup",
+          "eventDate": "2024-10-14",
+          "sourceUrl": "https://www.wired.com/story/the-hottest-startups-in-paris-in-2024"
+        }
+      ]
+    },
+    {
+      "caseId": "GD-040",
+      "account": {
+        "name": "Electra",
+        "lensFitExpected": "PENDING"
+      },
+      "expected": {
+        "primaryHypothesis": "SPACE_EXPANSION",
+        "behavior": "STALE_CONTEXT",
+        "confidence": "LOW",
+        "priority": "LOW",
+        "temporalClass": "STALE",
+        "sensitive": false
+      },
+      "caseFamily": "Old expansion context",
+      "whyThisCaseMatters": "Tests old growth narrative vs current freshness.",
+      "verificationStatus": "VERIFIED_1_SOURCE",
+      "notes": "Needs current evidence before activation.",
+      "evidence": [
+        {
+          "id": "GD-040-ev1",
+          "summary": "Highlighted as expanding EV infrastructure startup",
+          "eventDate": "2024-10-14",
+          "sourceUrl": "https://www.wired.com/story/the-hottest-startups-in-paris-in-2024"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,171 @@
+{
+  "goldenSchemaVersion": "proactive-golden-v0.1",
+  "caseId": "GD-002",
+  "evaluationProfile": {
+    "rail": "SEMANTIC",
+    "lensId": "fabel-broker",
+    "lensVersion": "v0.1"
+  },
+  "provenance": {
+    "materializationTicket": "GOLDEN-MATERIALIZE-001",
+    "adjudicationProtocol": "GOLDEN-SOURCE-REVIEW-001-R1",
+    "adjudicatedOn": "2026-08-24"
+  },
+  "rawSource": {
+    "datasetPath": "fixtures/golden/raw/prospector-v3-golden-dataset.v0.1.json",
+    "datasetSchemaVersion": "prospector-v3-golden-dataset/0.1",
+    "datasetVersion": "0.1",
+    "datasetSha256": "131236360e882fc60b4dc077923983f7d6b8a071ce9c3b4e76bd253a5fb6803d",
+    "originalCaseId": "GD-002"
+  },
+  "assumptions": {
+    "now": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf",
+      "precision": "DAY"
+    },
+    "observedAt": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf"
+    },
+    "targetRelevance": {
+      "value": 0.5,
+      "rationale": "FIXED_REPLAY_CONSTANT — jamais un lens fit historique."
+    },
+    "evidenceConfidence": {
+      "value": 1,
+      "rationale": "FIXTURE_SEMANTIC_CERTAINTY — la claim est présente dans la fixture ; ce n’est PAS la confiance de la source."
+    },
+    "syntheticRuntimeProvider": {
+      "value": "synthetic-historical-nonfirstparty",
+      "rationale": "Aucune identité de provider d’ingestion historique pour ces faits issus du web. Volontairement hors FIRST_PARTY_PROVIDERS."
+    }
+  },
+  "adjudication": {
+    "rawEvidence": [
+      {
+        "rawEvidenceId": "GD-002-ev1",
+        "decompositionStatus": "COMPLETE",
+        "claims": [
+          {
+            "claimIndex": 0,
+            "semanticClaim": "Lucis a bouclé une série A de 20 M$ le 2026-05-26.",
+            "mappingDecision": "MAPPED",
+            "assertionType": "fact",
+            "temporalNature": "EVENT",
+            "temporalPrecision": "DAY",
+            "occurredAt": "2026-05-26",
+            "evidenceType": "recent_funding",
+            "evidenceId": "gd002-ev1",
+            "evidenceScope": "account",
+            "targetAccountId": "gd002-lucis",
+            "runtimeSource": {
+              "provider": "synthetic-historical-nonfirstparty",
+              "url": "https://www.startup.eu/investments/lucis-20-m-series-a-05-2026"
+            },
+            "sourceReview": [
+              {
+                "reviewClass": "EXTERNAL_REVIEW_EVIDENCE",
+                "sourceUrl": "https://www.startup.eu/investments/lucis-20-m-series-a-05-2026",
+                "supportingClaim": "deal date 2026-05-26"
+              },
+              {
+                "reviewClass": "INDEPENDENT_CORROBORATION"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rawEvidenceId": "GD-002-ev2",
+        "decompositionStatus": "COMPLETE",
+        "claims": [
+          {
+            "claimIndex": 0,
+            "semanticClaim": "Lucis a annoncé, dans le cadre de l’annonce de levée du 2026-05-26, son intention de se développer en Europe.",
+            "mappingDecision": "MISSING_TYPE",
+            "assertionType": "fact",
+            "temporalNature": "EVENT",
+            "temporalPrecision": "DAY",
+            "occurredAt": "2026-05-26",
+            "rationale": "L’ANNONCE est un fait observé — d’où assertionType `fact`, jamais « intent » : ce qui est prospectif, c’est son CONTENU. Aucun EvidenceType ne porte une intention d’expansion annoncée : surtout PAS `geo_expansion` ni `site_expansion`, qui affirment une expansion RÉALISÉE. Aucun type n’est ajouté dans ce lot. Bloqué sur EVIDENCE-INTENT-001.",
+            "sourceReview": [
+              {
+                "reviewClass": "EXTERNAL_REVIEW_EVIDENCE",
+                "supportingClaim": "Plans European expansion"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "executability": "ADJUDICATED_NON_EXECUTABLE",
+  "executionContext": {
+    "businessContext": {
+      "contextId": "golden-fabel-semantic",
+      "contextVersion": "v0.1",
+      "role": "business_developer",
+      "scope": {
+        "mode": "workspace"
+      },
+      "authorizedMotions": {},
+      "lensId": "fabel-broker",
+      "lensVersion": "v0.1"
+    },
+    "targets": [
+      {
+        "accountId": "gd002-lucis"
+      }
+    ]
+  },
+  "expected": {
+    "situations": {
+      "space_expansion": {
+        "assertion": "FORBIDDEN",
+        "rationale": "Oracle humain signé (GOLDEN-SCHEMA-001 §3) : une levée seule, accompagnée d’une intention annoncée non typable, ne doit pas établir space_expansion."
+      },
+      "space_contraction": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucune attente de contraction n’a été adjugée."
+      },
+      "flex_remove_window": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucun fait d’occupation ou de flex n’a été revu."
+      }
+    }
+  },
+  "legacyAssessment": {
+    "items": [
+      {
+        "rawRef": "/expected/primaryHypothesis",
+        "scope": "RAIL_S",
+        "status": "NOT_SUPPORTED",
+        "rationale": "Le RAW affirme SPACE_EXPANSION ; seule F1_CAPITAL est typable, le second signal est une intention annoncée sans type."
+      },
+      {
+        "rawRef": "/notes",
+        "scope": "RAIL_S",
+        "status": "SUPPORTED",
+        "rationale": "« Funding alone must not create active hypothesis » — invariant signé."
+      },
+      {
+        "rawRef": "/expected/behavior",
+        "scope": "RAIL_R",
+        "status": "NOT_ADJUDICATED",
+        "rationale": "RESEARCH_ONLY est RAIL R."
+      }
+    ]
+  },
+  "caseStatus": {
+    "state": "BLOCKED",
+    "blockers": [
+      {
+        "kind": "EVIDENCE_TYPE_GAP",
+        "rawEvidenceId": "GD-002-ev2",
+        "claimIndex": 0,
+        "note": "Intention d’expansion européenne annoncée : aucun EvidenceType prospectif."
+      }
+    ]
+  }
+}

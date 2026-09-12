@@ -1,0 +1,5 @@
+Répertoire volontairement vide.
+
+La baseline sera produite par `supabase db pull` depuis le schéma distant réel
+(lot A3b), jamais recopiée depuis supabase/schema.sql : ce fichier décrit ce que
+le code attend, pas nécessairement ce que la base contient.

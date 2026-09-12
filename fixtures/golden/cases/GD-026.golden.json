@@ -1,0 +1,177 @@
+{
+  "goldenSchemaVersion": "proactive-golden-v0.1",
+  "caseId": "GD-026",
+  "evaluationProfile": {
+    "rail": "SEMANTIC",
+    "lensId": "fabel-broker",
+    "lensVersion": "v0.1"
+  },
+  "provenance": {
+    "materializationTicket": "GOLDEN-MATERIALIZE-001",
+    "adjudicationProtocol": "GOLDEN-SOURCE-REVIEW-001-R1",
+    "adjudicatedOn": "2026-08-24"
+  },
+  "rawSource": {
+    "datasetPath": "fixtures/golden/raw/prospector-v3-golden-dataset.v0.1.json",
+    "datasetSchemaVersion": "prospector-v3-golden-dataset/0.1",
+    "datasetVersion": "0.1",
+    "datasetSha256": "131236360e882fc60b4dc077923983f7d6b8a071ce9c3b4e76bd253a5fb6803d",
+    "originalCaseId": "GD-026"
+  },
+  "assumptions": {
+    "now": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf",
+      "precision": "DAY"
+    },
+    "observedAt": {
+      "value": "2026-08-07",
+      "source": "dataset.asOf"
+    },
+    "targetRelevance": {
+      "value": 0.5,
+      "rationale": "FIXED_REPLAY_CONSTANT — jamais un lens fit historique."
+    },
+    "evidenceConfidence": {
+      "value": 1,
+      "rationale": "FIXTURE_SEMANTIC_CERTAINTY — la claim est présente dans la fixture ; ce n’est PAS la confiance de la source."
+    },
+    "syntheticRuntimeProvider": {
+      "value": "synthetic-historical-nonfirstparty",
+      "rationale": "Aucune identité de provider d’ingestion historique pour ces faits issus du web. Volontairement hors FIRST_PARTY_PROVIDERS."
+    }
+  },
+  "adjudication": {
+    "rawEvidence": [
+      {
+        "rawEvidenceId": "GD-026-ev1",
+        "decompositionStatus": "COMPLETE",
+        "claims": [
+          {
+            "claimIndex": 0,
+            "semanticClaim": "Carbios a annoncé le 2025-01-28 un projet de réorganisation pouvant supprimer ~40 % des postes.",
+            "mappingDecision": "MAPPED",
+            "assertionType": "fact",
+            "temporalNature": "EVENT",
+            "temporalPrecision": "DAY",
+            "occurredAt": "2025-01-28",
+            "evidenceType": "restructuring_announced",
+            "evidenceId": "gd026-ev1",
+            "evidenceScope": "account",
+            "targetAccountId": "gd026-carbios",
+            "runtimeSource": {
+              "provider": "synthetic-historical-nonfirstparty",
+              "url": "https://www.carbios.com/en/project-to-reorganize-and-reduce-its-workforce/"
+            },
+            "sourceReview": [
+              {
+                "reviewClass": "EXTERNAL_REVIEW_EVIDENCE",
+                "sourceUrl": "https://www.carbios.com/en/project-to-reorganize-and-reduce-its-workforce/"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "rawEvidenceId": "GD-026-ev2",
+        "decompositionStatus": "COMPLETE",
+        "claims": [
+          {
+            "claimIndex": 0,
+            "semanticClaim": "Un programme explicite de réduction des coûts opératoires a été annoncé le 2024-12-19.",
+            "mappingDecision": "MAPPED",
+            "assertionType": "fact",
+            "temporalNature": "EVENT",
+            "temporalPrecision": "DAY",
+            "occurredAt": "2024-12-19",
+            "evidenceType": "cost_reduction_program",
+            "evidenceId": "gd026-ev2",
+            "evidenceScope": "account",
+            "targetAccountId": "gd026-carbios",
+            "runtimeSource": {
+              "provider": "synthetic-historical-nonfirstparty",
+              "url": "https://www.carbios.com/en/project-to-reorganize-and-reduce-its-workforce/"
+            },
+            "rationale": "Le `eventDate` RAW vaut 2025-01-28 et n’est PAS modifié. Le communiqué du 28 janvier renvoie à son propre communiqué du 19 décembre 2024 comme origine du programme de réduction des coûts : le fait « coût » est l’annonce de décembre.",
+            "sourceReview": [
+              {
+                "reviewClass": "EXTERNAL_REVIEW_EVIDENCE",
+                "supportingClaim": "In line with its press release dated 19 December 2024, which mentions the reduction of operating costs"
+              },
+              {
+                "reviewClass": "INDEPENDENT_CORROBORATION"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "executability": "EXECUTABLE",
+  "executionContext": {
+    "businessContext": {
+      "contextId": "golden-fabel-semantic",
+      "contextVersion": "v0.1",
+      "role": "business_developer",
+      "scope": {
+        "mode": "workspace"
+      },
+      "authorizedMotions": {},
+      "lensId": "fabel-broker",
+      "lensVersion": "v0.1"
+    },
+    "targets": [
+      {
+        "accountId": "gd026-carbios"
+      }
+    ]
+  },
+  "expected": {
+    "situations": {
+      "space_contraction": {
+        "assertion": "REQUIRED",
+        "rationale": "Oracle humain : une réorganisation annoncée pouvant supprimer environ 40 % des postes, combinée à un programme explicite de réduction des coûts opératoires, constitue une convergence indépendante suffisante pour exiger la situation `space_contraction`. Le Lens fit historique est hors Rail S."
+      },
+      "space_expansion": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucune attente d’expansion n’a été adjugée."
+      },
+      "flex_remove_window": {
+        "assertion": "UNSPECIFIED",
+        "rationale": "Neutralité délibérée : aucun fait d’occupation ou de flex n’a été revu."
+      }
+    }
+  },
+  "legacyAssessment": {
+    "items": [
+      {
+        "rawRef": "/expected/primaryHypothesis",
+        "scope": "RAIL_S",
+        "status": "SUPPORTED",
+        "rationale": "SPACE_CONTRACTION est soutenu par les faits adjugés."
+      },
+      {
+        "rawRef": "/expected/behavior",
+        "scope": "RAIL_R",
+        "status": "NOT_ADJUDICATED",
+        "rationale": "OUT_OF_LENS est un verdict de lens fit ; RAIL S n’en dit rien."
+      },
+      {
+        "rawRef": "/expected/sensitive",
+        "scope": "RAIL_R",
+        "status": "NOT_ADJUDICATED",
+        "rationale": "La sensibilité pilote le controlFloor — RAIL R."
+      },
+      {
+        "rawRef": "/whyThisCaseMatters",
+        "scope": "RAIL_S",
+        "status": "SUPPORTED",
+        "rationale": "« Strong contraction evidence » est la moitié que RAIL S signe ; la moitié « Lens mismatch » est RAIL R."
+      }
+    ]
+  },
+  "caseStatus": {
+    "state": "SIGNED_SEMANTIC_GOLDEN",
+    "blockers": []
+  }
+}

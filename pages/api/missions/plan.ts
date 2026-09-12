@@ -1,9 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { callClaude, parseJson } from '../../../lib/prospector/llm'
+import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
 import { MISSION_TOOL_META } from '../../../types/prospector'
 import type { Mission, MissionStep, MissionTool } from '../../../types/prospector'
 import { MAX_COMPANIES, MAX_ENRICH } from '../../../lib/prospector/missionTools'
+import { logSafeError } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -40,6 +42,10 @@ Réponds UNIQUEMENT en JSON valide :
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
   await hydrateKeystore()
+  // MT-0 — espace client obligatoire avant tout appel LLM. Fail closed.
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
+
   const key = getKey('ANTHROPIC_API_KEY')
   if (!key) return res.status(200).json({ error: 'Configure ta clé Anthropic (Admin → Connexions) pour planifier des missions.' })
 
@@ -48,7 +54,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!request) return res.status(400).json({ error: 'Demande vide.' })
   try {
     // Planification = raisonnement structuré → Sonnet par défaut (5× moins cher qu'Opus).
-    const r = await callClaude({ task: 'plan', agent: 'Mission · plan', system: SYSTEM, messages: [{ role: 'user', content: `Demande : ${request}` }] })
+    const r = await callClaude({ tenant, task: 'plan', agent: 'Mission · plan', system: SYSTEM, messages: [{ role: 'user', content: `Demande : ${request}` }] })
     if (r.blocked) return res.status(200).json({ error: r.error })
     const p = parseJson<any>(r.text)
     if (!p) return res.status(200).json({ error: 'Plan illisible, reformule la demande.' })
@@ -84,7 +90,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     res.status(200).json({ mission })
   } catch (e: any) {
-    res.status(200).json({ error: 'Planification impossible : ' + (e?.message || 'erreur') })
+    logSafeError('missions.plan_error', e, { provider: 'anthropic', operation: 'plan' })
+    res.status(200).json({ error: 'Planification impossible pour le moment.' })
   }
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

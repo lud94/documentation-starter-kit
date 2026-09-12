@@ -4,6 +4,13 @@
 
 import type { Action, Lead, Quota, Stage, LeadDetail, Conversation, Visitor, Sequence, SequenceStep, AgentConfig, KnowledgeBlock, UsageSummary, Diagnostic, Workspace, QualityPassResult, SourcingData, SourcedCompany, ResolvedContact, SignalHit } from '../../types/prospector'
 import { ACTION_META, STATUS_META, STAGE_META } from '../../types/prospector'
+import { isAccountLead, isContactLead } from './leadKind'
+// ⚠️ TYPE CANONIQUE, PAS UNE COPIE. `Resolution` appartient à `datagouv.ts`,
+// l'autorité qui PRODUIT ces quatre états. Le littéral était réécrit deux fois
+// ici : deux copies d'une union divergent le jour où un cinquième état apparaît
+// chez le producteur. Import de TYPE uniquement — effacé à la compilation, donc
+// aucun cycle d'exécution possible.
+import type { Resolution } from './datagouv'
 
 export type Period = 'week' | 'month' | 'quarter' | 'year'
 
@@ -94,8 +101,46 @@ export function personaFromTitle(title: string): string {
 
 // Persistance (Supabase via API). Le store mémoire reste la source de travail,
 // hydraté depuis le serveur et écrit en write-through à chaque création/màj.
-async function persistLead(lead: Lead) {
-  try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead }) }) } catch { /* offline → mémoire */ }
+export type WriteRejection = { id: string; reason: string }
+
+// Dernier refus d'écriture observé, exposé aux écrans pour affichage. Un refus
+// silencieux serait pire que l'ancien défaut : l'utilisateur croirait avoir
+// enregistré.
+let lastRejections: WriteRejection[] = []
+export function takeWriteRejections(): WriteRejection[] { const r = lastRejections; lastRejections = []; return r }
+export function rejectionLabel(reason: string): string {
+  return reason === 'workspace_conflict' ? "refusé : appartient à un autre espace de travail"
+    : reason === 'contention' ? 'écriture concurrente, à réessayer'
+    : reason === 'env_blocked' ? "écritures suspendues (configuration d'environnement)"
+    : "échec d'enregistrement"
+}
+
+async function persistLead(lead: Lead): Promise<boolean> {
+  try {
+    const r = await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lead }) })
+    const d = await r.json().catch(() => null)
+    if (d?.rejected?.length) { lastRejections = lastRejections.concat(d.rejected); return false }
+    return r.ok
+  } catch { return false /* hors ligne → mémoire seule */ }
+}
+
+// Invalidation EXPLICITE du cache de leads. Aujourd'hui le changement d'espace
+// provoque une navigation dure (components/Shell.tsx), qui détruit ce cache par
+// effet de bord. On ne s'appuie pas sur cet effet : une navigation côté client
+// le supprimerait sans que personne ne s'en aperçoive, et le cache d'un espace
+// serait alors présenté dans un autre.
+async function persistLeads(leads: Lead[]): Promise<number> {
+  try {
+    const r = await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads }) })
+    const d = await r.json().catch(() => null)
+    if (d?.rejected?.length) lastRejections = lastRejections.concat(d.rejected)
+    return d?.saved ?? 0
+  } catch { return 0 }
+}
+
+export function invalidateLeads(): void {
+  for (const k of Object.keys(LEADS)) delete LEADS[k]
+  leadsHydrated = null
 }
 let leadsHydrated: Promise<void> | null = null
 async function hydrateLeads(force = false): Promise<void> {
@@ -322,7 +367,22 @@ function emptyDetail(lead: Lead): LeadDetail {
     company: {
       name: lead.company, size: lead.effectif || '—', location: lead.city || '—',
       website: lead.website || '',
-      sector: lead.naf || '—', funding: lead.ca || '—',
+      sector: lead.naf || '—',
+      // ⚠️ CHIFFRE D'AFFAIRES ≠ LEVÉE DE FONDS.
+      //
+      // Ce champ projetait `lead.ca` — le chiffre d'affaires — dans un emplacement
+      // dont la sémantique est le FINANCEMENT. La donnée était pourtant réelle :
+      // c'est précisément ce qui rendait le défaut invisible. « 12 M€ » de revenus
+      // affiché comme « 12 M€ levés » décrit une entreprise que personne n'a
+      // observée — une donnée vraie placée dans le mauvais emplacement produit une
+      // information fausse, exactement comme une donnée inventée.
+      //
+      // Le modèle `Lead` actuel ne porte AUCUN champ de financement faisant
+      // autorité. On échoue donc fermé plutôt que d'emprunter le voisin le plus
+      // proche. `lead.ca` reste persisté et intact ; il n'est simplement plus
+      // projeté ici. Le jour où un financement réel sera collecté, il aura son
+      // propre champ.
+      funding: '—',
       description: lead.summary
         ? lead.summary
         : lead.siren
@@ -347,86 +407,56 @@ function emptyDetail(lead: Lead): LeadDetail {
   }
 }
 
+/**
+ * Dossier d'un lead — UNIQUEMENT à partir de ce que la fiche porte réellement.
+ *
+ * ── LE DÉFAUT QUE CE LOT FERME (PROSPECTOR-DOMAIN-ADAPTERS-001) ─────────────
+ * Cette fonction possédait une seconde branche, active dès que `lead.score`
+ * était non nul, qui FABRIQUAIT un dossier complet à partir de trois proxies
+ * sans aucune valeur probante : le score lui-même, `lead.temperature`, et un
+ * pseudo-aléa tiré d'un identifiant (`lead.id.charCodeAt(1)`).
+ *
+ * Elle produisait notamment :
+ *
+ *     preuves: [
+ *       `FAIT — Offre d'emploi publiée récemment (source Unipile)`,
+ *       `FAIT — Effectif 51-200 en croissance (source Pappers)`,
+ *       `FAIT — ${lead.title} identifié comme décideur (source LinkedIn)`,
+ *     ]
+ *     funding: 'Série A · 12 M€'
+ *     website: `www.${company}.com`
+ *     location: 'Paris, France'
+ *     pourquoiMaintenant: `… signal 🔥 FRAIS (< 30 jours) …`
+ *
+ * ⚠️ CE N'ÉTAIENT PAS DES MAQUETTES. C'étaient des énoncés préfixés « FAIT — »,
+ * ATTRIBUÉS À DES SOURCES NOMMÉES, portant un montant de levée, une tranche
+ * d'effectif et une fraîcheur de signal — tous déduits d'un nombre entre 0 et
+ * 100, quand ils n'étaient pas tirés du code ASCII d'un identifiant. Aucune de
+ * ces informations n'a jamais été observée.
+ *
+ * ── POURQUOI C'ÉTAIT UNE BOMBE AMORCÉE, ET NON UNE DETTE DORMANTE ──────────
+ * `lead.score` vaut `0` partout aujourd'hui : la branche était donc morte, et
+ * seule cette coïncidence protégeait l'utilisateur. La première ligne de code
+ * qui aurait renseigné un score — un futur agent de scoring, un import, un
+ * test — aurait rallumé l'ensemble, sans qu'aucune revue ne le rattache à ce
+ * changement.
+ *
+ * ── LA RÈGLE, DÉSORMAIS ────────────────────────────────────────────────────
+ * Une donnée absente reste absente. `emptyDetail` ne lit que des champs
+ * réellement persistés sur le `Lead` (`effectif`, `city`, `website`, `naf`,
+ * `ca`, `summary`, `siren`, `dirigeant`) et dit « à enrichir » pour le reste,
+ * avec `preuves: []`. Un dossier vide est un dossier honnête ; un dossier
+ * inventé est indiscernable d'un dossier vrai, et c'est précisément ce qui le
+ * rend dangereux.
+ *
+ * ⚠️ `lead.score` N'EST PLUS LU ICI, ni nulle part comme source de fait. Il
+ * subsiste dans le type pour compatibilité des données persistées, et il est
+ * marqué non-autoritaire (cf. `types/prospector.ts`).
+ */
 function buildDetail(lead: Lead): LeadDetail {
-  if (!lead.score) return emptyDetail(lead)
-  const seed = lead.id.charCodeAt(1) || 0
-  const sector = SECTORS[seed % SECTORS.length]
-  const fit = Math.min(40, Math.round(lead.score * 0.45))
-  const intent = Math.min(40, Math.round(lead.score * 0.35))
-  const timing = Math.max(0, Math.min(20, lead.score - fit - intent))
-  const ageDays = refreshedDossiers.has(lead.id) ? 1 : (seed * 13) % 60
-  const stale = ageDays > 30
-
-  return {
-    tags: LEAD_TAGS[lead.id] ?? [],
-    nextAction: NEXT_ACTION[lead.stage],
-    lead,
-    headline: `${lead.title} · ${lead.company}`,
-    connectionDegree: seed % 2 === 0 ? '2e degré' : '1er degré',
-    premium: lead.score > 75,
-    openProfile: seed % 3 === 0,
-    linkedinUrl: lead.linkedinUrl || '',
-    scoring: {
-      fit,
-      intent,
-      timing,
-      segment: lead.temperature === 'hot' ? 'D1' : 'D2',
-      band: BAND[lead.temperature],
-      confidence: lead.score > 80 ? 'high' : lead.score > 65 ? 'medium' : 'low',
-      edgeCase: lead.score >= 68 && lead.score <= 74,
-      rationale: `Offre d'emploi ${sector === 'IA / ML' ? 'ML Engineer' : 'growth/sales'} publiée il y a moins de 7 jours chez ${lead.company} — confirme une phase de croissance active et une fenêtre d'opportunité immédiate.`,
-      aiAdjustment: lead.temperature === 'hot' ? 5 : 0,
-    },
-    company: {
-      name: lead.company,
-      size: lead.score > 70 ? '51-200' : '11-50',
-      location: 'Paris, France',
-      website: `www.${lead.company.toLowerCase().replace(/\s/g, '')}.com`,
-      sector,
-      funding: lead.score > 82 ? 'Série A · 12 M€' : 'N/A',
-      description: `${lead.company} construit une solution ${sector} pour les équipes tech. Croissance rapide de l'effectif commercial et marketing sur les 12 derniers mois.`,
-    },
-    dossier: {
-      status: lead.score > 78 ? 'solide' : 'moyen',
-      ageLabel: ageDays <= 1 ? 'à l\'instant' : `il y a ${ageDays} j`,
-      ageDays,
-      stale,
-      mecanisme: 'Mécanisme 2 — Signal récent vérifié',
-      accrochePivot: `Vous scalez vos équipes ${sector === 'MarTech' ? 'marketing' : 'sales'} chez ${lead.company} — pendant ce temps, qui structure le suivi pour que rien ne tombe entre les mailles ?`,
-      pourquoiMaintenant: `Recrutement commercial/growth publié récemment — signal 🔥 FRAIS (< 30 jours). Indique une phase de croissance et une charge opérationnelle accrue sur ${lead.firstName}.`,
-      preuves: [
-        `FAIT — Offre d'emploi publiée récemment (source Unipile)`,
-        `FAIT — Effectif ${lead.score > 70 ? '51-200' : '11-50'} en croissance (source Pappers)`,
-        `FAIT — ${lead.title} identifié comme décideur (source LinkedIn)`,
-      ],
-      aIntegrer: [
-        `Le signal de recrutement comme point d'entrée concret et daté`,
-        `La double charge croissance + structuration qui pèse sur ${lead.firstName} — nommer sans dramatiser`,
-      ],
-      aEviter: [
-        `Flatter une réalisation publique (levée, prix) sans qu'il en ait parlé`,
-        `Mentionner des outils concurrents sans qu'il les ait cités`,
-        `Promettre un ROI chiffré sans connaître ses métriques réelles`,
-      ],
-      questionAPoser: `Quand vos équipes ${sector === 'MarTech' ? 'marketing' : 'sales'} grossissent aussi vite, comment vous assurez-vous aujourd'hui que le suivi ne se dégrade pas ?`,
-      objectifReponse: `Obtenir une réponse sur leur process actuel — ouvrir une conversation, pas vendre.`,
-      canalRecommande: 'linkedin_message',
-      canalRationale: `Profil LinkedIn actif. LinkedIn est le canal naturel d'un ${lead.title.toLowerCase()} qui publie et recrute. Invitation d'abord si non connecté.`,
-      reserves: [
-        lead.temperature !== 'hot' ? `Segment D1 vs D2 non confirmé — dépend de la présence d'une équipe dédiée.` : `Nom du décideur secondaire non disponible.`,
-        `Effectif non recoupé Pappers/Unipile — cohérence acceptable, pas d'écart bloquant.`,
-        `L'angle suppose ${lead.firstName} impliqué dans l'opérationnel commercial — hypothèse raisonnée, non confirmée.`,
-      ],
-    },
-    notes: '',
-    interactions: lead.stage === 'to_invite' || lead.stage === 'invited'
-      ? []
-      : [
-          { id: 'i1', date: 'il y a 2 j', kind: 'invitation', text: 'Invitation acceptée' },
-          { id: 'i2', date: 'il y a 1 j', kind: 'message', text: 'Premier message envoyé' },
-        ],
-  }
+  return emptyDetail(lead)
 }
+
 
 // Supprime un lead (mémoire + Supabase).
 export async function deleteLead(id: string): Promise<void> {
@@ -479,11 +509,29 @@ export async function purgeLeadFromCollections(ids: string[]): Promise<void> {
 }
 
 // Vérifie l'entreprise du lead via data.gouv → SIREN + actif + dirigeant (gratuit, sans token).
-export async function verifyLeadCompany(id: string): Promise<{ found: boolean; active?: boolean; dirigeant?: string } | undefined> {
+export async function verifyLeadCompany(id: string): Promise<{
+  found: boolean
+  active?: boolean
+  dirigeant?: string
+  ambiguous?: boolean
+  resolution?: Resolution
+  candidates?: CompanyCandidate[]
+} | undefined> {
   const l = LEADS[id]
-  if (!l || !l.company || l.company === '—') return { found: false }
+  if (!l || !l.company || l.company === '—') return { found: false, resolution: 'not_found' }
   try {
     const v = await fetch(`/api/company/verify?name=${encodeURIComponent(l.company)}`).then((r) => r.json())
+    // Panne fournisseur : aucun champ n'est écrit, et surtout on ne dit pas
+    // « introuvable ». La fiche reste exactement dans l'état où elle était.
+    if (v.resolution === 'provider_error') {
+      return { found: false, resolution: 'provider_error' }
+    }
+    // ⚠️ AMBIGUÏTÉ : AUCUN champ du lead n'est touché. Écrire le SIREN d'une
+    // société choisie au hasard serait pire que ne rien écrire — la fiche
+    // paraîtrait vérifiée.
+    if (v.ambiguous) {
+      return { found: false, ambiguous: true, resolution: 'ambiguous', candidates: v.candidates || [] }
+    }
     if (v.found) {
       l.company = v.name || l.company; l.siren = v.siren; l.active = v.active; l.naf = v.naf; l.city = v.city; l.dirigeant = v.dirigeant
       if (v.effectif) l.effectif = v.effectif
@@ -496,8 +544,11 @@ export async function verifyLeadCompany(id: string): Promise<{ found: boolean; a
       }
       await persistLead(l)
     }
-    return { found: !!v.found, active: v.active, dirigeant: v.dirigeant }
-  } catch { return { found: false } }
+    return { found: !!v.found, resolution: v.found ? 'resolved' : 'not_found', active: v.active, dirigeant: v.dirigeant }
+  } catch {
+    // La route est injoignable : panne, pas absence.
+    return { found: false, resolution: 'provider_error' }
+  }
 }
 
 // Met à jour les champs éditables d'un lead (nom, titre, entreprise, email…).
@@ -787,10 +838,48 @@ export function getWorkspaces(): Promise<Workspace[]> {
 }
 
 // ── Notifications ──
-export interface Notification { id: string; type: 'reply' | 'meeting' | 'task' | 'system'; text: string; when: string; unread: boolean; href?: string }
-const NOTIFS: Notification[] = []
-export function getNotifications(): Promise<Notification[]> { return delay([...NOTIFS]) }
-export function markNotificationsRead(): Promise<Notification[]> { NOTIFS.forEach((n) => (n.unread = false)); return delay([...NOTIFS]) }
+export interface Notification {
+  id: string
+  type: 'reply' | 'meeting' | 'task' | 'system'
+  text: string
+  when: string
+  unread: boolean
+  href?: string
+  createdAt?: number
+  taskId?: string
+  leadId?: string
+  priority?: 'normal' | 'important'
+}
+
+export async function getNotifications(): Promise<Notification[]> {
+  return storeList<Notification>('notification')
+}
+
+export async function markNotificationsRead(): Promise<Notification[]> {
+  const notifications = await getNotifications()
+
+  const updated = notifications.map((notification) => ({
+    ...notification,
+    unread: false,
+  }))
+
+  for (const notification of updated) {
+    if (
+      notifications.find(
+        (current) =>
+          current.id === notification.id &&
+          current.unread,
+      )
+    ) {
+      await storeSave(
+        'notification',
+        notification,
+      )
+    }
+  }
+
+  return updated
+}
 
 // ── Listes (export CSV paramétrable + déploiement en séquence) ─────────────────
 export interface LeadList { id: string; name: string; leadIds: string[]; source?: string; createdAt: number }
@@ -875,14 +964,14 @@ export async function deployListToSequence(list: LeadList, sequenceId: string): 
 }
 
 // ── Planificateur de tâches / rappels ──
-export interface Task { id: string; title: string; due: string; done: boolean; leadId?: string; leadName?: string; channel?: 'linkedin' | 'email' | 'whatsapp' | null }
+export interface Task { id: string; title: string; due: string; done: boolean; leadId?: string; leadName?: string; channel?: 'linkedin' | 'email' | 'whatsapp' | null; priority?: 'normal' | 'important' }
 let TASKS: Task[] = []
 export async function getTasks(): Promise<Task[]> {
   TASKS = await storeList<Task>('task')
   return [...TASKS]
 }
-export async function addTask(input: { title: string; due: string; leadId?: string; leadName?: string; channel?: Task['channel'] }): Promise<Task> {
-  const t: Task = { id: `tk_${Math.random().toString(36).slice(2, 9)}`, title: input.title.trim() || 'Tâche', due: input.due || "Aujourd'hui", done: false, leadId: input.leadId, leadName: input.leadName, channel: input.channel ?? null }
+export async function addTask(input: { title: string; due: string; leadId?: string; leadName?: string; channel?: Task['channel']; priority?: Task['priority'] }): Promise<Task> {
+  const t: Task = { id: `tk_${Math.random().toString(36).slice(2, 9)}`, title: input.title.trim() || 'Tâche', due: input.due || "Aujourd'hui", done: false, leadId: input.leadId, leadName: input.leadName, channel: input.channel ?? null, priority: input.priority === 'important' ? 'important' : 'normal' }
   TASKS.unshift(t)
   await storeSave('task', t)
   return t
@@ -1038,13 +1127,11 @@ let sourcedSeq = 0
 // SIREN → id de la carte « entreprise à enrichir » placeholder dans le pipe.
 const importedPlaceholders: Record<string, string> = {}
 
-// Un lead est un COMPTE (entreprise sans personne) si kind='account' OU si aucun
-// nom de personne n'est renseigné. Sert de garde-fou même pour d'anciens leads.
-export function isAccountLead(l: { kind?: string; firstName?: string; lastName?: string }): boolean {
-  if (l.kind === 'account') return true
-  if (l.kind === 'contact') return false
-  return !(l.firstName || '').trim() && !(l.lastName || '').trim()
-}
+// La définition de « compte » vit dans `lib/prospector/leadKind.ts` — un module
+// pur, partagé avec le cerveau serveur (jarvisAgent). Réexporté ici pour que les
+// écrans qui importaient déjà `isAccountLead` de ce module continuent de
+// fonctionner, SANS qu'une seconde implémentation puisse réapparaître.
+export { isAccountLead, isContactLead }
 
 // Ajoute un CONTACT (personne) rattaché à un compte → il entre, lui, dans « à inviter ».
 export interface AccountContactInput { firstName?: string; lastName?: string; title?: string; persona?: string; email?: string; linkedinUrl?: string }
@@ -1116,26 +1203,191 @@ export async function importCompaniesToPipeline(companies: SourcedCompany[]) {
     }
     LEADS[id] = lead; created.push(lead)
   })
-  if (created.length) { try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ } }
+  if (created.length) await persistLeads(created)
   return { added: created.length, skipped: companies.length - created.length }
 }
 
 // Importe une entreprise détectée par SIGNAL, en attachant le signal + l'icebreaker
 // au lead → l'accroche devient actionnable (fiche + pré-remplissage 1er message).
-export async function importSignalToPipeline(hit: SignalHit) {
-  const siren = hit.siren || `sig-${hit.company}`
-  if (importedPlaceholders[siren]) return { added: 0, id: importedPlaceholders[siren] }
+// La vérification data.gouv se fait ICI (à l'ajout), pas pendant la recherche :
+// un seul appel, uniquement pour les entreprises réellement retenues.
+/**
+ * Résultat d'un import de signal.
+ *
+ * ⚠️ `ambiguous` EST UN TROISIÈME ÉTAT, pas une variante d'échec. « Plusieurs
+ * sociétés portent ce nom » et « aucune société ne porte ce nom » appellent des
+ * décisions opposées : la première demande à l'utilisateur de trancher, la
+ * seconde constate une absence. Les confondre — comme le faisait l'appelant qui
+ * n'avait que `found` — affichait « entreprise introuvable » alors que le
+ * problème était l'inverse : il y en avait trop.
+ */
+export interface SignalImportResult {
+  added: number
+  id?: string
+  verified?: boolean
+  siren?: string
+  ambiguous?: boolean
+  /** `provider_error` = data.gouv injoignable. RIEN n'a été écrit. */
+  resolution?: Resolution
+  company?: string
+  candidates?: CompanyCandidate[]
+}
+
+export interface CompanyCandidate { siren: string; name: string; city?: string }
+
+/** SIREN canonique : exactement neuf chiffres, rien d'autre. */
+const SIREN_EXACT = /^\d{9}$/
+
+/**
+ * L'import a-t-il RÉELLEMENT résolu une entité faisant autorité ?
+ *
+ * ⚠️ FAIL CLOSED. Cette garde existe parce que le Signal Bridge en a besoin
+ * pour décider si un fait externe peut s'attacher à un compte. Elle ne déduit
+ * la résolution d'AUCUN indice indirect :
+ *
+ *   • `verified` est un booléen qui écrase quatre états distincts ;
+ *   • `added` ne dit rien de l'identité — un doublon rend `{added: 0, id}` ;
+ *   • un `id` seul prouve qu'une fiche existe, pas qu'elle a été identifiée ;
+ *   • le nom d'entreprise n'est jamais une identité ;
+ *   • la présence de `candidates` signale au contraire une AMBIGUÏTÉ.
+ *
+ * Seule la conjonction `resolution === 'resolved'` + fiche existante + SIREN
+ * exact fait foi. `ambiguous`, `not_found` et `provider_error` échouent, et
+ * `provider_error` en particulier n'est pas une absence : c'est une panne
+ * (OBS-DATAGOUV-001).
+ */
+export function isResolvedSignalImportResult(
+  result: SignalImportResult | null | undefined,
+): result is SignalImportResult & { id: string; siren: string; resolution: 'resolved' } {
+  if (!result || typeof result !== 'object') return false
+  if (result.resolution !== 'resolved') return false
+  if (typeof result.id !== 'string' || result.id.trim() === '') return false
+  if (typeof result.siren !== 'string' || !SIREN_EXACT.test(result.siren)) return false
+  return true
+}
+
+/**
+ * Libellé commun d'une résolution ambiguë, partagé par les écrans.
+ *
+ * ⚠️ Il ne dit JAMAIS « introuvable ». Il nomme le vrai problème — il y a
+ * plusieurs sociétés — et il dit explicitement ce qui n'a PAS été écrit.
+ * Une ambiguïté silencieuse laisserait croire à un import réussi.
+ */
+export function ambiguityLabel(
+  company: string,
+  candidates: CompanyCandidate[] = [],
+  consequence = "Aucun compte n'a été créé.",
+): string {
+  const listees = candidates.slice(0, 5).map(
+    (c) => `${c.name} (SIREN ${c.siren}${c.city ? ` · ${c.city}` : ''})`,
+  )
+  const reste = candidates.length > 5 ? ` … et ${candidates.length - 5} autre(s).` : ''
+  return [
+    `« ${company} » correspond à plusieurs entreprises sur data.gouv.`,
+    consequence,
+    listees.length ? `${listees.join(' · ')}${reste}` : '',
+    'Sélectionne la bonne société ou renseigne son SIREN.',
+  ].filter(Boolean).join(' ')
+}
+
+/**
+ * Libellé d'indisponibilité fournisseur.
+ *
+ * ⚠️ IL NE DIT JAMAIS « INTROUVABLE ». C'est le cœur d'OBS-DATAGOUV-001 : une
+ * panne annoncée comme une absence fait corriger une saisie qui était juste, et
+ * abandonner une entreprise qui existe.
+ */
+export const PROVIDER_UNAVAILABLE = 'Data.gouv est temporairement indisponible. Réessaie dans un instant.'
+
+export async function importSignalToPipeline(hit: SignalHit): Promise<SignalImportResult> {
+  // ⚠️ CLÉ PROVISOIRE, JAMAIS LE SIREN DU SIGNAL.
+  //
+  // `hit.siren` vient d'un signal produit par un LLM : c'est un CANDIDAT, pas
+  // une identité. L'ancienne clé `hit.siren || \`sig-${hit.company}\`` en
+  // faisait la clé canonique de déduplication AVANT toute vérification — un
+  // SIREN halluciné devenait donc l'identité d'un compte, et bloquait ensuite
+  // l'import de la vraie entreprise portant ce SIREN.
+  //
+  // Avant vérification, on ne dédoublonne que sur le NOM. Le SIREN ne devient
+  // une clé qu'une fois confirmé par data.gouv.
+  const cleProvisoire = `sig-${hit.company}`
+  if (importedPlaceholders[cleProvisoire]) return { added: 0, id: importedPlaceholders[cleProvisoire] }
+
+  // Vérification SIREN + enrichissement (dirigeant, effectif, site, NAF, ville).
+  // Aucun champ n'est prérempli si data.gouv ne renvoie rien.
+  //
+  // ⚠️ LE SIREN PRIME SUR LE NOM (ENTITY-RESOLUTION-001). Un SIREN est un
+  // identifiant : il désigne UNE entité, sans ambiguïté possible. Résoudre par
+  // nom alors qu'on tient déjà un identifiant, c'est remplacer une certitude
+  // par un classement de pertinence — et rouvrir la collision qu'on ferme.
+  let dg: any = null
+  let ambigu: any = null
+  let panne = false
+  try {
+    const url = hit.siren
+      ? `/api/company/verify?siren=${encodeURIComponent(hit.siren)}`
+      : `/api/company/verify?name=${encodeURIComponent(hit.company)}`
+    const r = await fetch(url)
+    const j = await r.json()
+    if (j?.found) dg = j
+    else if (j?.ambiguous) ambigu = j
+    else if (j?.resolution === 'provider_error') panne = true
+  } catch {
+    // ⚠️ La route elle-même est injoignable : c'est une panne, pas un « non
+    // trouvé ». L'ancien commentaire disait « on importe sans vérification » —
+    // c'était précisément le fail-open que ce lot ferme.
+    panne = true
+  }
+
+  // ⚠️ PANNE FOURNISSEUR : AUCUNE ÉCRITURE, AUCUN ENRICHISSEMENT, AUCUN
+  // REPLI IDENTITAIRE. Importer « sans métadonnées » reviendrait à créer un
+  // compte inerte sur la foi d'une indisponibilité, et à poser un placeholder
+  // qui empêcherait tout réessai.
+  if (panne) {
+    return { added: 0, resolution: 'provider_error', company: hit.company }
+  }
+
+  // ⚠️ RETOUR AVANT TOUTE ÉCRITURE. Aucun identifiant n'est tiré, aucune entrée
+  // n'est posée dans LEADS ni dans importedPlaceholders, aucun persistLead.
+  // Un compte créé sur une identité indéterminée serait un faux compte, et il
+  // porterait le tampon « vérifié data.gouv ».
+  if (ambigu) {
+    return {
+      added: 0,
+      ambiguous: true,
+      resolution: 'ambiguous',
+      company: hit.company,
+      candidates: ambigu.candidates || [],
+    }
+  }
+
+  // ⚠️ SIREN CANDIDAT ≠ SIREN CANONIQUE. `dg?.siren || hit.siren` recopiait le
+  // SIREN du signal quand data.gouv ne le confirmait PAS : un échec de
+  // vérification se muait alors en validation implicite, et le lead portait un
+  // SIREN non vérifié indiscernable d'un SIREN officiel.
+  //
+  // Seul data.gouv fait autorité. Non confirmé — introuvable, ou vérification
+  // en échec — ⇒ AUCUN SIREN. Le compte reste importable (comportement
+  // NOT_FOUND inchangé pour ce lot), simplement sans identité canonique ni
+  // métadonnées officielles.
+  const siren: string | undefined = dg?.siren || undefined
+  if (siren && importedPlaceholders[siren]) return { added: 0, id: importedPlaceholders[siren] }
   const id = newLeadId()
-  importedPlaceholders[siren] = id
+  importedPlaceholders[cleProvisoire] = id
+  // Seul un SIREN VÉRIFIÉ devient une clé de déduplication canonique.
+  if (siren) importedPlaceholders[siren] = id
   const lead: Lead = {
-    id, kind: 'account', firstName: '', lastName: '', title: '', company: hit.company,
+    id, kind: 'account', firstName: '', lastName: '', title: '',
+    company: dg?.name || hit.company,
     score: 0, temperature: 'warm', status: 'froid', stage: 'to_invite', email: null, phone: null,
-    siren: hit.siren, city: hit.city, active: hit.verified ? true : undefined,
+    siren, city: dg?.city || hit.city, active: dg ? dg.active : undefined,
+    naf: dg?.naf || undefined, dirigeant: dg?.dirigeant || undefined,
+    effectif: dg?.effectif || undefined, website: dg?.website || undefined,
     signal: hit.detail, icebreaker: hit.icebreaker,
   }
   LEADS[id] = lead
   await persistLead(lead)
-  return { added: 1, id }
+  return { added: 1, id, verified: !!dg, siren, resolution: dg ? 'resolved' : 'not_found' }
 }
 
 // Ajout manuel d'un lead (saisie ou depuis une URL LinkedIn).
@@ -1183,7 +1435,7 @@ export async function addLeadsFromCsv(csv: string): Promise<{ added: number }> {
     LEADS[lead.id] = lead; created.push(lead)
   })
   if (created.length) {
-    try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ }
+    await persistLeads(created)
   }
   return { added: created.length }
 }
@@ -1213,7 +1465,7 @@ export async function addContactsToPipeline(company: SourcedCompany, contacts: R
     }
     LEADS[lead.id] = lead; created.push(lead)
   })
-  if (created.length) { try { await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ leads: created }) }) } catch { /* mémoire */ } }
+  if (created.length) await persistLeads(created)
   return { added: created.length, ids: created.map((l) => l.id) }
 }
 

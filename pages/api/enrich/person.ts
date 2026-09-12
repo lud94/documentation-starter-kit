@@ -1,6 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { hydrateKeystore, getKey } from '../../../lib/prospector/keystore'
 import { callClaude, cacheKey } from '../../../lib/prospector/llm'
+import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
+import { logSafeError } from '../../../lib/observability/safeError'
 
 // Appels IA / recherche web : laisser du temps à la fonction (anti-timeout).
 export const config = { maxDuration: 60 }
@@ -34,6 +36,10 @@ une ligne « Angle d'accroche : … » qui exploite l'actualité trouvée.`
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' })
   await hydrateKeystore()
+  // MT-0 — espace client obligatoire avant tout appel LLM. Fail closed.
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
+
   if (!getKey('ANTHROPIC_API_KEY')) return res.status(200).json({ error: 'Clé Anthropic non configurée (Admin → Connexions).' })
 
   const body = typeof req.body === 'string' ? safeParse(req.body) : req.body
@@ -43,6 +49,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const r = await callClaude({
+      tenant,
       task: 'extract', agent: 'Recherche personne', system: SYSTEM,
       // LinkedIn bloqué à la SOURCE : une simple consigne texte ne suffit pas.
       tools: [{
@@ -56,7 +63,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (r.blocked) return res.status(200).json({ error: r.error })
     res.status(200).json({ profile: r.text.trim(), cached: !!r.cached })
   } catch (e: any) {
-    res.status(200).json({ error: e?.message || 'Recherche indisponible.' })
+    logSafeError('enrich.person_error', e, { operation: 'enrich_person' })
+    res.status(200).json({ error: 'Recherche indisponible.' })
   }
 }
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

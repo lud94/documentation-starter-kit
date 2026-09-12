@@ -1,6 +1,19 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { searchSignals, buildThesis, SIGNAL_TYPES, type SignalQuery } from '../../../lib/prospector/signals'
+import {
+  searchSignals, buildThesis, SIGNAL_TYPES,
+  QUICK_SEARCH_MAX_HITS, type SignalQuery,
+} from '../../../lib/prospector/signals'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
+import {
+  startAcquisitionBudget,
+  QUICK_SEARCH_BUDGET_MS,
+  QUICK_SEARCH_MAX_PROVIDER_CALLS,
+  QUICK_SEARCH_MAX_WEB_SEARCHES,
+  QUICK_SEARCH_MAX_WEB_FETCHES,
+} from '../../../lib/prospector/acquisitionBudget'
+import { resolveTenantFromRequest } from '../../../lib/prospector/tenant'
+import { registerCandidates } from '../../../lib/prospector/proactive/signalCandidates'
+import { logSafeError } from '../../../lib/observability/safeError'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
@@ -12,6 +25,39 @@ export const config = { maxDuration: 60 }
 //  • thèse libre (GET ?thesis=…) — mode expert, inchangé
 //  • critères structurés (POST { types, sector, location, months, keywords })
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // ── L'ÉCHÉANCE APPARTIENT À LA ROUTE, ET ELLE DÉMARRE ICI ────────────────
+  // ⚠️ AVANT `hydrateKeystore`, la résolution du tenant et la construction de la
+  // thèse. Une version antérieure laissait `searchSignals` fabriquer son propre
+  // budget par défaut : l'horloge des 45 s démarrait donc APRÈS ce travail, et
+  // le total réel de la requête pouvait dépasser la fenêtre serverless alors
+  // même que « l'acquisition » se croyait dans les temps.
+  //
+  // ⚠️ ET CE BUDGET EST UNE POLITIQUE DE *QUICK SEARCH*, pas du moteur de
+  // signaux. `searchSignals` n'en fabrique plus aucun : une acquisition en
+  // Mission passera SON PROPRE budget de lot, plus court. Laisser un défaut dans
+  // le moteur imposerait la politique de cette route à tous ses appelants futurs.
+  // ── PLAFOND MONÉTAIRE DE L'ACTION — FAIL CLOSED SI ABSENT ───────────────
+  // ⚠️ LE SOLDE DU COMPTE N'EST PAS UN GARDE-FOU. Il ne borne pas UNE action :
+  // il borne la ruine. Une seule Quick Search doit avoir son propre plafond.
+  //
+  // ⚠️ ENV-ONLY, DÉLIBÉRÉMENT. Cette clé n'entre PAS dans `MANAGED_KEYS` : un
+  // plafond de sécurité ne doit pas pouvoir être relevé depuis la base qu'il
+  // protège, ni depuis l'écran d'administration. C'est la doctrine que le lot
+  // 0C.0.3 a déjà posée pour `AI_BUDGET_RESERVATION`, et elle vaut a fortiori
+  // pour un plafond de dépense.
+  //
+  // ⚠️ ABSENTE OU ILLISIBLE ⇒ AUCUN APPEL. On n'invente pas un défaut permissif :
+  // « je ne sais pas combien je peux dépenser » ne vaut pas « autant que je
+  // veux ». Configuration requise : `QUICK_SEARCH_MAX_MICROS` (µUSD, entier).
+  const plafond = plafondMonetaire()
+
+  const budget = startAcquisitionBudget(QUICK_SEARCH_BUDGET_MS, Date.now, {
+    providerCalls: QUICK_SEARCH_MAX_PROVIDER_CALLS,
+    webSearches: QUICK_SEARCH_MAX_WEB_SEARCHES,
+    webFetches: QUICK_SEARCH_MAX_WEB_FETCHES,
+    maxMicros: plafond,
+  })
+
   await hydrateKeystore()
 
   // Catalogue des types de signaux, pour construire l'UI.
@@ -29,13 +75,77 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     keywords: String(body.keywords || ''),
   } : { thesis: str(req.query.thesis).trim(), months: 6 }
 
+  // MT-0 — espace client obligatoire avant tout appel LLM. Fail closed.
+  const tenant = await resolveTenantFromRequest(req)
+  if (!tenant) return res.status(403).json({ error: 'Espace client indéterminé : appel IA refusé.' })
+
   const thesis = buildThesis(q)
   if (!thesis || thesis.length < 5) return res.status(400).json({ error: 'Précise au moins un type de signal ou une thèse.' })
 
   try {
-    res.status(200).json(await searchSignals(thesis, 8, q))
+    // ── QUICK SEARCH : UNE TRANCHE BORNÉE, PAS UNE ACQUISITION EXHAUSTIVE ──
+    // ⚠️ 25 ÉTAIT LE PIRE RÉGLAGE SUR LE CHEMIN LE PLUS COURT. À `months = 1`,
+    // `monthSlices` rend UNE tranche, donc `per = 25` : demander « moins de
+    // période » demandait en réalité PLUS de travail en une seule passe. C'est
+    // pourquoi réduire la fenêtre ne corrigeait pas le 504.
+    //
+    // Ce plafond ne borne QUE la Quick Search. L'acquisition en Mission
+    // accumulera davantage de candidats sur plusieurs lots, eux aussi bornés.
+    const resultat = await searchSignals(tenant, thesis, QUICK_SEARCH_MAX_HITS, q, budget)
+
+    // ── DÉLAI DÉPASSÉ : AUCUN CANDIDAT N'EST CRÉÉ ──────────────────────────
+    // ⚠️ COUVERTURE INCONNUE ⇒ ZÉRO CANDIDAT. Enregistrer les hits d'une
+    // acquisition inachevée figerait dans le registre serveur une vue partielle
+    // que personne n'a validée, et elle deviendrait promouvable en fait.
+    //
+    // ⚠️ AUJOURD'HUI REDONDANT, ET DIT COMME TEL. `searchSignals` rend déjà
+    // `hits: []` sur TIMEOUT, et son chemin d'exception ne peut pas avoir peuplé
+    // `hits`. Vérifié par mutation : retirer ce bloc ne fait échouer aucun test.
+    // On le garde comme invariant explicite de la route — le jour où
+    // l'agrégation par lots complets arrivera (ticket Mission), `hits` POURRA
+    // être non vide sur un TIMEOUT, et c'est ici que la décision devra se
+    // prendre. Ne pas le présenter comme la garde : la garde est en amont.
+    if (resultat.state === 'TIMEOUT' || resultat.state === 'BUDGET_EXCEEDED') {
+      return res.status(200).json({ ...resultat, hits: [] })
+    }
+
+    // ── ÉMISSION DES CANDIDATS — CÔTÉ SERVEUR, ICI ET NULLE PART AILLEURS ───
+    // ⚠️ C'EST LE SEUL ENDROIT OÙ UN CANDIDAT NAÎT. Les `hits` viennent d'être
+    // produits par `searchSignals` : ils n'ont transité par aucun navigateur.
+    // On en fige la part porteuse de vérité dans le registre de l'espace, et on
+    // ne rend au client qu'un identifiant opaque.
+    //
+    // Sans cela, `/api/signals/promote` n'aurait rien à quoi comparer ce qu'un
+    // navigateur lui présente — et devrait le croire sur parole.
+    const ids = await registerCandidates(resultat.hits || [], tenant.id)
+    const hits = (resultat.hits || []).map((h, i) => ({ ...h, candidateId: ids[i] || undefined }))
+
+    res.status(200).json({ ...resultat, hits })
   } catch (e: any) {
-    res.status(502).json({ error: e?.message || 'Erreur agent signaux' })
+    logSafeError('signals.search_error', e, { operation: 'signals_search' })
+    res.status(502).json({ error: 'Recherche de signaux indisponible pour le moment.' })
   }
 }
+/**
+ * Plafond monétaire d'UNE Quick Search, en µUSD — ou `null` si non configuré.
+ *
+ * ⚠️ `null` FERME. L'appelant refuse alors toute émission : voir
+ * `AcquisitionBudget.reserveMicros`, qui rend `'money'` sans plafond.
+ *
+ * Lecture directe de `process.env` — PAS de `getKey`. `getKey` consulte d'abord
+ * le magasin hydraté depuis `prospector_settings` : une ligne en base pourrait
+ * alors relever le plafond de sécurité. Un garde-fou ne se configure pas depuis
+ * la surface qu'il surveille.
+ */
+function plafondMonetaire(): bigint | null {
+  const brut = (process.env.QUICK_SEARCH_MAX_MICROS || '').trim()
+  if (!/^\d+$/.test(brut)) return null      // absente, vide ou illisible ⇒ ferme
+  try {
+    const v = BigInt(brut)
+    return v > 0n ? v : null                // zéro ⇒ aucune dépense autorisée
+  } catch {
+    return null
+  }
+}
+
 function safeParse(s: string) { try { return JSON.parse(s) } catch { return null } }

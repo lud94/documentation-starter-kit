@@ -33,19 +33,25 @@
   <input id="title" placeholder="(optionnel)" />
 
   <button id="add">+ Ajouter le lead</button>
+  <button class="muted" id="jarvis">✦ Ouvrir Jarvis sur cette page</button>
   <div class="msg" id="msg"></div>
 
   <details>
     <summary>Réglages de connexion</summary>
-    <label>URL Prospector</label>
-    <input id="base" placeholder="https://prospector.smartagency-ai.fr" />
-    <label>Jeton d'ingestion</label>
-    <input id="token" type="password" placeholder="INGEST_TOKEN ou jeton client" />
+    <!-- Le champ « URL Prospector » a DISPARU (lot SEC-EXT-0) : il permettait
+         d'envoyer le jeton d'un espace vers une origine arbitraire. L'origine
+         est désormais fixée à la compilation. -->
+    <p class="sub" id="origin" style="margin:6px 0 0"></p>
+    <label>Jeton — Capture de leads</label>
+    <input id="tokenCapture" type="password" placeholder="pk_capture_…" autocomplete="off" />
+    <label>Jeton — Jarvis</label>
+    <input id="tokenJarvis" type="password" placeholder="pk_jarvis_…" autocomplete="off" />
     <label>Marque (white-label, optionnel)</label>
     <input id="brand" placeholder="ex: Jarvis · MonAgence" />
     <button class="muted" id="save">Enregistrer les réglages</button>
   </details>
 
+  <script src="config.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

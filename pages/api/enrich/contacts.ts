@@ -4,6 +4,7 @@ import { fetchDirigeants, pappersConfigured } from '../../../lib/prospector/papp
 import { findPersonas, unipileConfigured } from '../../../lib/prospector/unipile'
 import { hydrateKeystore } from '../../../lib/prospector/keystore'
 import { getCachedDirigeants, setCachedDirigeants, bumpUsage } from '../../../lib/supabase/pappersCache'
+import { logSafeError, PUBLIC_ERROR } from '../../../lib/observability/safeError'
 
 const str = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) || ''
 
@@ -55,6 +56,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } catch (e: any) {
     // Erreur réseau connecteur → on ne casse pas l'UI, mais on n'invente pas :
     // au pire, le dirigeant réel, sinon rien.
-    return res.status(200).json({ mock: false, connected: false, error: e?.message, contacts: dirigeantContact(dirigeant) })
+    logSafeError('enrich.contacts_error', e, { provider: 'unipile', operation: 'contacts' })
+    return res.status(200).json({ mock: false, connected: false, error: PUBLIC_ERROR, contacts: dirigeantContact(dirigeant) })
   }
 }

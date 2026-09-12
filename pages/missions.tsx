@@ -66,18 +66,42 @@ export default function MissionsPage() {
     } catch { setError('Planification indisponible.') } finally { setPlanning(false) }
   }
 
+  // SEC-004_R1 — protocole d'approbation sécurisé : l'ancien booléen de
+  // validation n'a plus aucune autorité côté serveur. Valider l'étape
+  // COURANTE d'une mission en pause = POST /api/missions/approve
+  // {missionId, stepId} → approvalId, puis /run {id, approvalId}. L'identifiant
+  // n'est JAMAIS réutilisé : si une étape suivante exige aussi l'approbation,
+  // la boucle se met en pause et un NOUVEAU geste d'approbation est requis.
+  const approveCurrentStep = async (id: string): Promise<string | null> => {
+    try {
+      const d = await fetch('/api/missions').then((r) => r.json())
+      const m: Mission | undefined = (d.missions || []).find((x: Mission) => x.id === id)
+      const step = m?.steps?.[m.cursor]
+      if (!step) return null
+      const a = await fetch('/api/missions/approve', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ missionId: id, stepId: step.id }),
+      }).then((r) => r.json())
+      return a?.ok && a?.approvalId ? a.approvalId : null
+    } catch { return null }
+  }
+
   // Boucle d'exécution : une étape par appel, s'arrête sur pause/fin/échec.
   const drive = async (id: string, approveFirst = false) => {
     setBusy(true); setAwaiting(null)
-    let approve = approveFirst
+    let approvalId: string | null = approveFirst ? await approveCurrentStep(id) : null
+    if (approveFirst && !approvalId) { setBusy(false); load(); return }
     for (let i = 0; i < 20; i++) {
-      const d = await fetch('/api/missions/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, approve }) }).then((r) => r.json())
-      approve = false
-      if (d.error) break
+      const d = await fetch('/api/missions/run', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(approvalId ? { id, approvalId } : { id }),
+      }).then((r) => r.json())
+      approvalId = null // usage unique — jamais rejoué sur une étape suivante
+      if (d.error && !d.mission) break
       const m: Mission = d.mission
-      setMissions((prev) => prev.map((x) => x.id === m.id ? m : x))
+      if (m) setMissions((prev) => prev.map((x) => x.id === m.id ? m : x))
       if (d.awaiting) { setAwaiting(d.awaiting); break }
-      if (m.status !== 'running') break
+      if (!m || m.status !== 'running') break
     }
     setBusy(false); load()
   }
